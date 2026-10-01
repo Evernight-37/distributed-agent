@@ -38,6 +38,12 @@ with tempfile.TemporaryDirectory() as td:
    window.evaluate_js("document.querySelector('.composer textarea').value='<script>原样文本</script>';document.querySelector('.composer').dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}))")
    wait("document.querySelector('.bubble p')?.textContent==='<script>原样文本</script>'")
    report['message_safe_text']=True
+   window.evaluate_js("document.querySelector('#settingsNav').click()")
+   wait("document.querySelector('#teamServiceCard')?.textContent.includes('协作服务')")
+   report['service_settings']=True
+   window.evaluate_js("Array.from(document.querySelectorAll('#teamServiceCard button')).find(b=>b.textContent==='检测连接').click()")
+   wait("document.querySelector('#toast')?.textContent.startsWith('连接成功：')")
+   report['account_endpoint_test']=True
   except Exception as exc:report['error']=str(exc)
   finally:
    try:

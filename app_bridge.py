@@ -37,9 +37,9 @@ class AppBridge:
         validate_server(server)
         if server=='http://127.0.0.1:8765': DesktopRuntime(self.root/'host').start_workbench(open_browser=False)
         return server
-    def _rpc(self,operation,payload=None):
+    def _rpc(self,operation,payload=None,server=None):
         if not self.identity: raise PermissionError('请先解锁账户')
-        server=self.profile['server']; challenge=self._post(server,{'action':'challenge','public_key':self.identity['public_key']})
+        server=server or self.profile['server']; challenge=self._post(server,{'action':'challenge','public_key':self.identity['public_key']})
         envelope=sign_envelope(self.identity,{'domain':'harness-account-request-v1','nonce':challenge['nonce'],'operation':operation,'payload':payload or {}})
         return self._post(server,{'action':'rpc','envelope':envelope})
     def _save_profile(self,password):
@@ -146,12 +146,34 @@ class AppBridge:
         if action=='new-project': return self._rpc('create-project',data)
         if action in {'project','join-project','invite','message','set-admin'}:
             result=self._rpc(action,data)
-            if action=='invite':result['server']=self.profile['server']
+            if action=='invite':
+                from team_service import TeamService
+                entry=TeamService(self.root,self.profile['server']).status()
+                result['server']=entry.get('url') if entry['state']=='ready' else self.profile['server']
             return result
         if action=='receiver-start': self._enroll();return self._runtime().status()
         if action=='receiver-stop': return self._runtime().stop()
         if action=='approve-execution': return self._runtime()._control('action',dict(action='approve-execution',**data))
-        if action=='settings-get': return {'server':self.profile['server'],'background':self.profile.get('background',True),'autostart':False,'data_root':str(self.root)}
+        if action=='settings-get':
+            from team_service import TeamService
+            return {'server':self.profile['server'],'background':self.profile.get('background',True),'autostart':False,'data_root':str(self.root),'team_service':TeamService(self.root,self.profile['server']).status()}
+        if action.startswith('team-service-'):
+            from team_service import TeamService
+            service=TeamService(self.root,self.profile['server'])
+            if action=='team-service-status':return service.status()
+            if action=='team-service-create':
+                status=service.status()
+                if not status.get('can_manage'):raise PermissionError('请在托管协作服务的电脑创建入口。')
+                self._rpc('dashboard')
+                return service.create()
+            if action=='team-service-stop':return service.stop()
+            if action=='team-service-authorize':return service.authorize()
+            if action=='team-service-copy':return service.copy()
+            if action=='team-service-test':
+                status=service.status()
+                if status['state'] not in {'ready','remote'}:raise ValueError(status.get('message','入口尚未配置'))
+                self._rpc('dashboard',server=status['url'])
+                return {'ok':True,'message':'连接成功：当前账户可通过此地址访问协作服务。'}
         if action=='settings-save':
             if 'server' in data and data['server'].rstrip('/')!=self.profile['server']: raise ValueError('账户与项目绑定当前服务。更换服务请创建或关联该服务的账户，避免接收端连接错位。')
             if 'background' in data:self.profile['background']=bool(data['background']);write_json(self.root/'profiles'/(self.profile['id']+'.json'),self.profile)
