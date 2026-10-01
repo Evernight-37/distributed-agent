@@ -9,7 +9,7 @@ import threading
 import urllib.request
 import urllib.error
 from pathlib import Path
-from common import read_json, write_json
+from common import lock, read_json, validate_local_proxy, write_json
 from desktop_runtime import DesktopRuntime
 from pull_worker import validate_server, NoRedirect
 from account_identity import generate_identity, sign_envelope, encrypt_identity, decrypt_identity, approve_certificate
@@ -99,12 +99,39 @@ class AppBridge:
         if server!=self.profile['server']:
             path=path.with_name(path.name+'-'+hashlib.sha256(server.encode()).hexdigest()[:16])
         return DesktopRuntime(path)
+    def _proxy_settings(self):
+        saved=read_json(self.root/'codex-proxy.json')
+        if saved is not None:return validate_local_proxy(saved)
+        # Show an existing, simple loopback proxy in the UI before the first save.
+        if self.profile:
+            from urllib.parse import urlsplit
+            network=read_json(self._runtime().root/'executor.json',{}).get('network_env',{})
+            http,https=network.get('HTTP_PROXY'),network.get('HTTPS_PROXY')
+            if isinstance(http,str) and http==https:
+                try:
+                    parsed=urlsplit(http)
+                    if parsed.scheme=='http' and parsed.hostname=='127.0.0.1' and parsed.port and not parsed.username and not parsed.password and not parsed.path and not parsed.query and not parsed.fragment:
+                        return {'enabled':True,'port':parsed.port}
+                except ValueError:pass
+        return {'enabled':False,'port':None}
+    def _sync_proxy(self,runtime,setting):
+        path=runtime.root/'executor.json'
+        with lock(runtime.root/'executor.lock'):
+            executor=read_json(path,{})
+            network=dict(executor.get('network_env',{}))
+            for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','WS_PROXY','WSS_PROXY'):
+                network.pop(key,None);network.pop(key.lower(),None)
+            if network:executor['network_env']=network
+            else:executor.pop('network_env',None)
+            executor['proxy']=setting
+            write_json(path,executor)
     def _enroll(self,server=None):
         server=server or self.profile['server'];runtime=self._runtime(server)
         if not runtime.config_path.exists():
             pair=self._rpc('pair-local',{'node':self.profile['node']},server=server)
             runtime.pair(server,pair.get('code',pair.get('pair_code')))
             config=read_json(runtime.config_path);config['owner_account_id']=self.identity['account_id'];write_json(runtime.config_path,config);self._secure(runtime.config_path)
+        if (self.root/'codex-proxy.json').exists():self._sync_proxy(runtime,self._proxy_settings())
         runtime.start()
     def _owner(self,action,node,data,server=None):
         envelope=sign_envelope(self.identity,{'domain':'harness-owner-command-v1','account_id':self.identity['account_id'],'target':node,'id':'command-'+secrets.token_hex(16),'action':action,'data':data})
@@ -304,7 +331,16 @@ class AppBridge:
         if action=='approve-execution': return self._runtime(self.job_servers.get(data['job_id']))._control('action',dict(action='approve-execution',**data))
         if action=='settings-get':
             from team_service import TeamService
-            return {'server':self.profile['server'],'services':[{'server':server,'primary':server==self.profile['server'],'attached':server in self._attached_services()} for server in self._services()],'background':self.profile.get('background',True),'autostart':False,'data_root':str(self.root),'team_service':TeamService(self.root,self.profile['server']).status()}
+            return {'server':self.profile['server'],'services':[{'server':server,'primary':server==self.profile['server'],'attached':server in self._attached_services()} for server in self._services()],'background':self.profile.get('background',True),'autostart':False,'data_root':str(self.root),'team_service':TeamService(self.root,self.profile['server']).status(),'proxy':self._proxy_settings()}
+        if action=='proxy-save':
+            if not self.profile or not self.identity:raise PermissionError('请先登录')
+            setting=validate_local_proxy(data)
+            receivers=self.root/'receivers'
+            for path in receivers.glob('device-*'):
+                if path.is_dir() and path.resolve().parent==receivers.resolve():
+                    self._sync_proxy(DesktopRuntime(path),setting)
+            write_json(self.root/'codex-proxy.json',setting)
+            return setting
         if action.startswith('team-service-'):
             from team_service import TeamService
             service=TeamService(self.root,self.profile['server'])

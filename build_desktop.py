@@ -19,8 +19,9 @@ CLIENT_FILES = ('common.py', 'pull_worker.py', 'local_panel.py', 'desktop_servic
 CRYPTOGRAPHY_VERSION = '46.0.3'
 
 
-def main():
+def main(output_root=None):
     if sys.platform != 'win32': raise RuntimeError('Build this Windows app on Windows')
+    output_root = Path(output_root).resolve() if output_root else SOURCE / 'dist'
     missing = [name for name in CLIENT_FILES if not (SOURCE / name).is_file()]
     if missing: raise RuntimeError('Missing production sources: ' + ', '.join(missing))
     cache = SOURCE / 'build' / 'downloads'; cache.mkdir(parents=True, exist_ok=True)
@@ -29,12 +30,13 @@ def main():
         with urllib.request.urlopen(URL, timeout=60) as response: archive.write_bytes(response.read())
     if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256: raise RuntimeError('Python runtime checksum mismatch')
     subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--windowed', '--onedir',
+                    '--distpath', str(output_root),
                     '--collect-all', 'webview', '--collect-all', 'pythonnet', '--collect-all', 'clr_loader',
                     '--collect-all', 'cryptography', '--hidden-import', 'webview.platforms.edgechromium',
                     '--hidden-import', 'clr', '--hidden-import', 'webview.platforms.winforms',
                     '--add-data', f'{SOURCE / "web"};web',
                     '--name', 'AgentHarness', str(SOURCE / 'production_app.py')], cwd=SOURCE, check=True)
-    destination = SOURCE / 'dist' / 'AgentHarness'
+    destination = output_root / 'AgentHarness'
     runtime = destination / 'runtime'; runtime.mkdir(exist_ok=True)
     with zipfile.ZipFile(archive) as bundle: bundle.extractall(runtime)
     packages = runtime / 'site-packages'
@@ -55,4 +57,9 @@ def main():
     print(destination)
 
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Build the portable Windows app')
+    parser.add_argument('--output-root', help='Destination containing AgentHarness (default: dist)')
+    args = parser.parse_args()
+    main(args.output_root)

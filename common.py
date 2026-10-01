@@ -39,6 +39,34 @@ def write_json(path, value):
         tmp.unlink(missing_ok=True)
 
 
+def validate_local_proxy(value):
+    """Validate the app-managed loopback proxy setting."""
+    if not isinstance(value, dict) or set(value) != {"enabled", "port"}:
+        raise ValueError("Invalid local proxy setting")
+    enabled, port = value["enabled"], value["port"]
+    if not isinstance(enabled, bool):
+        raise ValueError("Proxy switch must be on or off")
+    if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535):
+        raise ValueError("Proxy port must be between 1 and 65535")
+    if enabled and port is None:
+        raise ValueError("Enter a local proxy port")
+    return {"enabled": enabled, "port": port}
+
+
+def apply_local_proxy(env, setting):
+    """Apply an explicit app setting to one Codex child process environment."""
+    setting = validate_local_proxy(setting)
+    result = dict(env)
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "WS_PROXY", "WSS_PROXY"):
+        result.pop(key, None)
+        result.pop(key.lower(), None)
+    if setting["enabled"]:
+        address = f"http://127.0.0.1:{setting['port']}"
+        result.update(HTTP_PROXY=address, HTTPS_PROXY=address,
+                      NO_PROXY="localhost,127.0.0.1,::1")
+    return result
+
+
 @contextlib.contextmanager
 def lock(path):
     """OS-backed lock; a process crash releases it automatically."""

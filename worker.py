@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common import events, identifier, lock, outcome, read_json, tail, validate_project, write_json
+from common import apply_local_proxy, events, identifier, lock, outcome, read_json, tail, validate_project, write_json
 
 ROOT = Path(__file__).resolve().parent
 TERMINAL = {"needs_review", "failed", "cancelled", "timed_out", "interrupted"}
@@ -25,6 +25,14 @@ def project_dir(name):
 
 def job_dir(job):
     return ROOT / "jobs" / identifier(job)
+
+
+def execution_timeout(config):
+    """Return the validated per-project timeout for every turn type."""
+    timeout = config["project"]["timeout"]
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+        raise ValueError("Project timeout must be a positive number")
+    return timeout
 
 
 def process_stamp(pid):
@@ -366,6 +374,8 @@ def run(job):
         for key,value in network.items():
             if not isinstance(value,str) or '\n' in value or '\r' in value: raise ValueError('Invalid network environment')
             env[key]=value
+        if 'proxy' in executor:
+            env = apply_local_proxy(env, executor['proxy'])
         with (path / "prompt.txt").open("rb") as source, (path / "stderr.log").open("wb") as error:
             proc = subprocess.Popen(command, stdin=source, stdout=subprocess.PIPE, stderr=error,
                                     cwd=config["project"]["remote_path"], env=env, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0, start_new_session=os.name != "nt")
@@ -401,7 +411,7 @@ def run(job):
 
             reader = threading.Thread(target=consume_guarded, daemon=True)
             reader.start()
-            deadline = time.monotonic() + (min(config["project"]["timeout"],120) if config.get('managed_turn') else config["project"]["timeout"])
+            deadline = time.monotonic() + execution_timeout(config)
             cancelled = timed_out = False
             while proc.poll() is None:
                 cancelled = (path / "cancel.json").exists()
