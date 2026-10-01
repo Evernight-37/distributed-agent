@@ -48,7 +48,7 @@ class PanelTests(unittest.TestCase):
         status, session = self.request("GET", "/api/session")
         self.assertEqual(status, 200)
         self.csrf = session["csrf"]
-        body = json.dumps({"action": "bootstrap", "username": "owner", "password": "owner-password-12"}).encode()
+        body = json.dumps({"action": "bootstrap", "username": "owner", "password": "1"}).encode()
         status, result = self.request("POST", "/api/action", body)
         self.assertEqual(status, 200)
         self.csrf = result["csrf"]

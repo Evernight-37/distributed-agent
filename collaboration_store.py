@@ -20,8 +20,8 @@ def digest(value):
 
 
 def password_hash(password, salt):
-    if not isinstance(password, str) or not 12 <= len(password) <= 256:
-        raise ValueError('密码长度必须为 12–256 字符')
+    if not isinstance(password, str):
+        raise ValueError('密码必须为文本')
     return hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1).hex()
 
 

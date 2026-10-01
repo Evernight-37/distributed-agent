@@ -57,7 +57,7 @@
       <h1>Agent 群工作台</h1>
       <p id="authHint" class="muted"></p>
       <label>用户名<input id="username" autocomplete="username" required maxlength="40"></label>
-      <label>密码<input id="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <label>密码<input id="password" type="password" autocomplete="current-password"></label>
       <label id="inviteField" class="hidden">项目邀请代码<input id="authInvite" autocomplete="off"></label>
       <p id="authError" role="alert"></p>
       <div class="row"><button id="authSubmit" type="submit">登录</button><button id="authSwitch" type="button" class="secondary">凭邀请注册</button></div>
@@ -119,7 +119,7 @@
     function authView() {
       const bootstrap=state.bootstrap, register=state.authMode==='register';
       $('auth').classList.remove('hidden'); $('app').classList.add('hidden');
-      $('authHint').textContent=bootstrap ? '首次使用：创建你的管理账户。密码至少 12 个字符；密码仅提交给本机服务。' : register ? '使用项目群主提供的邀请代码创建账户。密码至少 12 个字符。' : '登录后查看项目群聊、私聊审计和自己的 agent 设置。';
+      $('authHint').textContent=bootstrap ? '首次使用：创建你的管理账户。密码不限制长度，也可以留空；仅提交给本机服务。' : register ? '使用项目群主提供的邀请代码创建账户。密码不限制长度，也可以留空。' : '登录后查看项目群聊、私聊审计和自己的 agent 设置。';
       $('authSubmit').textContent=bootstrap?'创建账户':register?'注册并加入':'登录';
       $('authSwitch').classList.toggle('hidden',bootstrap);
       $('authSwitch').textContent=register?'已有账户，去登录':'凭邀请注册';
