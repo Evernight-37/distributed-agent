@@ -51,7 +51,7 @@ def main():
     client = destination / 'client'; client.mkdir(exist_ok=True)
     for name in CLIENT_FILES: shutil.copyfile(SOURCE / name, client / name)
     shutil.copytree(SOURCE / 'web', client / 'web', dirs_exist_ok=True)
-    (destination / '开始使用.txt').write_text('双击 AgentHarness.exe。\n首次使用点击“创建账户”；另一台电脑点击“加入已有账户”，由已登录设备批准。\n控制台管理所有关联机器上的员工，创建项目或凭邀请加入项目。\n进入项目后派遣自己的员工，群主设置管理员与邀请成员。\n设置页管理设备、后台接收和连接地址。\n首次运行 agent 前，每台机器需要已有可用的 Codex 登录。\n账户身份保存在本机；项目文件不会自动同步。\n请保留整个目录，不要只复制 exe。\n', encoding='utf-8-sig')
+    (destination / '开始使用.txt').write_text('双击 AgentHarness.exe。\n首次使用点击“创建账户”；自己的另一台电脑点击“关联我的另一台电脑”，由已登录设备批准。\n控制台管理所有关联机器上的员工。凭服务地址和项目邀请代码加入其他团队，不用重新创建身份。\n进入项目后派遣自己的员工，群主设置管理员与邀请成员。\n设置页管理设备、后台接收和服务连接。\n首次运行 agent 前，每台机器需要已有可用的 Codex 登录。\n账户身份保存在本机；项目文件不会自动同步。\n请保留整个目录，不要只复制 exe。\n', encoding='utf-8-sig')
     print(destination)
 
 

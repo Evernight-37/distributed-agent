@@ -39,6 +39,42 @@ class IdentityTests(unittest.TestCase):
         result=self.call(self.root,'dashboard',{});self.assertEqual(result['employees'],[])
         with self.store.connect() as db:
             row=db.execute('SELECT * FROM users WHERE id=?',(self.root['account_id'],)).fetchone();self.assertEqual(len(row['password_hash']),128)
+    def test_existing_root_identity_accepts_invite_on_another_service(self):
+        with tempfile.TemporaryDirectory() as other_dir:
+            other_store=Store(Path(other_dir));other=AccountBackend(other_store,PullBackend(other_store))
+            host=generate_identity()
+            def invoke(identity,operation,payload,action):
+                nonce=other.api({'action':'challenge','public_key':identity['public_key']})['nonce']
+                envelope=sign_envelope(identity,{'domain':'harness-account-request-v1','nonce':nonce,'operation':operation,'payload':payload})
+                return other.api({'action':action,'envelope':envelope})
+            invoke(host,'register',{'name':'Host'},'register')
+            project=invoke(host,'create-project',{'name':'Shared'},'rpc')['id']
+            invite=invoke(host,'invite',{'project':project},'rpc')['invite']
+            payload={'invite':invite,'name':'My existing identity','device_name':'My laptop'}
+            result=invoke(self.root,'accept-project-invite',payload,'accept-project-invite')
+            self.assertEqual((result['account_id'],result['project']),(self.root['account_id'],project))
+            view=invoke(self.root,'project',{'id':project},'rpc')
+            self.assertEqual(view['project']['id'],project)
+            with self.assertRaises(PermissionError):invoke(self.root,'accept-project-invite',payload,'accept-project-invite')
+            self.assertEqual(invoke(self.root,'dashboard',{},'rpc')['user']['id'],self.root['account_id'])
+
+    def test_child_identity_can_join_another_service_with_same_account_id(self):
+        with tempfile.TemporaryDirectory() as other_dir:
+            other_store=Store(Path(other_dir));other=AccountBackend(other_store,PullBackend(other_store))
+            host=generate_identity()
+            def invoke(identity,operation,payload,action):
+                nonce=other.api({'action':'challenge','public_key':identity['public_key']})['nonce']
+                return other.api({'action':action,'envelope':sign_envelope(identity,{'domain':'harness-account-request-v1','nonce':nonce,'operation':operation,'payload':payload})})
+            invoke(host,'register',{'name':'Host'},'register')
+            project=invoke(host,'create-project',{'name':'Shared'},'rpc')['id']
+            invite=invoke(host,'invite',{'project':project},'rpc')['invite']
+            child=generate_identity();child['chain']=approve_certificate(self.root,child['public_key']);child['account_id']=self.root['account_id']
+            result=invoke(child,'accept-project-invite',{'invite':invite,'name':'Existing','device_name':'Second computer'},'accept-project-invite')
+            self.assertEqual(result['account_id'],self.root['account_id'])
+            self.assertEqual(invoke(child,'dashboard',{},'rpc')['user']['id'],self.root['account_id'])
+            with other_store.connect() as db:
+                rows=db.execute('SELECT public_key FROM account_devices WHERE account_id=?',(self.root['account_id'],)).fetchall()
+            self.assertEqual({row['public_key'] for row in rows},{self.root['public_key'],child['public_key']})
     def test_device_approval_and_revocation(self):
         self.register();child=generate_identity()
         request=self.api.api({'action':'request-device','public_key':child['public_key'],'name':'Desktop'})
@@ -50,6 +86,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(len(self.call(child,'dashboard',{})['devices']),2)
         self.call(self.root,'revoke-device',{'public_key':child['public_key']})
         with self.assertRaises(PermissionError):self.call(child,'dashboard',{})
+        with self.assertRaises(PermissionError):self.call(child,'activate-device',{'device_name':'Desktop'},'activate-device')
     def approve_child(self,parent):
         child=generate_identity();request=self.api.api({'action':'request-device','public_key':child['public_key'],'name':'Child'})
         self.call(parent,'approve-device',{'request_id':request['request_id'],'chain':approve_certificate(parent,child['public_key'])})

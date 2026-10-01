@@ -19,6 +19,7 @@ class AccountBackend:
             CREATE TABLE IF NOT EXISTS account_challenges(nonce TEXT PRIMARY KEY,public_key TEXT NOT NULL,expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS account_requests(id TEXT PRIMARY KEY,code_hash TEXT UNIQUE NOT NULL,public_key TEXT NOT NULL,name TEXT NOT NULL,expires REAL NOT NULL,account_id TEXT,chain TEXT,claimed INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS account_project_visits(account_id TEXT NOT NULL,project_id TEXT NOT NULL,visited REAL NOT NULL,PRIMARY KEY(account_id,project_id));
+            CREATE TABLE IF NOT EXISTS account_services(account_id TEXT NOT NULL,server TEXT NOT NULL,joined_at REAL NOT NULL,PRIMARY KEY(account_id,server));
             ''')
     def api(self,data):
         if not isinstance(data,dict):raise ValueError('Expected account request')
@@ -42,7 +43,7 @@ class AccountBackend:
                 if not device or device['revoked']:raise PermissionError('Device approval revoked')
                 db.execute('UPDATE account_requests SET claimed=1 WHERE id=?',(row['id'],))
                 return {'state':'approved','status':'approved','account_id':row['account_id'],'username':self._username(db,row['account_id']),'node':device_node(row['public_key']),'public_key':row['public_key'],'chain':json.loads(row['chain'])}
-        if action not in {'register','rpc'}:raise ValueError('Unknown account operation')
+        if action not in {'register','rpc','accept-project-invite','activate-device'}:raise ValueError('Unknown account operation')
         verified=verify_envelope(data['envelope']);body=verified['body'];public=verified['public_key'];user=verified['account_id']
         if body.get('domain')!='harness-account-request-v1' or not isinstance(body.get('payload'),dict):raise PermissionError('Wrong request domain')
         with self.store.connect() as db:
@@ -60,6 +61,30 @@ class AccountBackend:
                 db.execute('INSERT INTO account_devices VALUES(?,?,?,?,0)',(public,user,device_name,'[]'))
                 self._node(db,public,user)
             return {'account_id':user,'name':name,'username':name,'node':device_node(public),'public_key':public}
+        if action=='activate-device':
+            if body.get('operation')!='activate-device':raise PermissionError('Wrong device proof')
+            device_name=self._name(body['payload'].get('device_name','我的电脑'))
+            with self.store.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                if not db.execute('SELECT 1 FROM users WHERE id=?',(user,)).fetchone():raise PermissionError('此身份尚未加入该服务的项目')
+                self._register_chain(db,verified,data['envelope'].get('chain',[]),device_name)
+            return {'account_id':user,'node':device_node(public)}
+        if action=='accept-project-invite':
+            if body.get('operation')!='accept-project-invite':raise PermissionError('Wrong invite proof')
+            payload=body['payload'];name=self._name(payload.get('name'));device_name=self._name(payload.get('device_name','我的电脑'))
+            token=payload.get('invite')
+            if not isinstance(token,str) or len(token)>256:raise PermissionError('邀请无效或已使用')
+            with self.store.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                invitation=db.execute('SELECT * FROM invitations WHERE hash=? AND used=0 AND expires>?',(digest(token),time.time())).fetchone()
+                if not invitation:raise PermissionError('邀请无效或已使用')
+                if not db.execute('SELECT 1 FROM users WHERE id=?',(user,)).fetchone():
+                    db.execute('INSERT INTO users VALUES(?,?,?,?)',(user,name+' · '+user[-8:],secrets.token_hex(16),secrets.token_hex(64)))
+                self._register_chain(db,verified,data['envelope'].get('chain',[]),device_name)
+                db.execute('INSERT OR IGNORE INTO project_users VALUES(?,?)',(invitation['project_id'],user))
+                db.execute('UPDATE invitations SET used=1 WHERE hash=?',(digest(token),))
+                self.store.log(db,user,'accept_project_invite',{'project':invitation['project_id']})
+                return {'project':invitation['project_id'],'account_id':user,'node':device_node(public)}
         with self.store.connect() as db:
             for key in verified['chain_keys']:
                 device=db.execute('SELECT * FROM account_devices WHERE public_key=? AND account_id=?',(key,user)).fetchone()
@@ -68,7 +93,24 @@ class AccountBackend:
     def _name(self,name):
         if not isinstance(name,str) or not 1<=len(name.strip())<=120:raise ValueError('Name must contain 1–120 characters')
         return name.strip()
+    def _register_chain(self,db,verified,chain,device_name):
+        user,public=verified['account_id'],verified['public_key']
+        keys=[verified['root_public_key']]+[cert['body']['child'] for cert in chain]
+        for index,key in enumerate(keys):
+            row=db.execute('SELECT account_id,revoked FROM account_devices WHERE public_key=?',(key,)).fetchone()
+            if row and (row['account_id']!=user or row['revoked']):raise PermissionError('设备授权已撤销或属于其他账户')
+            if not row:db.execute('INSERT INTO account_devices VALUES(?,?,?,?,0)',(key,user,device_name if key==public else '关联设备',json.dumps(chain[:index])))
+            self._node(db,key,user)
     def _operation(self,user,public,op,p):
+        if op=='service-links':
+            with self.store.connect() as db:
+                return {'servers':[row['server'] for row in db.execute('SELECT server FROM account_services WHERE account_id=? ORDER BY joined_at',(user,))]}
+        if op=='link-service':
+            from pull_worker import validate_server
+            server=p['server'].rstrip('/');validate_server(server)
+            with self.store.connect() as db:
+                db.execute('INSERT OR IGNORE INTO account_services VALUES(?,?,?)',(user,server,time.time()))
+            return {'server':server}
         if op=='dashboard':
             result=self.store.snapshot(user);result.update(self.owners.snapshot(user))
             with self.store.connect() as db:
