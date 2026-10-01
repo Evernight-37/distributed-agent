@@ -95,6 +95,18 @@ class StreamingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.message(self.owner, self.project, 'bad', recipient='admin', mention_agent_id='peer')
 
+    def test_last_project_turn_prioritizes_mention_without_rolling_back(self):
+        with self.store.connect() as db:
+            db.execute('UPDATE projects SET budget_remaining=1 WHERE id=?', (self.project,))
+        self.store.message(self.owner, self.project, 'general update')
+        self.store.message(self.owner, self.project, 'please answer', mention_agent_id='peer')
+        self.coordinator.wake_messages()
+        self.coordinator.wake_messages()
+        with self.store.connect() as db:
+            self.assertEqual([r['agent_id'] for r in db.execute('SELECT agent_id FROM tasks')], ['peer'])
+            self.assertEqual(db.execute('SELECT budget_remaining FROM projects WHERE id=?',
+                                        (self.project,)).fetchone()[0], 0)
+
     def test_plain_at_text_is_not_a_mention(self):
         self.store.message(self.owner, self.project, '@Peer please review')
         self.coordinator.wake_messages()

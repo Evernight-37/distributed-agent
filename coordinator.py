@@ -57,6 +57,7 @@ Return only visible context; you cannot request other agents' private conversati
     def wake_messages(self):
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            pending=[]
             for r in db.execute('SELECT a.*,p.admin_agent_id,p.paused,p.budget_remaining FROM agents a JOIN projects p ON a.project_id=p.id WHERE a.enabled=1 AND a.configuring=0 AND p.paused=0').fetchall():
                 if r['budget_remaining']<=0 or db.execute("SELECT 1 FROM tasks WHERE agent_id=? AND state IN ('queued','starting','running','unknown')",(r['id'],)).fetchone():
                     continue
@@ -77,7 +78,15 @@ Return only visible context; you cannot request other agents' private conversati
                         break
                 if not source:
                     continue
+                # Explicitly addressed messages take priority when a project has
+                # only one remaining turn. Collect first, then check the live
+                # budget after each task instead of trusting the initial rows.
+                pending.append((0 if source['recipient_id'] or source['mention_agent_id'] else 1,
+                                source['id'],dict(r),partner))
+            for _,_,r,partner in sorted(pending,key=lambda item:(item[0],item[1])):
                 project=dict(db.execute('SELECT * FROM projects WHERE id=?',(r['project_id'],)).fetchone())
+                if project['paused'] or project['budget_remaining']<=0:
+                    continue
                 private=bool(partner)
                 data={'title':'处理新消息','instructions':'处理收到的可见消息；管理员根据目标协调分工，必要时向同事定向发送消息或派任务。若无需回复，返回 done:true。',
                       'stage':'discuss','allowed_files':'只讨论，不执行命令或修改文件','acceptance':'回复针对消息且遵守收件权限，任务分工明确','validation':'核对可见消息与任务契约；不要编造执行结果'}
