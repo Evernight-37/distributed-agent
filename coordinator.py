@@ -173,6 +173,7 @@ Return only visible context; you cannot request other agents' private conversati
                     self.store.log(db,'scheduler','rejected_message',{'task':task_id})
             if project['admin_agent_id']==agent['id'] and not private:
                 for assignment in answer.get('tasks',[]):
+                    db.execute('SAVEPOINT delegation')
                     try:
                         target=db.execute('SELECT * FROM agents WHERE id=? AND project_id=? AND enabled=1',(assignment['agent'],project['id'])).fetchone()
                         if not target:
@@ -182,7 +183,10 @@ Return only visible context; you cannot request other agents' private conversati
                         assignment['private_turn']=True
                         self.store._message(db,project['id'],agent['id'],'agent','分派任务：'+assignment['title'],target['id'],task_id)
                         self.store._task(db,dict(db.execute('SELECT * FROM projects WHERE id=?',(project['id'],)).fetchone()),dict(target),assignment,agent['id'])
+                        db.execute('RELEASE delegation')
                     except Exception as exc:
+                        db.execute('ROLLBACK TO delegation')
+                        db.execute('RELEASE delegation')
                         self.store.log(db,'scheduler','rejected_delegation',{'task':task_id,'reason':str(exc)[:500]})
             elif answer.get('tasks'):
                 self.store.log(db,'scheduler','rejected_nonadmin_delegation',{'task':task_id})

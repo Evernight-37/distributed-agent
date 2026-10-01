@@ -105,6 +105,14 @@ class Regressions(unittest.TestCase):
             row=db.execute("SELECT contract FROM tasks WHERE state='queued'").fetchone()
             self.assertTrue(json.loads(row['contract'])['private_turn'])
 
+    def test_rejected_assignment_does_not_send_false_dispatch_notice(self):
+        a,b=self.agents()
+        self.finished(b,'','running')
+        assignment={'agent':b,'title':'busy target','instructions':'discuss','stage':'discuss','allowed_files':'read','acceptance':'reply','validation':'check'}
+        task=self.finished(a,json.dumps({'reply':'','tasks':[assignment]}))
+        Coordinator(self.store,self.backend).process_completed(task)
+        self.assertFalse(any(m['body'].startswith('分派任务') for m in self.store.visible_messages(b)))
+
     def test_start_crash_is_unknown_and_never_resubmitted(self):
         a,_=self.agents()
         task=self.finished(a,'','starting')
