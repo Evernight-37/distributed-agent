@@ -75,3 +75,28 @@ node tests/test_ui_v3.js
 ```
 
 其他平台有标准库适配，仍需实际部署验证。本系统面向小型可信协作团队。
+
+## Windows 桌面应用
+
+普通使用者解压应用包后双击 AgentHarness.exe。应用提供配对、接收服务启动/停止、目录选择、模型/思考强度、本机权限以及已有绑定载入。群聊工作台和高级作业批准目前通过浏览器打开；桌面应用启动后台服务，不要求使用者执行命令。
+
+数据默认在 %LOCALAPPDATA%/AgentHarness/worker；本机托管的新工作台数据在 %LOCALAPPDATA%/AgentHarness/shared-data。选择已有数据目录可保留身份与会话。接收器与旧 CLI 共用 pull-worker.lock；不能同时启动两个接收器。关闭应用窗口保留后台服务，停止接收在当前调度轮次结束后生效，不取消正在执行的作业。重启后需打开应用点启动；当前没有自动开机启动。
+
+桌面服务使用操作系统分配的回环端口。不要猜端口或固定打开 8787；通过应用的“高级设置 / 作业批准”获取一次性浏览器入口。控制接口需要本机访问密钥，浏览器入口换取 HttpOnly/SameSite cookie，并继续执行 Host、Origin 和 CSRF 检查；密钥文件 ACL 仅允许本用户与 SYSTEM。服务不接受其他网卡的连接，不改变防火墙或 Codex 认证。创建自己的工作台仅监听回环；远程共享的 HTTPS 部署仍由服务运营者负责。
+
+维护者构建（Windows x64）：
+
+```powershell
+python -m pip install pyinstaller==6.22.3
+python build_desktop.py
+```
+
+输出 dist/AgentHarness；必须发布整个文件夹。构建使用 PyInstaller GUI 包和 Python.org 的隔离嵌入式 Python 3.14.7 接收器运行环境，下载后核对官网公布的 SHA-256。工作进程继续用 Python 解释器启动 worker/jobrunner，避免把 GUI exe 错当作解释器。固定模板中的研究环境仍由机器主人配置，应用包不包含 CUDA/PyTorch 等项目依赖。
+
+验证桌面接口与打包后运行路径：
+
+```powershell
+python -m unittest tests.test_desktop -v
+```
+
+打包运行路径测试仅在已有 dist/AgentHarness/runtime/python.exe 时执行；它使用临时目录和合成配对服务，不调用模型或访问正式账户。Windows exe 未配置代码签名；发布前可按运营者的分发要求签名。

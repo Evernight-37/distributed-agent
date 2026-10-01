@@ -28,5 +28,11 @@ pull-receipts/
 broker-projects.json
 connector-status.json
 pull-worker.lock
+build/
+dist/
+*.spec
+desktop-service.json
+desktop-start.lock
+desktop-host-start.lock
 pull-receipts.lock
 local-policy.lock

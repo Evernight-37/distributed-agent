@@ -283,17 +283,17 @@
       const timeout=field(form,'每轮超时（秒）','timeout',agent.timeout,'number'); timeout.min=30; timeout.max=86400; timeout.required=true;
     }
     function pairDevice() {
-      const form=modal('配对一台自己的机器',f=>{ field(f,'机器名称','name').required=true; f.append(el('p','生成代码后，在这台机器上运行本地 worker。服务器只提供项目消息和任务队列，不会登录或配置你的电脑。','small muted')); });
+      const form=modal('配对一台自己的机器',f=>{ field(f,'机器名称','name').required=true; f.append(el('p','生成代码后，在目标电脑打开 Agent Harness 应用，填服务地址和配对码，点“配对并启动”。','small muted')); });
       form.onsubmit=async e=>{e.preventDefault();const values=formValues(form);try { const result=await action('enroll-device',{name:values.name.trim()}); const code=result.pair_code||result.code; if(!code) throw new Error('服务没有返回配对代码');
-        form.replaceChildren(el('h2','配对代码已生成'),el('p','请在拥有这台机器的终端运行：','small muted'),el('pre',code));
-        form.append(el('p','python pull_worker.py pair --server '+location.origin+' --pair-code '+code+' --root <本机数据目录>','small muted'),el('p','然后打开本机控制台 http://127.0.0.1:8787，设置模型、思考强度、项目目录和权限。','small muted'));
+        form.replaceChildren(el('h2','配对代码已生成'),el('p','在目标电脑打开 Agent Harness 应用，填写下面的信息：','small muted'),el('pre',code));
+        form.append(el('p','服务地址：'+location.origin,'small muted'),el('p','在应用中点“配对并启动”，再选择项目文件夹、模型与思考强度，勾选启用并保存。配对码十分钟有效，只能使用一次。','small muted'));
         form.append(button('关闭',()=>$('dialog').close()));
       } catch(error){notice(error.message);} };
     }
     function agentSettings(agent) {
       const form=modal('我的 agent：'+agent.name,f=>{
         f.append(el('p','这是共享服务最近看到的状态。模型、思考强度、工作目录和命令模板由机器所有者在本机控制台维护。','small muted'),el('p',`当前：${agent.status || '未知'} · ${agent.model || '本机设置'} / ${agent.effort || '本机设置'}`,'card'));
-        const link=el('a','打开本机控制台');link.href='http://127.0.0.1:8787';link.target='_blank';f.append(link);
+        f.append(el('p','请在对应电脑的 Agent Harness 应用中设置模型和权限；需要批准作业时，点“高级设置 / 作业批准”。','small muted'));
       });
       form.onsubmit=e=>{e.preventDefault();$('dialog').close();};
     }
