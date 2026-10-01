@@ -13,7 +13,7 @@ def deploy(root, payload):
     root = Path(root).resolve()
     if not root.is_absolute() or root == Path(root.anchor):
         raise ValueError("Unsafe deployment directory")
-    if set(payload) != {"common.py", "worker.py"}:
+    if set(payload) not in ({"common.py", "worker.py"}, {"common.py", "worker.py", "jobrunner.py"}):
         raise ValueError("Unexpected deployment files")
     files = {name: base64.b64decode(value, validate=True) for name, value in payload.items()}
     for name, content in files.items():
@@ -43,6 +43,9 @@ def deploy(root, payload):
             for active in (root / "projects").glob("*/active.json"):
                 if json.loads(active.read_text(encoding="utf-8-sig")) is not None:
                     raise ValueError("Refusing deployment with active or unreconciled jobs; query status first")
+            for state in (root / 'executions').glob('*/state.json'):
+                if json.loads(state.read_text(encoding='utf-8-sig')).get('status') in {'starting','running','unknown'}:
+                    raise ValueError('Refusing deployment while background execution is active or unreconciled')
             for name, content in files.items():
                 tmp = root / (name + "." + uuid.uuid4().hex + ".tmp")
                 try:

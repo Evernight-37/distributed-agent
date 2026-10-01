@@ -1,4 +1,4 @@
-"""Personal Windows-to-Windows Codex harness. Python standard library only."""
+"""Distributed Codex execution adapter. Python standard library only."""
 import argparse
 import base64
 import json
@@ -44,7 +44,17 @@ class Harness:
 
     def transport(self, script, payload, config=None, timeout=45):
         config = config or self.config()
+        if config.get('transport') == 'local':
+            if not isinstance(script,list): raise ValueError('Local transport requires explicit argv')
+            result=subprocess.run(script,input=json.dumps(payload,ensure_ascii=False)+'\n',capture_output=True,
+                                  encoding='utf-8',errors='replace',timeout=timeout,
+                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+            response=json.loads(result.stdout.strip())
+            if not response.get('ok'): raise RemoteRejected(response.get('error','Local worker rejected request'))
+            if result.returncode: raise RuntimeError('Local worker failed')
+            return response['result']
         import shutil
+        if config.get('reverse_proxy'): self.ensure_reverse_proxy(config)
         args = [shutil.which("ssh") or "ssh", "-i", config["identity_file"], "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
                 "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + config["known_hosts_file"],
                 "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
@@ -69,6 +79,37 @@ class Harness:
             raise RuntimeError("SSH exited with code " + str(result.returncode))
         return response["result"]
 
+    def ensure_reverse_proxy(self,config):
+        """Optional loopback-only reverse tunnel, detached from short CLI turns."""
+        import shutil
+        from jobrunner import _stamp
+        forwarding=config['reverse_proxy']
+        if set(forwarding)!={'local_port','remote_port'} or any(not isinstance(v,int) or not 1024<=v<=65535 for v in forwarding.values()):
+            raise ValueError('reverse_proxy requires local_port and remote_port (1024–65535)')
+        if os.name!='nt': raise ValueError('Managed reverse proxy currently supports Windows controllers only')
+        name=identifier(self.node or 'default')
+        path=self.root/'tunnels'/(name+'.json')
+        with lock(self.root/'tunnels'/(name+'.lock')):
+            old=read_json(path,{})
+            if old.get('stamp') and _stamp(old['pid'])==old['stamp']: return
+            logpath=self.root/'tunnels'/(name+'.log')
+            args=[shutil.which('ssh') or 'ssh','-N','-T','-i',config['identity_file'],'-o','IdentitiesOnly=yes',
+                  '-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='+config['known_hosts_file'],
+                  '-o','ExitOnForwardFailure=yes','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=2',
+                  '-E',str(logpath),'-p',str(config.get('port',22)),
+                  '-R',f"127.0.0.1:{forwarding['remote_port']}:127.0.0.1:{forwarding['local_port']}",config['user']+'@'+config['host']]
+            command=subprocess.list2cmdline(args)
+            script="$s=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0};$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine="+ps_literal(command)+";ProcessStartupInformation=$s};$r|ConvertTo-Json -Compress"
+            encoded=base64.b64encode(script.encode('utf-16le')).decode('ascii')
+            result=subprocess.run(['powershell.exe','-NoProfile','-EncodedCommand',encoded],capture_output=True,encoding='utf-8',errors='replace',timeout=20,creationflags=subprocess.CREATE_NO_WINDOW)
+            data=json.loads(result.stdout)
+            if result.returncode or data.get('ReturnValue')!=0: raise RuntimeError('Proxy tunnel launch failed')
+            pid=int(data['ProcessId'])
+            time.sleep(.4)
+            stamp=_stamp(pid)
+            if stamp is None: raise RuntimeError('Proxy tunnel exited; inspect the tunnel log')
+            write_json(path,{'pid':pid,'stamp':stamp,'ports':forwarding})
+
     def rpc(self, request):
         name = request.get("project")
         if isinstance(name, dict):
@@ -85,6 +126,8 @@ class Harness:
         if node and not self.node:
             return Harness(self.root, node).rpc(request)
         config = self.config()
+        if config.get('transport') == 'local':
+            return self.transport([config['remote_python'],'-X','utf8','-u',str(Path(config['remote_root'])/'worker.py'),'rpc'],request)
         if config.get("platform", "windows") == "posix":
             import shlex
             script = shlex.join([config["remote_python"], "-X", "utf8", "-u", config["remote_root"].rstrip("/") + "/worker.py", "rpc"])
@@ -98,14 +141,16 @@ class Harness:
         config = read_json(connection)
         if not config:
             raise ValueError("Connection file missing")
-        for field in ("identity_file", "known_hosts_file"):
+        local=config.get('transport')=='local'
+        if config.get('transport','ssh') not in {'ssh','local'}: raise ValueError('Transport must be ssh or local')
+        for field in (() if local else ("identity_file", "known_hosts_file")):
             path = Path(config[field]).resolve()
             if not path.is_file():
                 raise ValueError(field + " missing")
             config[field] = str(path)
         # Host/user are arguments to OpenSSH: reject options and command-like destinations.
         import re
-        if not re.fullmatch(r"[a-zA-Z0-9.-]+", config["host"]) or not re.fullmatch(r"[a-zA-Z0-9_.-]+", config["user"]):
+        if not local and (not re.fullmatch(r"[a-zA-Z0-9.-]+", config["host"]) or not re.fullmatch(r"[a-zA-Z0-9_.-]+", config["user"])):
             raise ValueError("Invalid SSH host/user")
         config.setdefault("remote_python", "python3" if config.get("platform") == "posix" else "D:\\miniconda3\\python.exe")
         if "remote_root" not in config:
@@ -120,7 +165,7 @@ class Harness:
         root = (PureWindowsPath if config.get("platform", "windows") == "windows" else PurePosixPath)(config["remote_root"])
         if not root.is_absolute() or root == type(root)(root.anchor):
             raise ValueError("Unsafe remote root")
-        files = {name: base64.b64encode((SOURCE / name).read_bytes()).decode("ascii") for name in ("common.py", "worker.py")}
+        files = {name: base64.b64encode((SOURCE / name).read_bytes()).decode("ascii") for name in ("common.py", "worker.py", "jobrunner.py")}
         script = "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); "
         payload = {"installer": (SOURCE / "installer.py").read_text(encoding="utf-8"), "files": files}
         # Send source on stdin, not Windows' length-limited SSH command line.
@@ -129,6 +174,7 @@ class Harness:
         if config.get("platform", "windows") == "posix":
             import shlex
             script = shlex.join([config["remote_python"], "-X", "utf8", "-c", expression, config["remote_root"]])
+        if local: script=[config['remote_python'],'-X','utf8','-c',expression,config['remote_root']]
         deployed = self.transport(script, payload, config)
         write_json(self.root / "nodes" / (identifier(self.node) + ".json") if self.node else self.root / "connection.json", config)
         probe = self.rpc({"action": "probe"})
@@ -188,13 +234,13 @@ class Harness:
             write_json(path, pending)
         return {"queued": len(pending), "delivery": "Included in the next submitted turn; no mid-turn interruption"}
 
-    def submit(self, name, task, stage, allowed_files, acceptance, validation):
+    def submit(self, name, task, stage, allowed_files, acceptance, validation, job_id=None, session_channel=None):
         project = self.project(name)
         if not task.strip() or not acceptance.strip() or not validation.strip():
             raise ValueError("Task, acceptance and validation are required")
         if stage == "implement" and not allowed_files.strip():
             raise ValueError("Implementation needs an explicit ownership scope")
-        with lock(self.root / "registry.lock"):
+        with lock(self.root / 'submission-locks' / (name+'.lock')):
             inbox = self.root / "inbox" / (name + ".json")
             pending = read_json(inbox, [])
             contract = json.dumps({"stage": stage, "objective": task, "allowed_files_and_systems": allowed_files or "No edits; project reading only",
@@ -202,11 +248,15 @@ class Harness:
                                    "acceptance_criteria": acceptance, "validation_commands": validation,
                                    "required_return_format": "Findings/proposal, disagreements with evidence, files changed, commands and results, remaining risks",
                                    "controller_messages": pending}, ensure_ascii=False, indent=2)
-            job = "job-" + uuid.uuid4().hex
+            job = identifier(job_id) if job_id else "job-" + uuid.uuid4().hex
             path = self.root / "jobs" / job
+            if (path / 'submission.json').exists():
+                raise ValueError('Job ID already recorded; reconcile it, never resubmit')
             write_json(path / "submission.json", {"job": job, "project": name, "stage": stage, "contract": contract, "state": "submission_pending"})
             try:
-                result = self.rpc({"action": "start", "project": name, "job": job, "prompt": contract})
+                request={"action": "start", "project": name, "job": job, "prompt": contract}
+                if session_channel: request['session_channel']=session_channel
+                result = self.rpc(request)
             except RemoteRejected as exc:
                 write_json(path / "submission.json", {"job": job, "project": name, "stage": stage, "contract": contract,
                                                        "state": "submission_rejected", "error": str(exc)})

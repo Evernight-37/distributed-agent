@@ -156,6 +156,9 @@ def require_worktree(project):
 
 def rpc(request):
     action = request["action"]
+    if action.startswith('execution_'):
+        from jobrunner import rpc as execution_rpc
+        return execution_rpc(ROOT, request)
     if action == "probe":
         exe = cli_path()
         return {"hostname": os.environ.get("COMPUTERNAME"), "python": sys.executable,
@@ -225,9 +228,15 @@ def rpc(request):
             job = identifier(request["job"])
             path = job_dir(job)
             path.mkdir(parents=True, exist_ok=False)
-            session = read_json(directory / "session.json")
+            channel=request.get('session_channel')
+            session_file='session.json'
+            if channel:
+                identifier(channel)
+                session_file='channels/'+channel+'.json'
+            session = read_json(directory / session_file, {'thread_id':None})
             config = {"project": project, "job": job, "prompt": request["prompt"],
-                      "memory": read_json(directory / "memory.json"), "thread_id": session["thread_id"]}
+                      "memory": {} if channel else read_json(directory / "memory.json"), "thread_id": session["thread_id"],
+                      "session_file":session_file,"managed_turn":bool(channel)}
             write_json(path / "request.json", config)
             write_json(path / "state.json", {"job": job, "project": project["name"], "status": "starting", "created_at": now()})
             try:
@@ -324,9 +333,28 @@ def run(job):
         directory = project_dir(config["project"]["name"])
         exe = cli_path()
         command = build_command(exe, config["project"], config["thread_id"])
+        if config.get('managed_turn'):
+            command[2:2]=['--disable','apps','--disable','plugins','--disable','remote_plugin','--disable','skill_mcp_dependency_install']
+            def obj(properties):
+                return {'type':'object','additionalProperties':False,'required':list(properties),'properties':properties}
+            def array(properties): return {'type':'array','items':obj(properties)}
+            schema=obj({'reply':{'type':'string'},'done':{'type':'boolean'},
+                'messages':array({'recipient':{'type':['string','null']},'body':{'type':'string'}}),
+                'tasks':array({key:{'type':'string'} for key in ('agent','title','instructions','stage','allowed_files','acceptance','validation')}),
+                'executions':array({'template':{'type':'string'}})})
+            schema_path=path/'reply-schema.json'
+            write_json(schema_path,schema)
+            command[-1:-1]=['--output-schema',str(schema_path)]
         prompt = PEER_RULES + "\nPROJECT MEMORY:\n" + json.dumps(config["memory"], ensure_ascii=False) + "\nTASK CONTRACT:\n" + config["prompt"]
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        executor=read_json(ROOT/'executor.json',{})
+        network=executor.get('network_env',{})
+        if not isinstance(network,dict) or set(network)-{'HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','WS_PROXY','WSS_PROXY'}:
+            raise ValueError('Unsupported worker network environment')
+        for key,value in network.items():
+            if not isinstance(value,str) or '\n' in value or '\r' in value: raise ValueError('Invalid network environment')
+            env[key]=value
         with (path / "prompt.txt").open("rb") as source, (path / "stderr.log").open("wb") as error:
             proc = subprocess.Popen(command, stdin=source, stdout=subprocess.PIPE, stderr=error,
                                     cwd=config["project"]["remote_path"], env=env, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0, start_new_session=os.name != "nt")
@@ -348,7 +376,7 @@ def run(job):
                                 thread = event["thread_id"]
                                 state["thread_id"] = thread
                                 with lock(ROOT / "registry.lock"):
-                                    write_json(directory / "session.json", {"thread_id": thread, "last_job": job})
+                                    write_json(directory / config.get('session_file','session.json'), {"thread_id": thread, "last_job": job})
                                 write_json(path / "state.json", state)
                             if event["type"] == "item.completed" and event.get("item", {}).get("type") == "agent_message":
                                 reports.append(event["item"].get("text", ""))
@@ -362,7 +390,7 @@ def run(job):
 
             reader = threading.Thread(target=consume_guarded, daemon=True)
             reader.start()
-            deadline = time.monotonic() + config["project"]["timeout"]
+            deadline = time.monotonic() + (min(config["project"]["timeout"],120) if config.get('managed_turn') else config["project"]["timeout"])
             cancelled = timed_out = False
             while proc.poll() is None:
                 cancelled = (path / "cancel.json").exists()

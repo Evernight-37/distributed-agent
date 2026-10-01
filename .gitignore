@@ -16,4 +16,9 @@ memory/
 inbox/
 secrets/
 agent-harness-data/
+*.sqlite3*
+executions/
+group_import.json
+local-node.json
+tunnels/
 .env*

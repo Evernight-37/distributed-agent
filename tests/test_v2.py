@@ -10,7 +10,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import controller  # noqa: E402
-import panel  # noqa: E402
+from tests import v2_panel_fixture as panel  # noqa: E402
 import worker  # noqa: E402
 from common import write_json  # noqa: E402
 
