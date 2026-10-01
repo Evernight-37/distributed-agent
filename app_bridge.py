@@ -48,6 +48,8 @@ class AppBridge:
     def _rpc(self,operation,payload=None,server=None):
         if not self.identity: raise PermissionError('请先解锁账户')
         server=server or self.profile['server']; challenge=self._post(server,{'action':'challenge','public_key':self.identity['public_key']})
+        if operation=='message' and not {'mention_agent_id','anchored_reply_draft'}.issubset(set(challenge.get('features',[]))):
+            raise RuntimeError('协作服务版本过旧。请让托管电脑更新应用并重启协作服务后再发送消息。')
         envelope=sign_envelope(self.identity,{'domain':'harness-account-request-v1','nonce':challenge['nonce'],'operation':operation,'payload':payload or {}})
         return self._post(server,{'action':'rpc','envelope':envelope})
     def _save_profile(self,password):
@@ -355,7 +357,33 @@ class AppBridge:
         if action=='codex-cli-status':
             if not self.profile or not self.identity:raise PermissionError('请先登录')
             from worker import cli_status
-            return cli_status(self._runtime().root)
+            saved=read_json(self.root/'codex-cli.json',{})
+            if isinstance(saved,dict) and isinstance(saved.get('path'),str) and saved['path'] and Path(saved['path']).is_file():
+                return {'found':True,'configured':saved.get('mode')=='manual','path':saved['path'],
+                        'version':saved.get('version','')}
+            if isinstance(saved,dict) and saved.get('mode')=='manual':
+                return {'found':False,'configured':True,'error':'设置的 Codex 路径已失效，请重新选择程序'}
+            if isinstance(saved,dict) and saved.get('mode')=='auto' and not saved.get('path'):
+                return {'found':False,'configured':False,'error':saved.get('error','未找到可运行的 Codex CLI；请点击重新检测')}
+            result=cli_status(self._runtime().root)
+            write_json(self.root/'codex-cli.json',{'path':result.get('path',''),'version':result.get('version',''),
+                                                   'error':result.get('error',''),'mode':'auto'})
+            if result['found']:
+                for receiver in (self.root/'receivers').glob('device-*'):
+                    if receiver.is_dir():self._sync_cli(DesktopRuntime(receiver),result['path'])
+            return result
+        if action=='codex-cli-redetect':
+            if not self.profile or not self.identity:raise PermissionError('请先登录')
+            from worker import cli_status
+            for receiver in (self.root/'receivers').glob('device-*'):
+                if receiver.is_dir():self._sync_cli(DesktopRuntime(receiver),'')
+            result=cli_status(self._runtime().root)
+            selected=result.get('path','') if result.get('found') else ''
+            for receiver in (self.root/'receivers').glob('device-*'):
+                if receiver.is_dir():self._sync_cli(DesktopRuntime(receiver),selected)
+            write_json(self.root/'codex-cli.json',{'path':selected,'version':result.get('version',''),
+                                                   'error':result.get('error',''),'mode':'auto'})
+            return result
         if action=='codex-cli-choose':
             if not self.profile or not self.identity:raise PermissionError('请先登录')
             if not self.window:raise RuntimeError('文件选择器尚未就绪')
@@ -375,9 +403,16 @@ class AppBridge:
             for path in receivers.glob('device-*'):
                 if path.is_dir() and path.resolve().parent==receivers.resolve():
                     self._sync_cli(DesktopRuntime(path),selected)
-            write_json(self.root/'codex-cli.json',{'path':selected})
             from worker import cli_status
-            return cli_status(self._runtime().root)
+            result=cli_status(self._runtime().root)
+            if not selected and result.get('found'):
+                selected=result['path']
+                for path in receivers.glob('device-*'):
+                    if path.is_dir() and path.resolve().parent==receivers.resolve():
+                        self._sync_cli(DesktopRuntime(path),selected)
+            write_json(self.root/'codex-cli.json',{'path':selected,'version':result.get('version',''),
+                                                     'error':result.get('error',''),'mode':'manual' if data.get('path','').strip() else 'auto'})
+            return result
         if action=='proxy-save':
             if not self.profile or not self.identity:raise PermissionError('请先登录')
             setting=validate_local_proxy(data)

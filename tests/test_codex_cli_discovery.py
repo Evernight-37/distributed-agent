@@ -31,6 +31,23 @@ class CodexCliDiscoveryTests(unittest.TestCase):
             self.assertFalse(result["found"])
             self.assertIn("重新选择", result["error"])
 
+    def test_app_caches_detected_cli_until_explicit_redetect(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            executable = root / 'codex.exe'
+            executable.write_bytes(b'')
+            bridge = AppBridge(root)
+            bridge.profile = {'node': 'device-local', 'server': 'http://127.0.0.1:8765'}
+            bridge.identity = {'account_id': 'local'}
+            detected = {'found': True, 'configured': False, 'path': str(executable), 'version': '0.300.1'}
+            with patch('worker.cli_status', return_value=detected) as probe:
+                self.assertTrue(bridge.invoke('codex-cli-status')['result']['found'])
+                self.assertTrue(bridge.invoke('codex-cli-status')['result']['found'])
+                self.assertEqual(probe.call_count, 1)
+                self.assertEqual(read_json(root / 'codex-cli.json')['path'], str(executable))
+                self.assertTrue(bridge.invoke('codex-cli-redetect')['result']['found'])
+                self.assertEqual(probe.call_count, 2)
+
     @unittest.skipUnless(os.name == "nt", "Windows npm shims are .cmd files")
     def test_path_cli_is_detected_outside_standard_directories(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -63,7 +80,9 @@ class CodexCliDiscoveryTests(unittest.TestCase):
             self.assertTrue(bridge.invoke("codex-cli-status")["result"]["found"])
             cleared = bridge.invoke("codex-cli-save", {"path": ""})
             self.assertTrue(cleared["ok"])
-            self.assertNotIn("cli_path", read_json(receiver / "executor.json"))
+            self.assertEqual(read_json(root / "codex-cli.json")["mode"], "auto")
+            if cleared["result"]["found"]:
+                self.assertEqual(read_json(receiver / "executor.json")["cli_path"], cleared["result"]["path"])
 
 
 if __name__ == "__main__":

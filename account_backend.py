@@ -28,7 +28,7 @@ class AccountBackend:
             public=data['public_key'];decode(public,32);nonce=secrets.token_urlsafe(32)
             with self.store.connect() as db:
                 db.execute('DELETE FROM account_challenges WHERE expires<?',(time.time(),));db.execute('INSERT INTO account_challenges VALUES(?,?,?)',(nonce,public,time.time()+60))
-            return {'nonce':nonce,'expires_in':60}
+            return {'nonce':nonce,'expires_in':60,'features':['mention_agent_id','anchored_reply_draft']}
         if action=='request-device':
             public=data['public_key'];decode(public,32);name=self._name(data.get('name','新电脑'));code=secrets.token_urlsafe(24);rid='request-'+secrets.token_hex(16)
             with self.store.connect() as db:

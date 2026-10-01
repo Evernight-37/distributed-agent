@@ -2,10 +2,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from app_bridge import AppBridge
 from appserver_client import PublicReplyDecoder
 from collaboration_store import Store
 from coordinator import Coordinator
+from panel import action as panel_action
 
 
 class Backend:
@@ -98,6 +101,22 @@ class StreamingTests(unittest.TestCase):
         with self.store.connect() as db:
             tasks = [r['agent_id'] for r in db.execute('SELECT agent_id FROM tasks')]
         self.assertEqual(tasks, ['admin'])
+
+    def test_legacy_panel_action_preserves_explicit_mention(self):
+        panel_action(self.store, {'id': self.owner}, {'action': 'message', 'project': self.project,
+                     'body': 'Please review', 'mention_agent_id': 'peer'}, self.backend)
+        self.coordinator.wake_messages()
+        with self.store.connect() as db:
+            self.assertEqual([r['agent_id'] for r in db.execute('SELECT agent_id FROM tasks')], ['peer'])
+
+    def test_desktop_refuses_message_when_team_service_is_too_old(self):
+        bridge = AppBridge(Path(self.tmp.name) / 'app')
+        bridge.identity = {'public_key': 'unused'}
+        bridge.profile = {'server': 'http://127.0.0.1:8765'}
+        with patch.object(bridge, '_post', return_value={'nonce': 'nonce'}) as post:
+            with self.assertRaisesRegex(RuntimeError, '版本过旧'):
+                bridge._rpc('message', {'project': self.project, 'body': 'hello'})
+        self.assertEqual(post.call_count, 1)
 
     def test_public_reply_decoder_never_emits_private_fields(self):
         decoder = PublicReplyDecoder()

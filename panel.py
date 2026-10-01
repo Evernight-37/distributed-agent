@@ -30,7 +30,7 @@ def action(store, user, data, backend):
     if op == 'configure-agent':
         if isinstance(backend, PullBackend): raise PermissionError('模型与资源设置由机器主人在本地控制台修改')
         return store.configure_agent(who, data, backend)
-    if op == 'message': return store.message(who, data['project'], data['body'], data.get('recipient_id'))
+    if op == 'message': return store.message(who, data['project'], data['body'], data.get('recipient_id'), data.get('mention_agent_id'))
     if op == 'task': return store.task(who, data)
     if op in {'pause-project', 'renew-budget'}:
         with store.connect() as db:
