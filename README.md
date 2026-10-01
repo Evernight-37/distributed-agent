@@ -4,6 +4,8 @@
 
 **第一次使用：[图解新手教程](http://127.0.0.1:8765/guide) · [GitHub 上的逐步教程](docs/QUICKSTART.md)**
 
+下一版界面正在按“本地账户 → 控制台 → 项目 → 设置”重做。[账户与多设备设计](docs/APP-DESIGN.md)和 [可点击交互稿](web/design.html)描述目标体验；交互稿仅含示例数据，不连接真实账户或启动 agent，当前正式应用尚未迁移。
+
 ```mermaid
 flowchart LR
     A[创建账户 / 登录] --> B[创建或加入项目]
