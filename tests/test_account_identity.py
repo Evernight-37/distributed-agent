@@ -39,12 +39,6 @@ class IdentityTests(unittest.TestCase):
         result=self.call(self.root,'dashboard',{});self.assertEqual(result['employees'],[])
         with self.store.connect() as db:
             row=db.execute('SELECT * FROM users WHERE id=?',(self.root['account_id'],)).fetchone();self.assertEqual(len(row['password_hash']),128)
-    def test_project_owner_can_restore_auto_turn_budget(self):
-        self.register()
-        project=self.call(self.root,'create-project',{'name':'Budget test'})['id']
-        self.assertEqual(self.call(self.root,'renew-budget',{'project':project,'budget':30})['budget_remaining'],30)
-        with self.store.connect() as db:
-            self.assertEqual(db.execute('SELECT budget_remaining FROM projects WHERE id=?',(project,)).fetchone()[0],30)
     def test_existing_root_identity_accepts_invite_on_another_service(self):
         with tempfile.TemporaryDirectory() as other_dir:
             other_store=Store(Path(other_dir));other=AccountBackend(other_store,PullBackend(other_store))

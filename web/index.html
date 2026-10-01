@@ -182,7 +182,7 @@
       const main=$('projectView'); main.replaceChildren();
       if (!state.view) { main.append(el('div','项目就是 agent 工作群。先创建项目，再接入你拥有的机器上的 agent。','card empty')); return; }
       const p=state.view.project, header=el('div',undefined,'row between'), title=el('div');
-      title.append(el('h1',p.name),el('div',`群主：${ownerName(p.owner_id)} · 管理员：${p.admin_agent_name || '未设置'} · 剩余 ${state.view.budget_remaining} 轮${p.paused?' · 已暂停':''}`,'small muted'));
+      title.append(el('h1',p.name),el('div',`群主：${ownerName(p.owner_id)} · 管理员：${p.admin_agent_name || '未设置'}${p.paused?' · 已暂停':''}`,'small muted'));
       header.append(title); main.append(header);
       const tabs=el('nav',undefined,'tabs');
       for (const [id,label] of [['chat','群聊'],['tasks','任务与后台作业'],['members','成员与设置']]) {
@@ -270,10 +270,7 @@
           catch(error){notice(error.message);}
         }));
         actions.append(button(state.view.project.paused?'恢复协作':'暂停协作',()=>run('pause-project',{project:state.selected,paused:!state.view.project.paused},'设置已更新；暂停不会停止已运行的任务。')));
-        actions.append(button('补充协作轮次',()=>{
-          const form=modal('协作轮次上限',f=>{const i=field(f,'新的剩余额度（1–200）','budget',20,'number');i.min=1;i.max=200;});
-          form.onsubmit=async e=>{e.preventDefault();if(await run('renew-budget',{project:state.selected,budget:Number(formValues(form).budget)}))$('dialog').close();};
-        })); settings.append(actions,el('p','管理员安排分工；机器所有者决定模型、思考强度和后台命令。','small muted')); main.append(settings);
+        settings.append(actions,el('p','管理员安排分工；机器所有者决定模型、思考强度和后台命令。','small muted')); main.append(settings);
       }
       main.append(el('p','共享面板只负责项目、消息和任务队列。每个人在自己的机器上选择模型、思考强度、工作目录和命令权限。','small muted'));
     }

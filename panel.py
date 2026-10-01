@@ -32,17 +32,12 @@ def action(store, user, data, backend):
         return store.configure_agent(who, data, backend)
     if op == 'message': return store.message(who, data['project'], data['body'], data.get('recipient_id'), data.get('mention_agent_id'))
     if op == 'task': return store.task(who, data)
-    if op in {'pause-project', 'renew-budget'}:
+    if op == 'pause-project':
         with store.connect() as db:
             project = store.require_member(db, data['project'], who)
-            if project['owner_id'] != who: raise PermissionError('只有群主可以暂停或恢复额度')
-            if op == 'pause-project':
-                if not isinstance(data['paused'], bool): raise ValueError('paused 必须为布尔值')
-                db.execute('UPDATE projects SET paused=? WHERE id=?', (int(data['paused']), project['id']))
-            else:
-                budget = int(data.get('budget', 20))
-                if not 1 <= budget <= 200: raise ValueError('额度为 1–200 轮')
-                db.execute('UPDATE projects SET budget_remaining=? WHERE id=?', (budget, project['id']))
+            if project['owner_id'] != who: raise PermissionError('只有群主可以暂停或恢复协作')
+            if not isinstance(data['paused'], bool): raise ValueError('paused 必须为布尔值')
+            db.execute('UPDATE projects SET paused=? WHERE id=?', (int(data['paused']), project['id']))
             store.log(db, who, op, {'project': project['id']})
         return {'updated': True}
     if op == 'refresh-task':

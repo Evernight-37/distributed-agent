@@ -329,8 +329,6 @@ class Store:
         if agent.get('configuring'): raise ValueError('机器配置尚未确认；请所有者重新确认设置')
         if project['paused']:
             raise ValueError('项目已暂停')
-        if project['budget_remaining'] <= 0:
-            raise ValueError('自动协作轮次已用完，请群主恢复额度')
         stage=data.get('stage','discuss')
         if stage not in {'discuss','review','implement'}:
             raise ValueError('未知任务阶段')
@@ -349,7 +347,6 @@ class Store:
         recipient = data.get('reply_to') if private else None
         db.execute('INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task) VALUES(?,?,?,?,?,?,?)',
                    (project['id'], agent['id'], 'agent', recipient, '（正在回复…）', time.time(), 'draft:' + task))
-        db.execute('UPDATE projects SET budget_remaining=budget_remaining-1 WHERE id=?',(project['id'],))
         self.log(db,actor,'task',{'task':task,'agent':agent['id']})
         return {'id':task,'state':'queued'}
 

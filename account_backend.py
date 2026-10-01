@@ -156,16 +156,6 @@ class AccountBackend:
         if op in {'join','join-project'}:return self.store.join(user,p['invite'])
         if op=='invite':return self.store.invite(user,p['project'])
         if op=='message':return self.store.message(user,p['project'],p['body'],p.get('recipient_id'),p.get('mention_agent_id'))
-        if op=='renew-budget':
-            budget=p.get('budget',20)
-            if isinstance(budget,bool) or not isinstance(budget,int) or not 1<=budget<=200:
-                raise ValueError('自动协作额度须为 1 到 200 轮')
-            with self.store.connect() as db:
-                project=self.store.require_member(db,p['project'],user)
-                if project['owner_id']!=user:raise PermissionError('只有群主可以恢复自动协作额度')
-                db.execute('UPDATE projects SET budget_remaining=? WHERE id=?',(budget,project['id']))
-                self.store.log(db,user,'renew-budget',{'project':project['id'],'budget':budget})
-            return {'budget_remaining':budget}
         if op=='set-admin':
             if p.get('agent'):return self.store.set_admin(user,p['project'],p['agent']) or {'updated':True}
             with self.store.connect() as db:

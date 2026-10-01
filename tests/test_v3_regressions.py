@@ -123,12 +123,12 @@ class Regressions(unittest.TestCase):
         self.assertEqual(self.backend.submissions,[])
         with self.store.connect() as db: self.assertEqual(db.execute('SELECT state FROM tasks WHERE id=?',(task,)).fetchone()[0],'unknown')
 
-    def test_cross_owner_cannot_approve_execution_or_renew_budget(self):
+    def test_cross_owner_cannot_approve_execution(self):
         a,_=self.agents()
         with self.store.connect() as db:
             db.execute("INSERT INTO executions(id,project_id,agent_id,template,state,created_at) VALUES('exec',?,?,?,'awaiting_owner',0)",(self.project,a,'train'))
-        for data in ({'action':'execution-approve','execution':'exec'},{'action':'renew-budget','project':self.project,'budget':200}):
-            with self.assertRaises(PermissionError): action(self.store,self.other,data,self.backend)
+        with self.assertRaises(PermissionError):
+            action(self.store,self.other,{'action':'execution-approve','execution':'exec'},self.backend)
         with self.store.connect() as db: self.assertEqual(db.execute("SELECT state FROM executions WHERE id='exec'").fetchone()[0],'awaiting_owner')
 
     def test_cross_owner_cannot_manually_schedule_other_agent(self):
@@ -151,14 +151,16 @@ class Regressions(unittest.TestCase):
         with self.assertRaises(RuntimeError): self.store.configure_agent(self.owner['id'],{'agent':a,'model':'test','effort':'high','timeout':45,'enabled':True},self.backend)
         with self.assertRaises(ValueError): self.finished(a,'{}')
 
-    def test_budget_and_pause_prevent_new_calls(self):
+    def test_legacy_budget_zero_does_not_prevent_new_calls(self):
         a,_=self.agents()
         with self.store.connect() as db: db.execute('UPDATE projects SET budget_remaining=0 WHERE id=?',(self.project,))
         self.store.message(self.owner['id'],self.project,'new message')
         Coordinator(self.store,self.backend).tick()
-        self.assertEqual(self.backend.submissions,[])
-        action(self.store,self.owner,{'action':'renew-budget','project':self.project,'budget':20},self.backend)
+        self.assertEqual(len(self.backend.submissions),1)
+    def test_pause_prevents_new_calls(self):
+        self.agents()
         action(self.store,self.owner,{'action':'pause-project','project':self.project,'paused':True},self.backend)
+        self.store.message(self.owner['id'],self.project,'new message')
         Coordinator(self.store,self.backend).tick()
         self.assertEqual(self.backend.submissions,[])
 
