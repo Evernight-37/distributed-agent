@@ -230,9 +230,7 @@ class PackagedReceiverTests(unittest.TestCase):
                 self.assertEqual(state['bindings'][0]['model'], 'owner-model')
                 self.assertNotIn('device_token', json.dumps(state))
             finally:
-                runtime.stop()
-                deadline = time.monotonic() + 8
-                while runtime.status()['running'] and time.monotonic() < deadline: time.sleep(.05)
+                runtime.stop_and_wait(timeout=20)
                 self.assertFalse(runtime.status()['running'])
 
 

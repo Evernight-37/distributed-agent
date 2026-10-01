@@ -12,7 +12,7 @@ VERSION = '3.14.7'
 URL = f'https://www.python.org/ftp/python/{VERSION}/python-{VERSION}-embed-amd64.zip'
 # SHA-256 published on the Python.org release page; never run an unverified download.
 SHA256 = 'd297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15'
-CLIENT_FILES = ('common.py', 'pull_worker.py', 'local_panel.py', 'desktop_service.py', 'desktop_runtime.py',
+CLIENT_FILES = ('common.py', 'pull_worker.py', 'local_panel.py', 'desktop_service.py', 'desktop_runtime.py', 'service_install.py', 'host_control.py', 'app_lifecycle.py',
                 'worker.py', 'jobrunner.py', 'panel.py', 'broker.py', 'collaboration_store.py', 'coordinator.py', 'controller.py',
                 'account_identity.py', 'account_backend.py', 'owner_backend.py', 'owner_worker.py',
                 'app_bridge.py', 'production_app.py', 'team_service.py')

@@ -15,20 +15,27 @@ from pull_worker import NoRedirect
 
 
 def assets():
-    return Path(sys.executable).parent / 'client' if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+    if getattr(sys, 'frozen', False):
+        from service_install import installed_bundle
+        return installed_bundle() / 'client'
+    return Path(__file__).resolve().parent
 
 
 def python_command():
-    return str(Path(sys.executable).parent / 'runtime' / 'python.exe') if getattr(sys, 'frozen', False) else sys.executable
+    if getattr(sys, 'frozen', False):
+        from service_install import installed_bundle
+        return str(installed_bundle() / 'runtime' / 'python.exe')
+    return sys.executable
 
 
 class DesktopRuntime:
     def __init__(self, root):
         self.root = Path(root).expanduser().resolve()
         self.config_path = self.root / 'pull-config.json'
+        self.control_path = self.root / 'desktop-service.json'
 
     def _control(self, operation, payload=None):
-        info = read_json(self.root / 'desktop-service.json', {})
+        info = read_json(self.control_path, {})
         if not info: raise RuntimeError('请先连接这台机器')
         from urllib.parse import urlsplit
         address = urlsplit(info['url'])
@@ -75,7 +82,10 @@ class DesktopRuntime:
         with lock(self.root / 'desktop-start.lock'):
             existing = self.status()
             if existing.get('stopping'): raise RuntimeError('正在停止接收，请稍后再启动')
-            if existing['running']: return existing
+            if existing['running']:
+                info = read_json(self.control_path, {})
+                if info.get('assets') == str(assets()): return existing
+                self.stop_and_wait()
             flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS if os.name == 'nt' else 0
             with (self.root / 'desktop-service.stdout.log').open('ab') as out, (self.root / 'desktop-service.stderr.log').open('ab') as err:
                 process = subprocess.Popen([python_command(), '-X', 'utf8', str(assets() / 'desktop_service.py'), 'serve', str(self.root)],
@@ -93,6 +103,16 @@ class DesktopRuntime:
     def stop(self):
         if self.status()['running']: self._control('stop', {})
         return {'stopping': True}
+
+    def stop_and_wait(self, timeout=60):
+        self.stop()
+        deadline = time.monotonic() + timeout
+        while self.status()['running']:
+            if time.monotonic() >= deadline:
+                raise RuntimeError('后台服务仍在完成当前操作，窗口将保留。请稍后重试完全退出。')
+            time.sleep(.1)
+        with lock(self.root / 'pull-worker.lock'): pass
+        return {'stopped': True}
 
     def fetch_state(self):
         return self._control('state')
@@ -131,7 +151,7 @@ class DesktopRuntime:
                 if not ready():
                     flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS if os.name == 'nt' else 0
                     with (state / 'panel.stdout.log').open('ab') as out, (state / 'panel.stderr.log').open('ab') as err:
-                        process = subprocess.Popen([python_command(), '-X', 'utf8', str(assets() / 'panel.py'), '--state', str(state)],
+                        process = subprocess.Popen([python_command(), '-X', 'utf8', str(assets() / 'panel.py'), '--state', str(state), '--desktop-control'],
                             cwd=assets(), stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                             creationflags=flags, start_new_session=os.name != 'nt')
                     threading.Thread(target=process.wait, daemon=True).start()

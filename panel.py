@@ -213,6 +213,7 @@ def main():
     parser.add_argument('--state', default=str(DEFAULT_STATE))
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--origin', help='HTTPS reverse-proxy origin; backend remains loopback-only')
+    parser.add_argument('--desktop-control', action='store_true', help='Enable owner-only local application lifecycle control')
     args = parser.parse_args()
     if args.origin:
         parsed = urlsplit(args.origin)
@@ -222,6 +223,9 @@ def main():
         coordinator = Coordinator(handler.store, handler.backend)
         threading.Thread(target=coordinator.run, daemon=True).start()
         server = ThreadingHTTPServer(('127.0.0.1', args.port), handler)
+        if args.desktop_control:
+            from host_control import managed_handler
+            server.RequestHandlerClass = managed_handler(handler, server, Path(args.state)/'desktop-host.json')
         try: server.serve_forever()
         finally:
             coordinator.stop_event.set()

@@ -19,6 +19,7 @@ class AppBridge:
         self.root.mkdir(parents=True,exist_ok=True)
         self.identity=None;self.profile=None;self.window=None;self.pending=None;self.inspected={}
         self.guard=threading.RLock()
+        self.allow_window_close=False
     def _profiles(self):
         return [read_json(p) for p in (self.root/'profiles').glob('*.json')]
     def _post(self,server,data):
@@ -76,6 +77,18 @@ class AppBridge:
             with self.guard: return {'ok':True,'result':self._invoke(action,data or {})}
         except Exception as exc: return {'ok':False,'error':str(exc)}
     def _invoke(self,action,data):
+        if action=='app-services':
+            from app_lifecycle import Lifecycle
+            return Lifecycle(self.root).status()
+        if action in {'app-exit','app-background'}:
+            if action=='app-exit':
+                from app_lifecycle import Lifecycle
+                result=Lifecycle(self.root).stop()
+            else: result={'background':True}
+            self.allow_window_close=True
+            if self.window:
+                threading.Timer(.3,self.window.destroy).start()
+            return result
         if action=='local-status': return {'profiles':[{'id':p['id'],'username':p['username']} for p in self._profiles()],'unlocked':bool(self.identity),'server':(self.profile or {}).get('server','http://127.0.0.1:8765')}
         if action=='register':
             identity=generate_identity();server=self._server(data.get('server'))
@@ -152,7 +165,7 @@ class AppBridge:
                 result['server']=entry.get('url') if entry['state']=='ready' else self.profile['server']
             return result
         if action=='receiver-start': self._enroll();return self._runtime().status()
-        if action=='receiver-stop': return self._runtime().stop()
+        if action=='receiver-stop': return self._runtime().stop_and_wait()
         if action=='approve-execution': return self._runtime()._control('action',dict(action='approve-execution',**data))
         if action=='settings-get':
             from team_service import TeamService
@@ -181,5 +194,6 @@ class AppBridge:
         if action=='import-legacy': raise ValueError('旧版账户与会话不会自动合并。请继续使用旧版入口；迁移工具将在核对项目映射后提供。')
         raise ValueError('未知应用操作')
     def close(self):
-        if self.profile and not self.profile.get('background',True): self._runtime().stop()
+        # All service operations happen before the user-approved window close.
+        # The native closed event must never block on network/process cleanup.
         self.identity=None;self.pending=None

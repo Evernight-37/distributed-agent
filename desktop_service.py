@@ -115,7 +115,7 @@ def serve(root):
                 return bool(session and browser_sessions.get(session.value, 0) > time.monotonic())
 
         server.RequestHandlerClass = Handler
-        write_json(root / 'desktop-service.json', {'url': origin, 'key': key, 'instance': instance, 'pid': os.getpid()})
+        write_json(root / 'desktop-service.json', {'url': origin, 'key': key, 'instance': instance, 'pid': os.getpid(), 'assets': str(Path(__file__).resolve().parent)})
         if os.name != 'nt': (root / 'desktop-service.json').chmod(0o600)
         else:
             # Use the same ACL routine as enrollment without exposing the key.

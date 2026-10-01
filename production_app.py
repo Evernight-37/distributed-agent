@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from desktop_runtime import assets
@@ -15,6 +16,13 @@ def main():
         def invoke(self,action,data=None): return bridge.invoke(action,data)
     window=webview.create_window('Agent Harness · 协作工作台',url=str(assets()/'web'/'app.html'),js_api=API(),width=1220,height=820,min_size=(800,600))
     bridge.window=window
+    def closing():
+        if bridge.allow_window_close or args.smoke_report: return True
+        # WinForms raises closing on its UI thread. Queue JavaScript after the
+        # cancellation so a synchronous WebView call cannot deadlock the form.
+        threading.Thread(target=lambda: window.evaluate_js('window.requestAppClose && window.requestAppClose()'), daemon=True).start()
+        return False
+    window.events.closing += closing
     window.events.closed += bridge.close
     def loaded():
         if args.smoke_report:
