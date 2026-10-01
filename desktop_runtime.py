@@ -86,7 +86,7 @@ class DesktopRuntime:
             while time.monotonic() < deadline:
                 status = self.status()
                 if status['running']: return status
-                if process.poll() is not None: raise RuntimeError('接收服务未启动。请检查是否已有旧执行端使用此数据目录')
+                if process.poll() is not None: raise RuntimeError('后台接收服务启动失败。请保留已有账户，查看 desktop-service.stderr.log 启动日志；不要重复创建账户')
                 time.sleep(.15)
             raise RuntimeError('服务还未就绪。若原执行端仍在运行，请先停止它；不要重新配对')
 

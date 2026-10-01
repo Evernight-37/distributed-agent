@@ -132,6 +132,20 @@ class DesktopServiceTests(unittest.TestCase):
 
 
 class DesktopRuntimeContractTests(unittest.TestCase):
+    def test_windows_sid_ignores_chinese_username_encoding(self):
+        sid = 'S-1-5-21-123-456-789-1001'
+        for encoding in ('gbk', 'utf-8'):
+            output = ('"电脑\\中文用户","' + sid + '"\r\n').encode(encoding)
+            with self.subTest(encoding=encoding), mock.patch('subprocess.check_output', return_value=output) as command:
+                self.assertEqual(desktop_service.windows_user_sid(), sid)
+                self.assertNotIn('text', command.call_args.kwargs)
+                self.assertNotIn('encoding', command.call_args.kwargs)
+
+    def test_windows_sid_rejects_missing_or_invalid_identity(self):
+        for output in (b'', b'"user","not-a-sid"\r\n', b'"S-1-5-21-1001","invalid"\r\n'):
+            with self.subTest(output=output), mock.patch('subprocess.check_output', return_value=output):
+                with self.assertRaises(RuntimeError): desktop_service.windows_user_sid()
+
     def test_status_and_control_do_not_expose_service_key(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -200,7 +214,7 @@ class PackagedReceiverTests(unittest.TestCase):
         self.addCleanup(broker.server_close); self.addCleanup(broker.shutdown)
         bundle = Path(desktop_runtime.__file__).parent / 'dist/AgentHarness'
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(desktop_runtime, 'python_command', return_value=str(bundle / 'runtime/python.exe')), mock.patch.object(desktop_runtime, 'assets', return_value=bundle / 'client'):
-            root = Path(directory); runtime = desktop_runtime.DesktopRuntime(root / 'data')
+            root = Path(directory); runtime = desktop_runtime.DesktopRuntime(root / '中文用户数据')
             runtime.pair(f'http://127.0.0.1:{broker.server_address[1]}', 'synthetic-one-time-code')
             with self.assertRaises(ValueError): runtime.pair('http://127.0.0.1:1', 'again')
             try:

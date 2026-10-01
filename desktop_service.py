@@ -2,6 +2,7 @@
 import hmac
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -14,6 +15,17 @@ from pathlib import Path
 from common import identifier, lock, read_json, validate_project, write_json
 from local_panel import handler_for
 from pull_worker import Connector, enroll
+
+
+def windows_user_sid():
+    # whoami uses a Windows code page, even when Python runs with -X utf8.
+    # Only the final ASCII SID field is needed; never decode the username.
+    import subprocess
+    output = subprocess.check_output(['whoami.exe', '/user', '/fo', 'csv', '/nh'])
+    match = re.search(rb'"(S-1-[0-9]+(?:-[0-9]+)+)"\s*$', output)
+    if not match:
+        raise RuntimeError('无法确认当前 Windows 用户身份，接收服务未启动')
+    return match.group(1).decode('ascii')
 
 
 def serve(root):
@@ -107,8 +119,8 @@ def serve(root):
         if os.name != 'nt': (root / 'desktop-service.json').chmod(0o600)
         else:
             # Use the same ACL routine as enrollment without exposing the key.
-            import csv, subprocess
-            sid = next(csv.reader(subprocess.check_output(['whoami.exe', '/user', '/fo', 'csv', '/nh'], text=True, encoding='utf-8').splitlines()))[-1]
+            import subprocess
+            sid = windows_user_sid()
             result = subprocess.run(['icacls.exe', str(root / 'desktop-service.json'), '/inheritance:r', '/grant:r', '*' + sid + ':F', '*S-1-5-18:F'], capture_output=True)
             if result.returncode: raise RuntimeError('本机服务权限设置失败')
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
