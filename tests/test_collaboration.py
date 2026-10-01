@@ -14,6 +14,7 @@ class FakeBackend:
         self.configured = []
         self.submissions = []
         self.projects = {}
+        self.report = None
 
     def project(self, name):
         return self.projects[name]
@@ -27,7 +28,7 @@ class FakeBackend:
         return {"job": job}
 
     def status(self, job, fetch=True):
-        return {"status": "needs_review", "report": json.dumps({"reply": "已完成"})}
+        return {"status": "needs_review", "report": self.report or json.dumps({"reply": "已完成"})}
 
 
 class CollaborationTests(unittest.TestCase):
@@ -100,6 +101,20 @@ class CollaborationTests(unittest.TestCase):
         self.add_agent(self.owner["id"], "backend-a", "空闲")
         Coordinator(self.store, self.backend).tick()
         self.assertEqual(self.backend.submissions, [])
+
+    def test_checkpoint_is_not_posted_before_actual_reply(self):
+        agent = self.add_agent(self.owner["id"], "backend-a", "执行者")
+        self.store.set_admin(self.owner["id"], self.project, agent)
+        self.store.task(self.owner["id"], {"project": self.project, "agent": agent, "title": "讨论",
+            "instructions": "回复", "stage": "discuss", "allowed_files": "只读", "acceptance": "回复", "validation": "检查"})
+        self.backend.report = json.dumps({"reply": "[CHECKPOINT] 正在整理上下文",
+                                          "messages": [{"recipient": None, "body": "这是最终回复"}]})
+        coordinator = Coordinator(self.store, self.backend)
+        coordinator.dispatch()
+        coordinator.collect()
+        bodies = [m["body"] for m in self.store.project_view(self.owner["id"], self.project)["messages"]]
+        self.assertIn("这是最终回复", bodies)
+        self.assertFalse(any(body.startswith("[CHECKPOINT]") for body in bodies))
 
 
 if __name__ == "__main__":

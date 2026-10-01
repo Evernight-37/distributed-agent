@@ -125,6 +125,13 @@ class AppBridge:
             else:executor.pop('network_env',None)
             executor['proxy']=setting
             write_json(path,executor)
+    def _sync_cli(self,runtime,selected):
+        path=runtime.root/'executor.json'
+        with lock(runtime.root/'executor.lock'):
+            executor=read_json(path,{})
+            if selected:executor['cli_path']=selected
+            else:executor.pop('cli_path',None)
+            write_json(path,executor)
     def _enroll(self,server=None):
         server=server or self.profile['server'];runtime=self._runtime(server)
         if not runtime.config_path.exists():
@@ -132,6 +139,8 @@ class AppBridge:
             runtime.pair(server,pair.get('code',pair.get('pair_code')))
             config=read_json(runtime.config_path);config['owner_account_id']=self.identity['account_id'];write_json(runtime.config_path,config);self._secure(runtime.config_path)
         if (self.root/'codex-proxy.json').exists():self._sync_proxy(runtime,self._proxy_settings())
+        selected=read_json(self.root/'codex-cli.json')
+        if selected is not None:self._sync_cli(runtime,selected.get('path',''))
         runtime.start()
     def _owner(self,action,node,data,server=None):
         envelope=sign_envelope(self.identity,{'domain':'harness-owner-command-v1','account_id':self.identity['account_id'],'target':node,'id':'command-'+secrets.token_hex(16),'action':action,'data':data})
@@ -332,6 +341,32 @@ class AppBridge:
         if action=='settings-get':
             from team_service import TeamService
             return {'server':self.profile['server'],'services':[{'server':server,'primary':server==self.profile['server'],'attached':server in self._attached_services()} for server in self._services()],'background':self.profile.get('background',True),'autostart':False,'data_root':str(self.root),'team_service':TeamService(self.root,self.profile['server']).status(),'proxy':self._proxy_settings()}
+        if action=='codex-cli-status':
+            if not self.profile or not self.identity:raise PermissionError('请先登录')
+            from worker import cli_status
+            return cli_status(self._runtime().root)
+        if action=='codex-cli-choose':
+            if not self.profile or not self.identity:raise PermissionError('请先登录')
+            if not self.window:raise RuntimeError('文件选择器尚未就绪')
+            import webview
+            chosen=self.window.create_file_dialog(webview.FileDialog.OPEN)
+            return {'path':chosen[0] if chosen else ''}
+        if action=='codex-cli-save':
+            if not self.profile or not self.identity:raise PermissionError('请先登录')
+            selected=data.get('path','')
+            if not isinstance(selected,str):raise ValueError('Codex 路径必须是文字')
+            selected=selected.strip()
+            if selected:
+                from worker import codex_version
+                if not Path(selected).is_absolute() or not Path(selected).is_file() or codex_version(selected) is None:
+                    raise ValueError('请选择能运行的 Codex CLI 程序（codex.exe 或 codex.cmd）')
+            receivers=self.root/'receivers'
+            for path in receivers.glob('device-*'):
+                if path.is_dir() and path.resolve().parent==receivers.resolve():
+                    self._sync_cli(DesktopRuntime(path),selected)
+            write_json(self.root/'codex-cli.json',{'path':selected})
+            from worker import cli_status
+            return cli_status(self._runtime().root)
         if action=='proxy-save':
             if not self.profile or not self.identity:raise PermissionError('请先登录')
             setting=validate_local_proxy(data)

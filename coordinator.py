@@ -44,6 +44,8 @@ class Coordinator:
             'visible_messages':visible,'task':contract,
             'protocol':'''Respond as one JSON object with reply:string, messages:[{recipient:null or agent ID,body:string}], tasks:[{agent:ID,title,instructions,stage,allowed_files,acceptance,validation}], executions:[{template:string}], done:boolean.
 Only the designated admin can delegate tasks. Peers can send public/direct messages and recommend changes with evidence.
+The reply field is the one human-facing answer for this turn. Use messages only for distinct, deliberate follow-up to another participant or the group; do not repeat reply or publish internal progress notes.
+Do not emit [CHECKPOINT]. Use [BLOCKED] or [DISAGREEMENT] only when a real blocker or disagreement requires attention.
 Do not reveal a private message into group chat unless its sender explicitly authorizes it. Human project members audit all channels.
 Keep this a short reasoning/planning turn. Never wait, poll, tail, sleep or monitor a long job in a model turn.
 For long computations, request an owner-approved execution template and finish the turn. Await a completion event or instruction without issuing more model calls.
@@ -161,8 +163,12 @@ Return only visible context; you cannot request other agents' private conversati
                 # Plain reports remain auditable; never interpret commands or guessed JSON fragments.
                 self.store._message(db,project['id'],agent['id'],'agent',task['report'][:16000] or '无报告',reply_to if private else (project['admin_agent_id'] if project['admin_agent_id']!=agent['id'] else None),task_id)
                 return
-            if answer.get('reply','').strip():
-                self.store._message(db,project['id'],agent['id'],'agent',answer['reply'],reply_to,task_id)
+            reply=answer.get('reply','').strip()
+            if reply.casefold().startswith('[checkpoint]'):
+                self.store.log(db,'scheduler','suppressed_checkpoint',{'task':task_id})
+                reply=''
+            if reply:
+                self.store._message(db,project['id'],agent['id'],'agent',reply,reply_to,task_id)
             for message in answer.get('messages',[]):
                 if not isinstance(message,dict):
                     continue
@@ -257,4 +263,4 @@ Return only visible context; you cannot request other agents' private conversati
                         if key not in pending: pending[key]=pool.submit(self.executions,execution)
                 except Exception:
                     logging.exception('Coordinator tick failed')
-                self.stop_event.wait(3)
+                self.stop_event.wait(1)

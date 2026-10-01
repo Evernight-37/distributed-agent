@@ -334,7 +334,7 @@ def main():
                 write_json(connector.root/'connector-status.json',{'online':False,'error':type(exc).__name__,'updated':time.time()})
             else: write_json(connector.root/'connector-status.json',{'online':True,'updated':time.time()})
             if args.once: break
-            time.sleep(3)
+            time.sleep(1)
 
 
 if __name__ == '__main__':

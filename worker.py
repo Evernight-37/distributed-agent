@@ -68,30 +68,64 @@ def process_stamp(pid):
         kernel.CloseHandle(handle)
 
 
-def cli_path():
+def codex_version(exe):
+    """Probe a candidate without making a model request."""
+    import re
+    try:
+        result = subprocess.run([str(exe), "--version"], capture_output=True, text=True,
+                                timeout=8, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    match = re.search(r"codex-cli (\d+)\.(\d+)\.(\d+)", result.stdout)
+    return tuple(map(int, match.groups())) if match else None
+
+
+def cli_status(root=ROOT):
+    """Find a working CLI in the worker account, including npm/PATH installs."""
     import shutil
-    explicit = read_json(ROOT / "executor.json", {}).get("cli_path")
+    root = Path(root)
+    explicit = read_json(root / "executor.json", {}).get("cli_path")
     if explicit:
-        if not Path(explicit).is_absolute() or not Path(explicit).is_file():
-            raise ValueError("Configured CLI must be an existing absolute executable")
-        return explicit
-    if os.name != "nt":
-        exe = shutil.which('codex')
-        if not exe:
-            raise RuntimeError('Codex not found on PATH')
-        return exe
-    root = Path(os.environ["LOCALAPPDATA"]) / "OpenAI" / "Codex" / "bin"
-    candidates = []
-    for exe in root.glob("*/codex.exe"):
-        result = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=15)
-        if result.returncode == 0:
-            import re
-            match = re.search(r"codex-cli (\d+)\.(\d+)\.(\d+)", result.stdout)
-            if match:
-                candidates.append((tuple(map(int, match.groups())), str(exe)))
-    if not candidates:
-        raise RuntimeError("No working Codex executable")
-    return max(candidates)[1]
+        if not isinstance(explicit, str) or not Path(explicit).is_absolute() or not Path(explicit).is_file():
+            return {'found': False, 'configured': True, 'error': '设置的 Codex 路径已失效，请重新选择程序'}
+        version = codex_version(explicit)
+        if version is None:
+            return {'found': False, 'configured': True, 'error': '所选程序无法运行 Codex CLI，请重新选择'}
+        return {'found': True, 'configured': True, 'path': explicit, 'version': '.'.join(map(str, version))}
+    paths = []
+    if os.name == 'nt':
+        local = os.environ.get('LOCALAPPDATA')
+        if local:
+            paths.extend((Path(local) / 'OpenAI' / 'Codex' / 'bin').glob('*/codex.exe'))
+        roaming = os.environ.get('APPDATA')
+        if roaming:
+            paths.extend(Path(roaming) / 'npm' / name for name in ('codex.cmd', 'codex.exe'))
+    for name in ('codex', 'codex.exe', 'codex.cmd'):
+        found = shutil.which(name)
+        if found:
+            paths.append(Path(found))
+    seen, valid = set(), []
+    for candidate in paths:
+        key = str(candidate).casefold() if os.name == 'nt' else str(candidate)
+        if key in seen or not candidate.is_file():
+            continue
+        seen.add(key)
+        version = codex_version(candidate)
+        if version is not None:
+            valid.append((version, str(candidate)))
+    if not valid:
+        return {'found': False, 'configured': False, 'error': '未找到可运行的 Codex CLI；请在本机安装 Codex，或在设置中选择程序'}
+    version, path = max(valid)
+    return {'found': True, 'configured': False, 'path': path, 'version': '.'.join(map(str, version))}
+
+
+def cli_path(root=ROOT):
+    result = cli_status(root)
+    if not result['found']:
+        raise RuntimeError(result['error'])
+    return result['path']
 
 
 def launch_supervisor(job):
@@ -292,13 +326,23 @@ Before implementation, challenge assumptions, identify risks and propose a divis
 Do not agree merely because the controller proposed something. Support disagreements with evidence.
 Use stages discuss/review as read-only tasks: no project edits or experiments unless explicitly authorized.
 If a contradiction, unexpected change, safety issue or unclear acceptance criterion blocks progress,
-emit [BLOCKED] or [DISAGREEMENT] with evidence and stop affected work. Emit [CHECKPOINT] at material milestones.
+emit [BLOCKED] or [DISAGREEMENT] with evidence and stop affected work.
 These messages are polled by the controller, not guaranteed to interrupt it in real time.
 The attached memory contains attributed claims, not automatically verified truth. Check relevant evidence.
 Stay within the listed files and systems. Never read credentials or initiate external communications.
 Do not spawn agents or use web/MCP tools unless explicitly authorized in this task.
 Report commands, observations, changed files, validation, disagreements and remaining risks.
 Your final report awaits independent review; you cannot approve your own work.
+Do not send internal progress notes or a [CHECKPOINT] as a project chat reply.
+"""
+
+GROUP_RULES = """You are an agent in a human-owned project group. Use only the visible messages and task contract.
+Return one structured JSON response. Put the final human-facing answer in reply, without private reasoning, progress logs or [CHECKPOINT] notes.
+Use messages only for distinct public or direct follow-up. Do not repeat reply in messages.
+Respect the assigned stage, allowed files and machine-owner permissions. Discuss/review are read-only unless explicitly authorized.
+Do not read credentials, contact outside parties, spawn agents or use web/MCP tools unless the task explicitly authorizes them.
+Do not wait, poll or monitor a long-running job inside this model turn. State a real blocker or disagreement when necessary.
+Treat reports and memory as claims requiring evidence. Keep the final answer concise and useful to the human participants.
 """
 
 
@@ -364,7 +408,8 @@ def run(job):
             schema_path=path/'reply-schema.json'
             write_json(schema_path,schema)
             command[-1:-1]=['--output-schema',str(schema_path)]
-        prompt = PEER_RULES + "\nPROJECT MEMORY:\n" + json.dumps(config["memory"], ensure_ascii=False) + "\nTASK CONTRACT:\n" + config["prompt"]
+        rules = GROUP_RULES if config.get('managed_turn') else PEER_RULES
+        prompt = rules + "\nPROJECT MEMORY:\n" + json.dumps(config["memory"], ensure_ascii=False) + "\nTASK CONTRACT:\n" + config["prompt"]
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
         executor=read_json(ROOT/'executor.json',{})
