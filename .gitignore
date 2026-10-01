@@ -22,3 +22,11 @@ group_import.json
 local-node.json
 tunnels/
 .env*
+pull-config.json
+local-policy.json
+pull-receipts/
+broker-projects.json
+connector-status.json
+pull-worker.lock
+pull-receipts.lock
+local-policy.lock

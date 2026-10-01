@@ -89,21 +89,21 @@ function getField(form,name) {return walk(form).find(n=>n.name===name);}
   assert.equal(vm.runInContext('state.drafts.size',context),0,'success clears sent draft');
 
   vm.runInContext("state.tab='members';render()",context);
-  assert.equal(textNodes(dom.projectView,'我的 agent 设置').length,1,'only owner gets model controls');
+  assert.equal(textNodes(dom.projectView,'查看本机设置').length,1,'only owner gets local console link');
   assert.equal(textNodes(dom.projectView,'群主控制').length,1,'project owner gets group administration');
-  await textNodes(dom.projectView,'我的 agent 设置')[0].onclick();
+  await textNodes(dom.projectView,'查看本机设置')[0].onclick();
   let form=walk(dom.dialogBody).find(n=>n.tagName==='FORM');
-  getField(form,'model').value='chosen-model';getField(form,'effort').value='high';getField(form,'timeout').value='180';
   await form.onsubmit({preventDefault(){}});await flush();
-  const config=JSON.parse(actionCalls('configure-agent')[0].body);
-  assert.equal(config.agent,'agent-1');assert.equal(config.model,'chosen-model');assert.equal(config.timeout,180);assert.equal(config.enabled,true);
+  assert.equal(actionCalls('configure-agent').length,0,'shared panel cannot configure local model settings');
 
-  await textNodes(dom.projectView,'接入我的 agent')[0].onclick();
+  await textNodes(dom.projectView,'配对我的机器')[0].onclick();
   form=walk(dom.dialogBody).find(n=>n.tagName==='FORM');
-  getField(form,'name').value='New peer';getField(form,'backend_project').value='registered-worktree';getField(form,'model').value='chosen-model';
+  getField(form,'name').value='New peer';
+  // The fake service returns no code here; exercise the request shape only.
   await form.onsubmit({preventDefault(){}});await flush();
-  const enrollment=JSON.parse(actionCalls('add-agent')[0].body);
-  assert.equal(enrollment.node,'mine');assert.equal(enrollment.backend_project,'registered-worktree');assert.equal(enrollment.project,'project-1');
+  const enrollment=JSON.parse(actionCalls('enroll-device')[0].body);
+  assert.equal(enrollment.name,'New peer');
+  assert.equal(actionCalls('add-agent').length,0,'pairing does not submit a central agent configuration');
   await textNodes(dom.projectView,'生成邀请')[0].onclick();
   form=walk(dom.dialogBody).find(n=>n.tagName==='FORM');
   assert.equal(getField(form,'invite').value,'one-use-invite');
@@ -113,9 +113,9 @@ function getField(form,name) {return walk(form).find(n=>n.name===name);}
 
   vm.runInContext("state.tab='tasks';render()",context);
   assert.equal(textNodes(dom.projectView,'取消我的 agent 任务').length,1);
-  assert.equal(textNodes(dom.projectView,'批准运行').length,1);
-  await textNodes(dom.projectView,'批准运行')[0].onclick();
-  assert.equal(JSON.parse(actionCalls('execution-approve')[0].body).execution,'exec-1');
+  assert.equal(textNodes(dom.projectView,'发送到本机确认').length,1);
+  await textNodes(dom.projectView,'发送到本机确认')[0].onclick();
+  assert.equal(JSON.parse(actionCalls('execution-approve')[0].body).execution,'exec-1','shared action only forwards the request to the local worker');
   await textNodes(dom.projectView,'明确派发任务')[0].onclick();
   form=walk(dom.dialogBody).find(n=>n.tagName==='FORM');
   for(const [name,value] of Object.entries({title:'Review',instructions:'Check files',acceptance:'No regressions',validation:'Run tests',allowed_files:'x.py'}))getField(form,name).value=value;
@@ -126,7 +126,7 @@ function getField(form,name) {return walk(form).find(n=>n.name===name);}
   // Non-owner can audit but gets no group administration controls.
   vm.runInContext("state.user={id:'human-2',username:'Bob'};state.tab='members';render()",context);
   assert.equal(textNodes(dom.projectView,'群主控制').length,0);
-  assert.equal(textNodes(dom.projectView,'我的 agent 设置').length,1);
+  assert.equal(textNodes(dom.projectView,'查看本机设置').length,1);
   await dom.logout.onclick();await flush();
   assert.equal(vm.runInContext('state.csrf',context),'anon-csrf','logout rotates back to anonymous CSRF');
   dom.authSwitch.onclick();dom.username.value='Invited';dom.password.value='long-test-password';dom.authInvite.value='invite-token';

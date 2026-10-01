@@ -1,0 +1,134 @@
+"""Consent, ownership and durable delivery checks for the pull-only broker."""
+import json
+import secrets
+import tempfile
+import unittest
+
+from broker import PullBackend
+from collaboration_store import Store
+
+
+class PullBrokerTests(unittest.TestCase):
+    def setUp(self):
+        self.directory=tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.store=Store(self.directory.name)
+        self.owner=self.store.signup('owner','',bootstrap=True)['id']
+        self.project=self.store.project_create(self.owner,'Shared project')['id']
+        self.backend=PullBackend(self.store)
+
+    def enroll(self,node='worker',owner=None):
+        pair=self.backend.create_pair(owner or self.owner,node)
+        token=secrets.token_urlsafe(32)
+        result=self.backend.device_api('/api/device/enroll',{'pair_code':pair['pair_code'],'device_token':token})
+        self.assertEqual(result['node'],node)
+        return token,pair
+
+    def advertise(self,token,node='worker',project=None,backend='workspace',**extra):
+        binding=dict(project_id=project or self.project,backend_project=backend,name='Peer',model='gpt-5.6-sol',effort='medium',timeout=120,enabled=True,stages=['discuss'],templates=['train'])
+        binding.update(extra)
+        self.backend.device_api('/api/device/poll',{'bindings':[binding]},token)
+        with self.store.connect() as db:
+            return dict(db.execute('SELECT * FROM agents WHERE node=? AND backend_project=?',(node,backend)).fetchone())
+
+    def submit(self,agent,job='job-fixed',**extra):
+        return self.backend.submit(agent['backend_project'],json.dumps({'identity':{'id':agent['id']}}),extra.get('stage','discuss'),'permitted files','success','check',job_id=job,session_channel='group')
+
+    def claim(self,token):
+        return self.backend.device_api('/api/device/poll',{},token)['jobs'][0]
+
+    def complete(self,token,job,report='done'):
+        return self.backend.device_api('/api/device/report',dict(job_id=job['id'],lease_id=job['lease_id'],state='needs_review',result={'report':report}),token)
+
+    def test_pair_is_one_time_and_token_not_public(self):
+        token,pair=self.enroll()
+        with self.assertRaises(PermissionError):
+            self.backend.device_api('/api/device/enroll',{'pair_code':pair['pair_code'],'device_token':token})
+        with self.assertRaises(PermissionError):
+            self.backend.device_api('/api/device/poll',{},'x'*32)
+        public=self.backend.snapshot_nodes(self.owner)
+        self.assertEqual(public[0]['paired'],1)
+        self.assertNotIn(token,json.dumps(public))
+        self.assertNotIn('token_hash',json.dumps(public))
+
+    def test_ownership_project_and_report_isolation(self):
+        token,_=self.enroll()
+        invite=self.store.invite(self.owner,self.project)['invite']
+        other=self.store.signup('other','',invite=invite)['id']
+        with self.assertRaises(PermissionError): self.backend.create_pair(other,'worker')
+        other_token,_=self.enroll('other-worker',other)
+        other_project=self.store.project_create(other,'Private project')['id']
+        with self.assertRaises(PermissionError): self.advertise(token,project=other_project)
+        agent=self.advertise(token)
+        self.submit(agent); job=self.claim(token)
+        self.assertEqual(self.backend.device_api('/api/device/poll',{},other_token)['jobs'],[])
+        with self.assertRaises(PermissionError): self.complete(other_token,job)
+
+    def test_legacy_migration_preserves_identity_settings_and_history(self):
+        # Simulate a V3 database whose migration has not run yet.
+        with self.store.connect() as db:
+            db.execute("DELETE FROM pull_meta WHERE key='migration-v4'")
+            db.execute('INSERT INTO nodes VALUES(?,?)',('legacy',self.owner))
+            db.execute('INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) VALUES(?,?,?,?,?,?,?,?,?)',('legacy-agent',self.project,'Legacy',self.owner,'legacy','workspace','old-model','high',180))
+            self.store._message(db,self.project,'legacy-agent','agent','preserve me',None,None)
+            db.execute('UPDATE projects SET admin_agent_id=? WHERE id=?',('legacy-agent',self.project))
+        self.backend=PullBackend(self.store)
+        with self.store.connect() as db:
+            row=dict(db.execute('SELECT * FROM agents WHERE id=?',('legacy-agent',)).fetchone())
+            self.assertEqual((row['model'],row['effort'],row['enabled']),('old-model','high',0))
+            self.assertEqual(db.execute('SELECT body FROM messages').fetchone()['body'],'preserve me')
+        token,_=self.enroll('legacy')
+        rebound=self.advertise(token,node='legacy')
+        self.assertEqual(rebound['id'],'legacy-agent')
+        PullBackend(self.store)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT enabled FROM agents').fetchone()['enabled'],1)
+            self.assertEqual(db.execute('SELECT admin_agent_id FROM projects').fetchone()['admin_agent_id'],'legacy-agent')
+
+    def test_repeated_poll_and_submit_keep_single_lease(self):
+        token,_=self.enroll(); agent=self.advertise(token)
+        first=self.submit(agent); self.assertEqual(self.submit(agent),first)
+        one=self.claim(token); two=self.claim(token)
+        self.assertEqual(one,two)
+        with self.store.connect() as db: self.assertEqual(db.execute('SELECT COUNT(*) FROM pull_jobs').fetchone()[0],1)
+        with self.assertRaises(ValueError):
+            self.backend.submit('workspace',json.dumps({'identity':{'id':agent['id']},'changed':True}),'discuss','','a','v',job_id=first['job'])
+
+    def test_stale_report_and_terminal_overwrite_rejected(self):
+        token,_=self.enroll(); agent=self.advertise(token); self.submit(agent); job=self.claim(token)
+        stale=dict(job_id=job['id'],lease_id='wrong',state='failed',result={})
+        with self.assertRaises(PermissionError): self.backend.device_api('/api/device/report',stale,token)
+        self.assertTrue(self.complete(token,job)['ok'])
+        self.assertTrue(self.complete(token,job)['duplicate'])
+        with self.assertRaises(ValueError): self.complete(token,job,'overwrite')
+        self.assertEqual(self.backend.status(job['id'])['report'],'done')
+        self.assertEqual(self.backend.device_api('/api/device/poll',{},token)['jobs'],[])
+
+    def test_repair_active_job_denied_without_rotating_old_token(self):
+        token,_=self.enroll(); agent=self.advertise(token); self.submit(agent); job=self.claim(token)
+        pair=self.backend.create_pair(self.owner,'worker'); replacement=secrets.token_urlsafe(32)
+        request={'pair_code':pair['pair_code'],'device_token':replacement}
+        with self.assertRaises(PermissionError): self.backend.device_api('/api/device/enroll',request)
+        self.assertEqual(self.claim(token)['lease_id'],job['lease_id'])
+        self.complete(token,job)
+        self.backend.device_api('/api/device/enroll',request)
+        with self.assertRaises(PermissionError): self.backend.device_api('/api/device/poll',{},token)
+
+    def test_local_stage_permission_and_central_settings_rejected(self):
+        token,_=self.enroll(); agent=self.advertise(token)
+        with self.assertRaises(PermissionError): self.submit(agent,stage='implement')
+        with self.assertRaises(PermissionError): self.backend.configure('workspace',model='another-model')
+        with self.assertRaises(PermissionError): self.backend.for_node('worker').rpc({'action':'execution_templates','project':'workspace','templates':{}})
+        self.assertEqual(self.backend.for_node('worker').rpc({'action':'execution_templates','project':'workspace'})['templates'],['train'])
+        self.backend.device_api('/api/device/poll',{'bindings':[]},token)
+        with self.assertRaises(PermissionError): self.submit(agent)
+
+    def test_cancel_is_intent_until_local_confirmation(self):
+        token,_=self.enroll(); agent=self.advertise(token); self.submit(agent); job=self.claim(token)
+        self.assertEqual(self.backend.rpc({'action':'cancel','job':job['id']})['status'],'running')
+        self.assertIn(job['id'],self.backend.device_api('/api/device/poll',{},token)['cancellations'])
+        self.backend.device_api('/api/device/report',dict(job_id=job['id'],lease_id=job['lease_id'],state='cancelled'),token)
+        self.assertEqual(self.backend.status(job['id'])['status'],'cancelled')
+
+
+if __name__=='__main__': unittest.main()

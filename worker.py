@@ -295,8 +295,16 @@ Your final report awaits independent review; you cannot approve your own work.
 
 
 def build_command(exe, project, thread_id):
-    args = [exe, "exec", "--ignore-user-config", "--approve-for-me", "--skip-git-repo-check", "--json",
+    args = [exe, "exec", "--ignore-user-config", "--skip-git-repo-check", "--json",
             "-m", project["model"], "-c", 'model_reasoning_effort="' + project["effort"] + '"', "-C", project["remote_path"]]
+    if project.get('local_control'):
+        stage = project.get('_stage', 'discuss')
+        args += ['--sandbox', 'workspace-write' if stage == 'implement' else 'read-only',
+                 '-c', 'approval_policy="never"']
+        if stage == 'discuss':
+            args += ['--disable', 'shell_tool', '--disable', 'unified_exec']
+    else:
+        args += ['--approve-for-me']
     if thread_id:
         import re
         if not re.fullmatch(r"[0-9a-fA-F-]{36}", thread_id):
@@ -332,7 +340,10 @@ def run(job):
         config = read_json(path / "request.json")
         directory = project_dir(config["project"]["name"])
         exe = cli_path()
-        command = build_command(exe, config["project"], config["thread_id"])
+        command_project = dict(config['project'])
+        if command_project.get('local_control'):
+            command_project['_stage'] = json.loads(config['prompt']).get('stage', 'discuss')
+        command = build_command(exe, command_project, config["thread_id"])
         if config.get('managed_turn'):
             command[2:2]=['--disable','apps','--disable','plugins','--disable','remote_plugin','--disable','skill_mcp_dependency_install']
             def obj(properties):

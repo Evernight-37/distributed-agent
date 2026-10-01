@@ -12,7 +12,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from collaboration_store import Store, digest
 from coordinator import Coordinator
-from controller import Harness, DEFAULT_STATE, SOURCE
+from controller import DEFAULT_STATE, SOURCE
+from broker import PullBackend
 from common import lock
 
 
@@ -21,9 +22,14 @@ def action(store, user, data, backend):
     if op == 'create-project': return store.project_create(who, data['name'])
     if op == 'invite': return store.invite(who, data['project'])
     if op == 'join-project': return store.join(who, data['invite'])
-    if op == 'add-agent': return store.add_agent(who, data, backend)
+    if op == 'enroll-device': return backend.create_pair(who, data['name'])
+    if op == 'add-agent':
+        if isinstance(backend, PullBackend): raise PermissionError('请在这台机器的本地控制台接入 agent')
+        return store.add_agent(who, data, backend)
     if op == 'set-admin': return store.set_admin(who, data['project'], data['agent']) or {'updated': True}
-    if op == 'configure-agent': return store.configure_agent(who, data, backend)
+    if op == 'configure-agent':
+        if isinstance(backend, PullBackend): raise PermissionError('模型与资源设置由机器主人在本地控制台修改')
+        return store.configure_agent(who, data, backend)
     if op == 'message': return store.message(who, data['project'], data['body'], data.get('recipient_id'))
     if op == 'task': return store.task(who, data)
     if op in {'pause-project', 'renew-budget'}:
@@ -60,7 +66,7 @@ def action(store, user, data, backend):
         return {'status':'cancellation_requested'}
     if op == 'templates':
         with store.connect() as db: agent = store.require_agent_owner(db, data['agent'], who)
-        return Harness(store.root, agent['node']).rpc({'action': 'execution_templates', 'project': agent['backend_project'], 'templates': data['templates']})
+        return backend.for_node(agent['node']).rpc({'action': 'execution_templates', 'project': agent['backend_project'], 'templates': data['templates']})
     if op in {'execution-approve', 'execution-cancel'}:
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -83,7 +89,8 @@ def action(store, user, data, backend):
 
 
 def handler_for(root, backend=None, public_origin=None):
-    store, backend = Store(root), backend or Harness(root)
+    store = Store(root)
+    backend = backend or PullBackend(store)
     attempts, attempt_lock = defaultdict(deque), threading.Lock()
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
@@ -126,7 +133,10 @@ def handler_for(root, backend=None, public_origin=None):
                 if path.path == '/': return self.send(200, (SOURCE/'web'/'index.html').read_bytes(), 'text/html; charset=utf-8')
                 if path.path == '/api/session': return self.send(200, {'csrf': csrf, 'user': user, 'bootstrap_required': store.bootstrap_required()})
                 if not user: return self.send(401, {'error': '请先登录'})
-                if path.path == '/api/snapshot': return self.send(200, {**store.snapshot(user['id']), 'user': user})
+                if path.path == '/api/snapshot':
+                    snapshot = store.snapshot(user['id'])
+                    if hasattr(backend, 'snapshot_nodes'): snapshot['nodes'] = backend.snapshot_nodes(user['id'])
+                    return self.send(200, {**snapshot, 'user': user})
                 if path.path == '/api/project': return self.send(200, store.project_view(user['id'], parse_qs(path.query).get('id', [''])[0]))
                 return self.send(404, {'error': 'Not found'})
             except PermissionError as exc: self.send(403, {'error': str(exc)})
@@ -134,6 +144,19 @@ def handler_for(root, backend=None, public_origin=None):
             except Exception: self.send(500, {'error': '后台操作失败，请检查服务日志'})
 
         def do_POST(self):
+            if self.path.startswith('/api/device/'):
+                try:
+                    if self.headers.get('Content-Type', '').split(';')[0] != 'application/json': raise ValueError('Expected JSON')
+                    size = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < size <= 524288: raise ValueError('Invalid body size')
+                    data = json.loads(self.rfile.read(size).decode('utf-8'))
+                    if not isinstance(data, dict): raise ValueError('Expected object')
+                    auth = self.headers.get('Authorization', '')
+                    bearer = auth[7:] if auth.startswith('Bearer ') else None
+                    return self.send(200, backend.device_api(self.path, data, bearer))
+                except PermissionError as exc: return self.send(403, {'error': str(exc)})
+                except (ValueError, KeyError, TypeError, sqlite3.IntegrityError) as exc: return self.send(400, {'error': str(exc)})
+                except Exception: return self.send(500, {'error': 'Device operation failed'})
             if not self.allowed() or self.headers.get('Origin') != self.origin(): return self.send(403, {'error': 'Origin rejected'})
             try:
                 token, csrf, user = self.session()
@@ -152,7 +175,10 @@ def handler_for(root, backend=None, public_origin=None):
                         bucket.append(now)
                     if op != 'login':
                         created = store.signup(data['username'], data['password'], bootstrap=op=='bootstrap', invite=data.get('invite'))
-                        if op == 'bootstrap': store.import_legacy(created['id'])
+                        if op == 'bootstrap':
+                            store.import_legacy(created['id'])
+                            if isinstance(backend, PullBackend):
+                                with store.connect() as db: db.execute('UPDATE agents SET enabled=0 WHERE owner_id=?', (created['id'],))
                     self.current = store.authenticate(data['username'], data['password'], token)
                     return self.send(200, {'user': self.current[2], 'csrf': self.current[1]})
                 if not user: return self.send(401, {'error': '请先登录'})
@@ -165,6 +191,7 @@ def handler_for(root, backend=None, public_origin=None):
             except (ValueError, KeyError, TypeError, sqlite3.IntegrityError) as exc: self.send(400, {'error': str(exc)})
             except Exception: self.send(500, {'error': '后台操作失败，请检查服务日志'})
     Handler.store = store
+    Handler.backend = backend
     return Handler
 
 
@@ -179,7 +206,7 @@ def main():
         if parsed.scheme != 'https' or not parsed.netloc or parsed.path or parsed.query or parsed.fragment or parsed.username: parser.error('--origin requires an HTTPS origin without path or credentials')
     with lock(Path(args.state)/'coordinator.lock'):
         handler = handler_for(args.state, public_origin=args.origin)
-        coordinator = Coordinator(handler.store)
+        coordinator = Coordinator(handler.store, handler.backend)
         threading.Thread(target=coordinator.run, daemon=True).start()
         server = ThreadingHTTPServer(('127.0.0.1', args.port), handler)
         try: server.serve_forever()

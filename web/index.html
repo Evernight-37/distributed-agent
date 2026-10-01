@@ -196,7 +196,7 @@
       const row=el('div',undefined,'member');
       const top=el('div',undefined,'row between'); top.append(el('strong',agent.name),el('span',agent.role==='admin'?'管理员':'协作者','pill')); row.append(top);
       row.append(el('p',`${ownerName(agent.owner_id)} · ${agent.node} · ${agent.model} / ${agent.effort} · ${agent.status}`,'small muted'));
-      if (controls && ownAgent(agent.id)) row.append(button('我的 agent 设置',()=>agentSettings(agent)));
+      if (controls && ownAgent(agent.id)) row.append(button('查看本机设置',()=>agentSettings(agent)));
       return row;
     }
     function renderChat(main) {
@@ -254,7 +254,7 @@
     function renderMembers(main) {
       const card=el('section',undefined,'card'); card.append(el('h2','Agent 成员'));
       state.view.members.forEach(a=>card.append(memberRow(a,true)));
-      card.append(button('接入我的 agent',addAgent)); main.append(card);
+      card.append(button('配对我的机器',pairDevice)); main.append(card);
       const people=el('section',undefined,'card'); people.append(el('h2','人类成员'));
       state.view.users.forEach(u=>people.append(el('p',u.username+(u.id===state.view.project.owner_id?' · 群主':'')))); main.append(people);
       if (groupOwner()) {
@@ -274,31 +274,27 @@
           form.onsubmit=async e=>{e.preventDefault();if(await run('renew-budget',{project:state.selected,budget:Number(formValues(form).budget)}))$('dialog').close();};
         })); settings.append(actions,el('p','管理员安排分工；机器所有者决定模型、思考强度和后台命令。','small muted')); main.append(settings);
       }
-      main.append(el('p','机器连接由服务维护者通过 group_cli.py 登记并绑定所有者。这里仅显示你拥有的机器，不复制任何登录凭据。','small muted'));
+      main.append(el('p','共享面板只负责项目、消息和任务队列。每个人在自己的机器上选择模型、思考强度、工作目录和命令权限。','small muted'));
     }
     function modelFields(form,agent={model:'',effort:'medium',timeout:120}) {
       field(form,'模型（明确填写 CLI 支持的模型名称）','model',agent.model).required=true;
       field(form,'思考强度','effort',agent.effort,null,['low','medium','high','xhigh','max','ultra'].map(v=>[v,v]));
       const timeout=field(form,'每轮超时（秒）','timeout',agent.timeout,'number'); timeout.min=30; timeout.max=86400; timeout.required=true;
     }
-    function addAgent() {
-      if (!state.snapshot.nodes.length) return notice('你还没有绑定机器。请由服务维护者先登记连接并把节点绑定给你的账户。');
-      const form=modal('接入我的 agent',f=>{
-        field(f,'Agent 名称','name').required=true;
-        field(f,'我的机器','node',state.snapshot.nodes[0].name,null,state.snapshot.nodes.map(n=>[n.name,n.name]));
-        field(f,'已登记的后端项目 ID','backend_project').required=true;
-        f.append(el('p','每个 agent 使用独立的后端项目会话；后端项目需要先明确登记目录和工作树。','small muted')); modelFields(f);
-      });
-      form.onsubmit=async e=>{e.preventDefault();const values=formValues(form);if(await run('add-agent',{project:state.selected,...values,timeout:Number(values.timeout)}))$('dialog').close();};
+    function pairDevice() {
+      const form=modal('配对一台自己的机器',f=>{ field(f,'机器名称','name').required=true; f.append(el('p','生成代码后，在这台机器上运行本地 worker。服务器只提供项目消息和任务队列，不会登录或配置你的电脑。','small muted')); });
+      form.onsubmit=async e=>{e.preventDefault();const values=formValues(form);try { const result=await action('enroll-device',{name:values.name.trim()}); const code=result.pair_code||result.code; if(!code) throw new Error('服务没有返回配对代码');
+        form.replaceChildren(el('h2','配对代码已生成'),el('p','请在拥有这台机器的终端运行：','small muted'),el('pre',code));
+        form.append(el('p','python pull_worker.py pair --server '+location.origin+' --pair-code '+code+' --root <本机数据目录>','small muted'),el('p','然后打开本机控制台 http://127.0.0.1:8787，设置模型、思考强度、项目目录和权限。','small muted'));
+        form.append(button('关闭',()=>$('dialog').close()));
+      } catch(error){notice(error.message);} };
     }
     function agentSettings(agent) {
       const form=modal('我的 agent：'+agent.name,f=>{
-        modelFields(f,agent); const label=el('label'),enabled=el('input');enabled.type='checkbox';enabled.name='enabled';enabled.checked=Boolean(agent.enabled);label.append(enabled,el('span','允许接收新任务'));f.append(label);
-        const details=el('details');details.append(el('summary','后台命令模板（高级）'));details.append(el('p','只有你可以批准命令模板。Agent 仅能请求模板名称，不能提供任意命令。argv 的首项须为机器上的绝对可执行文件路径。','small muted'));
-        const editor=el('textarea');editor.placeholder='{"check":{"argv":["C:\\path\\python.exe","check.py"]}}';details.append(editor);
-        details.append(button('保存命令模板',async()=>{try{const templates=JSON.parse(editor.value);await action('templates',{agent:agent.id,templates});notice('模板已保存');}catch(error){notice(error.message);}}));f.append(details);
+        f.append(el('p','这是共享服务最近看到的状态。模型、思考强度、工作目录和命令模板由机器所有者在本机控制台维护。','small muted'),el('p',`当前：${agent.status || '未知'} · ${agent.model || '本机设置'} / ${agent.effort || '本机设置'}`,'card'));
+        const link=el('a','打开本机控制台');link.href='http://127.0.0.1:8787';link.target='_blank';f.append(link);
       });
-      form.onsubmit=async e=>{e.preventDefault();const values=formValues(form);if(await run('configure-agent',{agent:agent.id,model:values.model,effort:values.effort,timeout:Number(values.timeout),enabled:values.enabled==='on'}))$('dialog').close();};
+      form.onsubmit=e=>{e.preventDefault();$('dialog').close();};
     }
     function renderTasks(main) {
       const card=el('section',undefined,'card'); const bar=el('div',undefined,'row between');bar.append(el('h2','Agent 任务'),button('明确派发任务',newTask));card.append(bar);
@@ -315,7 +311,7 @@
         const row=el('div',undefined,'task');row.append(el('strong',job.template),el('p',`${agentName(job.agent_id)} · ${job.state}`));
         if (job.result) {const details=el('details');details.append(el('summary','查看输出'),el('pre',typeof job.result==='string'?job.result:JSON.stringify(job.result,null,2)));row.append(details);}
         if (ownAgent(job.agent_id)) {
-          if (job.state==='awaiting_owner') row.append(button('批准运行',()=>run('execution-approve',{execution:job.id})));
+          if (job.state==='awaiting_owner') row.append(button('发送到本机确认',()=>run('execution-approve',{execution:job.id},'已送到本机，仍需本机主人批准')));
           if (['awaiting_owner','approved','starting','running','unknown'].includes(job.state)) row.append(button('取消作业',()=>run('execution-cancel',{execution:job.id})));
         }
         jobs.append(row);

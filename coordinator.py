@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from collaboration_store import uid
 from controller import Harness, TERMINAL
+from broker import PullBackend
 
 
 def channel_for(contract):
@@ -18,7 +19,7 @@ def channel_for(contract):
 class Coordinator:
     def __init__(self,store,backend=None):
         self.store=store
-        self.backend=backend or Harness(store.root)
+        self.backend=backend or PullBackend(store)
         self.stop_event=threading.Event()
 
     def recover(self):
@@ -95,7 +96,7 @@ Return only visible context; you cannot request other agents' private conversati
             contract=json.loads(task['contract'])
             try:
                 channel=channel_for(contract)
-                kwargs={'job_id':job,'session_channel':channel} if isinstance(self.backend,Harness) else {}
+                kwargs={'job_id':job,'session_channel':channel} if isinstance(self.backend,Harness) or getattr(self.backend,'durable_ids',False) else {}
                 result=self.backend.submit(agent['backend_project'],self.agent_context(agent,task),contract.get('stage','discuss'),contract.get('allowed_files',''),contract['acceptance'],contract['validation'],**kwargs)
                 with self.store.connect() as db:
                     db.execute("UPDATE tasks SET state='running',job=? WHERE id=?",(result['job'],task['id']))
@@ -204,7 +205,7 @@ Return only visible context; you cannot request other agents' private conversati
             rows=[dict(x) for x in db.execute("SELECT e.*,a.node,a.backend_project FROM executions e JOIN agents a ON e.agent_id=a.id WHERE e.state IN ('approved','starting','running','unknown')")]
         for row in rows:
             if execution_id and row['id']!=execution_id: continue
-            backend=Harness(self.store.root,row['node'])
+            backend=self.backend.for_node(row['node']) if hasattr(self.backend,'for_node') else self.backend
             try:
                 if row['state']=='approved':
                     with self.store.connect() as db:
