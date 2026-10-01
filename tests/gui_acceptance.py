@@ -21,6 +21,8 @@ with tempfile.TemporaryDirectory() as td:
   raise RuntimeError('GUI wait failed: '+expression)
  def validate():
   try:
+   wait("document.querySelectorAll('.auth-choice').length===3")
+   window.evaluate_js("Array.from(document.querySelectorAll('.auth-choice')).find(b=>b.querySelector('strong').textContent==='创建账户').click()")
    wait("document.querySelector('#login form input')?.id")
    window.evaluate_js("(()=>{let inputs=document.querySelectorAll('#login form input');inputs[0].value='隔离图形验收';inputs[1].value='';inputs[2].value="+json.dumps(url)+";document.querySelector('#login form').dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}));})()")
    wait("document.querySelector('#content h1')?.textContent==='控制台'")
