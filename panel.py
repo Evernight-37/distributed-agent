@@ -91,6 +91,8 @@ def action(store, user, data, backend):
 def handler_for(root, backend=None, public_origin=None):
     store = Store(root)
     backend = backend or PullBackend(store)
+    from account_backend import AccountBackend
+    accounts = AccountBackend(store, backend, action)
     attempts, attempt_lock = defaultdict(deque), threading.Lock()
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
@@ -145,6 +147,16 @@ def handler_for(root, backend=None, public_origin=None):
             except Exception: self.send(500, {'error': '后台操作失败，请检查服务日志'})
 
         def do_POST(self):
+            if self.path == '/api/account':
+                try:
+                    if self.headers.get('Content-Type', '').split(';')[0] != 'application/json': raise ValueError('Expected JSON')
+                    size = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < size <= 262144: raise ValueError('Invalid body size')
+                    data = json.loads(self.rfile.read(size))
+                    return self.send(200, accounts.api(data))
+                except PermissionError as exc: return self.send(403, {'error': str(exc)})
+                except (ValueError, KeyError, TypeError, sqlite3.IntegrityError) as exc: return self.send(400, {'error': str(exc)})
+                except Exception: return self.send(500, {'error': 'Account operation failed'})
             if self.path.startswith('/api/device/'):
                 try:
                     if self.headers.get('Content-Type', '').split(';')[0] != 'application/json': raise ValueError('Expected JSON')

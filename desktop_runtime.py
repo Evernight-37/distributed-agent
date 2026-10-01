@@ -115,7 +115,7 @@ class DesktopRuntime:
             raise ValueError('这个地址是 4090 的设备通道。请在 5090 打开工作台，或使用团队提供的 HTTPS 工作台地址')
         webbrowser.open(server)
 
-    def start_workbench(self):
+    def start_workbench(self, open_browser=True):
         """Host an ordinary loopback workbench, without changing network access."""
         url = 'http://127.0.0.1:8765'
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
@@ -140,6 +140,6 @@ class DesktopRuntime:
                         if process.poll() is not None or time.monotonic() > deadline:
                             raise RuntimeError('无法启动工作台，8765 端口可能被其他软件使用')
                         time.sleep(.15)
-        webbrowser.open(url)
+        if open_browser: webbrowser.open(url)
         return url
 

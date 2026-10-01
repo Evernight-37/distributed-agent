@@ -36,3 +36,8 @@ desktop-start.lock
 desktop-host-start.lock
 pull-receipts.lock
 local-policy.lock
+
+profiles/
+owner-receipts/
+owner-employees.json
+owner-control.lock

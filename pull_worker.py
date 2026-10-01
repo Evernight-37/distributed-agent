@@ -153,7 +153,7 @@ class Connector:
     def receipt_path(self, job_id):
         return self.root / 'pull-receipts' / (hashlib.sha256(job_id.encode()).hexdigest() + '.json')
 
-    def approve(self, job_id, approved):
+    def approve(self, job_id, approved, expected_template=None):
         with lock(self.root / 'pull-receipts.lock'):
             path = self.receipt_path(job_id)
             receipt = read_json(path)
@@ -163,6 +163,7 @@ class Connector:
             if approved:
                 project = receipt['job']['backend_project']
                 receipt['approved_template'] = read_json(self.root/'projects'/project/'execution_templates.json',{}).get(receipt['job']['request']['template'])
+                if expected_template is not None and receipt['approved_template']!=expected_template: raise ValueError('Template changed; review the current command before approving')
             write_json(path, receipt)
 
     def resolve(self, job_id, confirm_no_job=False):
@@ -280,6 +281,12 @@ class Connector:
     def cycle(self):
         data = self.transport(self.config, 'poll', {'bindings':self.advertisements()})
         write_json(self.root / 'broker-projects.json', data.get('projects', []))
+        if data.get('owner_commands'):
+            from owner_worker import OwnerControl
+            if not self.config.get('owner_account_id'): raise PermissionError('This legacy receiver has no enrolled account identity')
+            for envelope in data['owner_commands']:
+                result = OwnerControl(self).apply(envelope)
+                self.transport(self.config, 'owner-report', dict(result,id=envelope['body']['id']))
         cancellations = set(data.get('cancellations', []))
         with lock(self.root / 'pull-receipts.lock'):
             for job in data.get('jobs', []):

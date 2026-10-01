@@ -50,6 +50,7 @@ def serve(root):
                     elif route == 'action' and data is not None:
                         action = data.pop('action')
                         if action == 'binding': result = connector.save_binding(data)
+                        elif action == 'approve-execution': result = connector.approve(data['job_id'], data['approved'], data.get('expected_template')) or {'updated': True}
                         elif action == 'register':
                             path = Path(data['path'])
                             if not path.is_absolute() or not path.is_dir(): raise ValueError('请选择已存在的项目文件夹')

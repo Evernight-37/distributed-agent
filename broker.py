@@ -86,7 +86,15 @@ class PullBackend:
                 for row in rows:
                     if row['state']=='queued': db.execute("UPDATE pull_jobs SET state='claimed' WHERE id=? AND state='queued'",(row['id'],))
                     jobs.append({'id':row['id'],'job_id':row['id'],'lease_id':row['lease_id'],'kind':row['kind'],'agent_id':row['agent_id'],**self._job_binding(db,row),'request':json.loads(row['request'])})
-                return {'node':device['node'],'projects':self._projects(db,device),'jobs':jobs,'cancellations':[r['id'] for r in rows if r['cancel_requested']]}
+                from owner_backend import OwnerBackend
+                # Tables are initialized by the native account backend before polling.
+                controls = OwnerBackend.__new__(OwnerBackend); controls.store = self.store
+                commands = controls.poll(db, device) if db.execute("SELECT 1 FROM sqlite_master WHERE name='owner_commands'").fetchone() else []
+                return {'owner_commands':commands,'node':device['node'],'projects':self._projects(db,device),'jobs':jobs,'cancellations':[r['id'] for r in rows if r['cancel_requested']]}
+            if path=='/api/device/owner-report':
+                from owner_backend import OwnerBackend
+                controls = OwnerBackend.__new__(OwnerBackend); controls.store = self.store
+                return controls.report(db,device,data['id'],data['state'],data['result'])
             if path=='/api/device/report':
                 row=db.execute('SELECT * FROM pull_jobs WHERE id=?',(data.get('job_id',data.get('job')),)).fetchone()
                 if not row or row['node']!=device['node'] or not hmac.compare_digest(str(data.get('lease_id','')),row['lease_id']):
