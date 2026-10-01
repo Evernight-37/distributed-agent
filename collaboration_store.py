@@ -38,7 +38,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS project_users(project_id TEXT,user_id TEXT,PRIMARY KEY(project_id,user_id));
             CREATE TABLE IF NOT EXISTS nodes(name TEXT PRIMARY KEY,owner_id TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS agents(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,name TEXT NOT NULL,owner_id TEXT NOT NULL,node TEXT NOT NULL,backend_project TEXT NOT NULL,model TEXT NOT NULL,effort TEXT NOT NULL,timeout INTEGER NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,last_message INTEGER NOT NULL DEFAULT 0,UNIQUE(node,backend_project));
-            CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT NOT NULL,sender_id TEXT NOT NULL,sender_type TEXT NOT NULL,recipient_id TEXT,body TEXT NOT NULL,created_at REAL NOT NULL,causal_task TEXT);
+            CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT NOT NULL,sender_id TEXT NOT NULL,sender_type TEXT NOT NULL,recipient_id TEXT,body TEXT NOT NULL,created_at REAL NOT NULL,causal_task TEXT,mention_agent_id TEXT);
             CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,agent_id TEXT NOT NULL,title TEXT NOT NULL,contract TEXT NOT NULL,state TEXT NOT NULL,job TEXT,report TEXT,created_at REAL NOT NULL,cutoff INTEGER NOT NULL DEFAULT 0,error TEXT,processed INTEGER NOT NULL DEFAULT 0);
             CREATE UNIQUE INDEX IF NOT EXISTS one_active_task ON tasks(agent_id) WHERE state IN ('queued','starting','running','unknown');
             CREATE TABLE IF NOT EXISTS executions(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,agent_id TEXT NOT NULL,template TEXT NOT NULL,state TEXT NOT NULL,result TEXT,created_at REAL NOT NULL,notified INTEGER NOT NULL DEFAULT 0);
@@ -50,6 +50,8 @@ class Store:
                 db.execute('ALTER TABLE agents ADD COLUMN configuring INTEGER NOT NULL DEFAULT 0')
             if 'reply_to' not in {r['name'] for r in db.execute('PRAGMA table_info(executions)')}:
                 db.execute('ALTER TABLE executions ADD COLUMN reply_to TEXT')
+            if 'mention_agent_id' not in {r['name'] for r in db.execute('PRAGMA table_info(messages)')}:
+                db.execute('ALTER TABLE messages ADD COLUMN mention_agent_id TEXT')
             for table in ('tasks','executions'):
                 if 'cancel_requested' not in {r['name'] for r in db.execute('PRAGMA table_info('+table+')')}:
                     db.execute('ALTER TABLE '+table+' ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0')
@@ -259,27 +261,59 @@ class Store:
             self.log(db,user,'configure_agent',{'agent':agent['id'],'model':data['model'],'effort':data['effort']})
         return {'updated':agent['id']}
 
-    def message(self,user,project,body,recipient=None):
+    def message(self,user,project,body,recipient=None,mention_agent_id=None):
         with self.connect() as db:
             self.require_member(db,project,user)
-            return self._message(db,project,user,'human',body,recipient)
+            return self._message(db,project,user,'human',body,recipient,mention_agent_id=mention_agent_id)
 
-    def _message(self,db,project,sender,kind,body,recipient=None,causal_task=None):
+    def _message(self,db,project,sender,kind,body,recipient=None,causal_task=None,mention_agent_id=None):
         if not isinstance(body,str) or not 1 <= len(body.strip()) <= 16000:
             raise ValueError('消息不能为空，最多 16000 字符')
         if recipient and not (db.execute('SELECT 1 FROM agents WHERE id=? AND project_id=?',(recipient,project)).fetchone()
                 or db.execute('SELECT 1 FROM project_users WHERE user_id=? AND project_id=?',(recipient,project)).fetchone()):
             raise ValueError('收件人必须在本项目')
-        cursor=db.execute('INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task) VALUES(?,?,?,?,?,?,?)',
-                          (project,sender,kind,recipient,body.strip(),time.time(),causal_task))
+        if mention_agent_id:
+            if recipient or kind != 'human':
+                raise ValueError('只能在公开的人类消息中呼叫 Agent')
+            if not isinstance(mention_agent_id,str):
+                raise ValueError('Agent 标识无效')
+            if not db.execute('SELECT 1 FROM agents WHERE id=? AND project_id=? AND enabled=1 AND configuring=0',(mention_agent_id,project)).fetchone():
+                raise ValueError('要呼叫的 Agent 不在项目中或尚未启用')
+        cursor=db.execute('INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task,mention_agent_id) VALUES(?,?,?,?,?,?,?,?)',
+                          (project,sender,kind,recipient,body.strip(),time.time(),causal_task,mention_agent_id))
         return {'id':cursor.lastrowid}
+
+    def draft_message(self, db, project, sender, body, recipient, task_id):
+        if not isinstance(body, str) or len(body) > 16000:
+            return None
+        key = 'draft:' + task_id
+        row = db.execute('SELECT id FROM messages WHERE causal_task=?', (key,)).fetchone()
+        if not body.strip():
+            return row['id'] if row else None
+        if row:
+            db.execute('UPDATE messages SET body=?,recipient_id=? WHERE id=?', (body.strip(), recipient, row['id']))
+            return row['id']
+        return self._message(db, project, sender, 'agent', body, recipient, key)['id']
+
+    def clear_draft(self, db, task_id):
+        db.execute('DELETE FROM messages WHERE causal_task=?', ('draft:' + task_id,))
+
+    def finalize_draft(self, db, task_id, body, recipient):
+        row = db.execute('SELECT id FROM messages WHERE causal_task=?', ('draft:' + task_id,)).fetchone()
+        if not row:
+            return False
+        if not body:
+            db.execute('DELETE FROM messages WHERE id=?', (row['id'],))
+        else:
+            db.execute('UPDATE messages SET body=?,recipient_id=?,causal_task=? WHERE id=?', (body, recipient, task_id, row['id']))
+        return True
 
     def visible_messages(self, agent, after=0, cutoff=None):
         with self.connect() as db:
             row=db.execute('SELECT * FROM agents WHERE id=?',(agent,)).fetchone()
             if not row:
                 raise ValueError('未知 agent')
-            return [dict(x) for x in db.execute('SELECT * FROM messages WHERE project_id=? AND id>? AND id<=? AND (recipient_id IS NULL OR recipient_id=? OR sender_id=?) ORDER BY id',
+            return [dict(x) for x in db.execute("SELECT * FROM messages WHERE project_id=? AND id>? AND id<=? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (recipient_id IS NULL OR recipient_id=? OR sender_id=?) ORDER BY id",
                         (row['project_id'],after,cutoff or 9223372036854775807,agent,agent)).fetchall()]
 
     def task(self,user,data):
@@ -311,6 +345,10 @@ class Store:
         cutoff=db.execute('SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=?',(project['id'],)).fetchone()[0]
         db.execute('INSERT INTO tasks(id,project_id,agent_id,title,contract,state,created_at,cutoff) VALUES(?,?,?,?,?,?,?,?)',
                    (task,project['id'],agent['id'],data['title'],json.dumps(data,ensure_ascii=False),'queued',time.time(),cutoff))
+        private = bool(data.get('private_turn'))
+        recipient = data.get('reply_to') if private else None
+        db.execute('INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task) VALUES(?,?,?,?,?,?,?)',
+                   (project['id'], agent['id'], 'agent', recipient, '（正在回复…）', time.time(), 'draft:' + task))
         db.execute('UPDATE projects SET budget_remaining=budget_remaining-1 WHERE id=?',(project['id'],))
         self.log(db,actor,'task',{'task':task,'agent':agent['id']})
         return {'id':task,'state':'queued'}
@@ -344,9 +382,18 @@ class Store:
                 sender=db.execute(f'SELECT {key} FROM {table} WHERE id=?',(item['sender_id'],)).fetchone() if item['sender_type']!='system' else None
                 recipient=db.execute('SELECT name FROM agents WHERE id=?',(item['recipient_id'],)).fetchone()
                 if not recipient: recipient=db.execute('SELECT username FROM users WHERE id=?',(item['recipient_id'],)).fetchone()
-                item.update(sender_name=sender[0] if sender else '系统',recipient_name=recipient[0] if recipient else None,channel='direct' if item['recipient_id'] else 'group')
+                mention=db.execute('SELECT name FROM agents WHERE id=?',(item['mention_agent_id'],)).fetchone() if item['mention_agent_id'] else None
+                item.update(sender_name=sender[0] if sender else '系统',recipient_name=recipient[0] if recipient else None,
+                            mention_agent_name=mention[0] if mention else None,channel='direct' if item['recipient_id'] else 'group')
                 messages.append(item)
             tasks=[dict(x) for x in db.execute('SELECT * FROM tasks WHERE project_id=? ORDER BY created_at DESC LIMIT 100',(project,))]
+            for task in tasks:
+                if task['state']=='needs_review' and task['processed']:
+                    try:
+                        reply=json.loads(task['report'] or '{}').get('reply')
+                    except (ValueError, AttributeError):
+                        reply=None
+                    task['display_status']='已处理 · 未发言' if isinstance(reply,str) and not reply.strip() else '已回复'
             executions=[dict(x) for x in db.execute('SELECT * FROM executions WHERE project_id=? ORDER BY created_at DESC LIMIT 100',(project,))]
             people=[dict(x) for x in db.execute('SELECT u.id,u.username FROM users u JOIN project_users p ON u.id=p.user_id WHERE p.project_id=?',(project,))]
             p['owner_name']=next((x['username'] for x in people if x['id']==p['owner_id']),p['owner_id'])

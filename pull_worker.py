@@ -33,7 +33,7 @@ def deploy_runtime(root):
             for state in (root / directory).glob('*/state.json'):
                 if read_json(state, {}).get('status') not in TERMINAL - {'unknown'}:
                     raise ValueError('Cannot update a runtime with active jobs')
-        for name in ('common.py', 'worker.py', 'jobrunner.py'):
+        for name in ('common.py', 'worker.py', 'jobrunner.py', 'warm_worker.py', 'appserver_client.py'):
             source = Path(__file__).resolve().parent / name
             target = root / name
             if source != target:
@@ -263,7 +263,7 @@ class Connector:
                     self.executor({'action':'execution_cancel' if execution else 'cancel', 'execution' if execution else 'job':local_id})
                 result = self.executor({'action':'execution_status' if execution else 'fetch', 'execution' if execution else 'job':local_id})
                 receipt['phase'] = 'terminal' if result.get('status') in TERMINAL else 'running'
-                receipt['result'] = {k:result[k] for k in ('status','report','error','exit_code','stdout_tail','stderr_tail','requested_model','reasoning_effort','effective_model','model_verified') if k in result}
+                receipt['result'] = {k:result[k] for k in ('status','report','reply_draft','error','exit_code','stdout_tail','stderr_tail','requested_model','reasoning_effort','effective_model','model_verified') if k in result and (k != 'reply_draft' or isinstance(result[k], str) and len(result[k]) <= 16000)}
         except Exception as exc:
             if receipt['phase'] in {'running','launching'}:
                 try:

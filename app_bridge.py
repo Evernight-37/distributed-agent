@@ -132,6 +132,16 @@ class AppBridge:
             if selected:executor['cli_path']=selected
             else:executor.pop('cli_path',None)
             write_json(path,executor)
+    def _idle_seconds(self):
+        saved=read_json(self.root/'codex-warm-idle.json',{})
+        value=saved.get('seconds',300) if isinstance(saved,dict) else 300
+        return value if isinstance(value,int) and not isinstance(value,bool) and 30<=value<=3600 else 300
+    def _sync_idle(self,runtime,seconds):
+        path=runtime.root/'executor.json'
+        with lock(runtime.root/'executor.lock'):
+            executor=read_json(path,{})
+            executor['warm_idle_seconds']=seconds
+            write_json(path,executor)
     def _enroll(self,server=None):
         server=server or self.profile['server'];runtime=self._runtime(server)
         if not runtime.config_path.exists():
@@ -141,6 +151,7 @@ class AppBridge:
         if (self.root/'codex-proxy.json').exists():self._sync_proxy(runtime,self._proxy_settings())
         selected=read_json(self.root/'codex-cli.json')
         if selected is not None:self._sync_cli(runtime,selected.get('path',''))
+        self._sync_idle(runtime,self._idle_seconds())
         runtime.start()
     def _owner(self,action,node,data,server=None):
         envelope=sign_envelope(self.identity,{'domain':'harness-owner-command-v1','account_id':self.identity['account_id'],'target':node,'id':'command-'+secrets.token_hex(16),'action':action,'data':data})
@@ -340,7 +351,7 @@ class AppBridge:
         if action=='approve-execution': return self._runtime(self.job_servers.get(data['job_id']))._control('action',dict(action='approve-execution',**data))
         if action=='settings-get':
             from team_service import TeamService
-            return {'server':self.profile['server'],'services':[{'server':server,'primary':server==self.profile['server'],'attached':server in self._attached_services()} for server in self._services()],'background':self.profile.get('background',True),'autostart':False,'data_root':str(self.root),'team_service':TeamService(self.root,self.profile['server']).status(),'proxy':self._proxy_settings()}
+            return {'server':self.profile['server'],'services':[{'server':server,'primary':server==self.profile['server'],'attached':server in self._attached_services()} for server in self._services()],'background':self.profile.get('background',True),'autostart':False,'data_root':str(self.root),'team_service':TeamService(self.root,self.profile['server']).status(),'proxy':self._proxy_settings(),'warm_idle_seconds':self._idle_seconds()}
         if action=='codex-cli-status':
             if not self.profile or not self.identity:raise PermissionError('请先登录')
             from worker import cli_status
@@ -376,6 +387,17 @@ class AppBridge:
                     self._sync_proxy(DesktopRuntime(path),setting)
             write_json(self.root/'codex-proxy.json',setting)
             return setting
+        if action=='warm-idle-save':
+            if not self.profile or not self.identity:raise PermissionError('请先登录')
+            seconds=data.get('seconds')
+            if isinstance(seconds,bool) or not isinstance(seconds,int) or not 30<=seconds<=3600:
+                raise ValueError('空闲保活时间须为 30 到 3600 秒')
+            receivers=self.root/'receivers'
+            for path in receivers.glob('device-*'):
+                if path.is_dir() and path.resolve().parent==receivers.resolve():
+                    self._sync_idle(DesktopRuntime(path),seconds)
+            write_json(self.root/'codex-warm-idle.json',{'seconds':seconds})
+            return {'seconds':seconds}
         if action.startswith('team-service-'):
             from team_service import TeamService
             service=TeamService(self.root,self.profile['server'])

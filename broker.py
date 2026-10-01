@@ -104,7 +104,9 @@ class PullBackend:
                 if state not in allowed or row['kind']=='task' and state=='completed': raise ValueError('无效的任务状态')
                 result=data.get('result',{})
                 if not isinstance(result,dict): raise ValueError('结果必须为对象')
-                result={k:v for k,v in result.items() if k in {'report','error','local_status','exit_code','stdout','stderr','started_at','finished_at','status','job','execution'}}
+                result={k:v for k,v in result.items() if k in {'report','reply_draft','error','local_status','exit_code','stdout','stderr','started_at','finished_at','status','job','execution'}}
+                if 'reply_draft' in result and (not isinstance(result['reply_draft'], str) or len(result['reply_draft']) > 16000):
+                    result.pop('reply_draft', None)
                 for key in ('report','error'):
                     if key in data: result[key]=data[key]
                 result['status']=state

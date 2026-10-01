@@ -128,16 +128,20 @@ def cli_path(root=ROOT):
     return result['path']
 
 
-def launch_supervisor(job):
+def launch_supervisor(job, warm_project=None):
     """WMI creates a hidden process outside the OpenSSH session's kill-on-close job."""
+    argv = ([sys.executable, '-X', 'utf8', str(ROOT / 'warm_worker.py'), warm_project]
+            if warm_project else [sys.executable, '-X', 'utf8', str(ROOT / 'worker.py'), 'run', job])
+    output_path = (project_dir(warm_project) / 'warm-supervisor.log' if warm_project
+                   else job_dir(job) / 'supervisor.log')
     if os.name != "nt":
-        with (job_dir(job) / "supervisor.log").open("ab") as output:
-            child = subprocess.Popen([sys.executable, "-X", "utf8", str(ROOT / "worker.py"), "run", job],
+        with output_path.open("ab") as output:
+            child = subprocess.Popen(argv,
                                      stdin=subprocess.DEVNULL, stdout=output, stderr=output,
                                      start_new_session=True, close_fds=True)
         return child.pid
     import base64
-    command = subprocess.list2cmdline([sys.executable, "-X", "utf8", str(ROOT / "worker.py"), "run", job])
+    command = subprocess.list2cmdline(argv)
     quoted = "'" + command.replace("'", "''") + "'"
     script = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; "
     script += "$startup=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}; "
@@ -282,8 +286,19 @@ def rpc(request):
             write_json(path / "request.json", config)
             write_json(path / "state.json", {"job": job, "project": project["name"], "status": "starting", "created_at": now()})
             try:
-                pid = launch_supervisor(job)
-                stamp = process_stamp(pid)
+                if config['managed_turn'] and project.get('local_control'):
+                    warm_path = directory / 'warm.json'
+                    warm = read_json(warm_path)
+                    if warm and isinstance(warm.get('pid'), int) and process_stamp(warm['pid']) == warm.get('stamp'):
+                        pid, stamp = warm['pid'], warm['stamp']
+                    else:
+                        pid = launch_supervisor(job, project['name'])
+                        stamp = process_stamp(pid)
+                        if stamp is not None:
+                            write_json(warm_path, {'pid': pid, 'stamp': stamp})
+                else:
+                    pid = launch_supervisor(job)
+                    stamp = process_stamp(pid)
                 if stamp is None:
                     raise RuntimeError("Supervisor failed to start")
             except Exception as exc:

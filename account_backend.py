@@ -153,7 +153,7 @@ class AccountBackend:
         if op=='create-project':return self.store.project_create(user,p['name'])
         if op in {'join','join-project'}:return self.store.join(user,p['invite'])
         if op=='invite':return self.store.invite(user,p['project'])
-        if op=='message':return self.store.message(user,p['project'],p['body'],p.get('recipient_id'))
+        if op=='message':return self.store.message(user,p['project'],p['body'],p.get('recipient_id'),p.get('mention_agent_id'))
         if op=='set-admin':
             if p.get('agent'):return self.store.set_admin(user,p['project'],p['agent']) or {'updated':True}
             with self.store.connect() as db:

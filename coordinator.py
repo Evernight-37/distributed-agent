@@ -65,8 +65,8 @@ Return only visible context; you cannot request other agents' private conversati
                 cursors={x['channel']:x['last_message'] for x in db.execute('SELECT * FROM agent_cursors WHERE agent_id=?',(r['id'],))}
                 source=None
                 partner=None
-                for candidate in db.execute("SELECT * FROM messages WHERE project_id=? AND sender_id<>? AND (sender_type<>'system' OR causal_task='execution-completed') AND (recipient_id=? OR (recipient_id IS NULL AND ?=1)) ORDER BY id",
-                    (r['project_id'],r['id'],r['id'],int(r['admin_agent_id']==r['id']))):
+                for candidate in db.execute("SELECT * FROM messages WHERE project_id=? AND sender_id<>? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (sender_type<>'system' OR causal_task='execution-completed') AND (recipient_id=? OR (recipient_id IS NULL AND (mention_agent_id=? OR (mention_agent_id IS NULL AND ?=1)))) ORDER BY id",
+                    (r['project_id'],r['id'],r['id'],r['id'],int(r['admin_agent_id']==r['id']))):
                     other=candidate['sender_id'] if candidate['recipient_id'] else None
                     if candidate['sender_type']=='system':
                         execution=db.execute('SELECT reply_to FROM executions WHERE id=?',(candidate['sender_id'],)).fetchone()
@@ -113,6 +113,7 @@ Return only visible context; you cannot request other agents' private conversati
                     job=match.group(0) if match else None
                 with self.store.connect() as db:
                     db.execute('UPDATE tasks SET state=?,job=?,error=?,processed=1 WHERE id=?',('unknown' if uncertain else 'failed',job,text[:4000],task['id']))
+                    self.store.clear_draft(db,task['id'])
                     self.consumed(db,task)
                     self.store._message(db,task['project_id'],'system','system','任务启动未确认，请人工核对，系统不会自动重试。' if uncertain else '任务启动失败：'+text[:1000],agent['id'],task['id'])
 
@@ -127,6 +128,9 @@ Return only visible context; you cannot request other agents' private conversati
                 result=self.backend.status(task['job'],fetch=True)
             except Exception:
                 continue
+            draft = result.get('reply_draft')
+            if isinstance(draft, str) and len(draft) <= 16000:
+                self.update_reply_draft(task, draft)
             if result.get('status') not in TERMINAL:
                 continue
             with self.store.connect() as db:
@@ -135,6 +139,17 @@ Return only visible context; you cannot request other agents' private conversati
                            (result['status'],result.get('report',''),result.get('error'),task['id']))
                 self.consumed(db,task)
             self.process_completed(task['id'])
+
+    def update_reply_draft(self, task, draft):
+        with self.store.connect() as db:
+            agent = db.execute('SELECT * FROM agents WHERE id=?', (task['agent_id'],)).fetchone()
+            project = db.execute('SELECT * FROM projects WHERE id=?', (task['project_id'],)).fetchone()
+            if not agent or not project:
+                return
+            contract = json.loads(task['contract'])
+            private = bool(contract.get('private_turn'))
+            recipient = contract.get('reply_to') if private else None
+            self.store.draft_message(db, project['id'], agent['id'], draft, recipient, task['id'])
 
     def process_completed(self,task_id):
         with self.store.connect() as db:
@@ -150,6 +165,7 @@ Return only visible context; you cannot request other agents' private conversati
             reply_to=original.get('reply_to')
             private=bool(original.get('private_turn'))
             if task['state']!='needs_review':
+                self.store.clear_draft(db, task_id)
                 self.store._message(db,project['id'],'system','system','任务结束：'+task['state']+'。等待人工处理，不自动重试。',agent['id'],task_id)
                 return
             try:
@@ -161,6 +177,7 @@ Return only visible context; you cannot request other agents' private conversati
                         raise ValueError('Invalid action list')
             except Exception:
                 # Plain reports remain auditable; never interpret commands or guessed JSON fragments.
+                self.store.clear_draft(db, task_id)
                 self.store._message(db,project['id'],agent['id'],'agent',task['report'][:16000] or '无报告',reply_to if private else (project['admin_agent_id'] if project['admin_agent_id']!=agent['id'] else None),task_id)
                 return
             reply=answer.get('reply','').strip()
@@ -168,7 +185,10 @@ Return only visible context; you cannot request other agents' private conversati
                 self.store.log(db,'scheduler','suppressed_checkpoint',{'task':task_id})
                 reply=''
             if reply:
-                self.store._message(db,project['id'],agent['id'],'agent',reply,reply_to,task_id)
+                if not self.store.finalize_draft(db, task_id, reply, reply_to):
+                    self.store._message(db,project['id'],agent['id'],'agent',reply,reply_to,task_id)
+            else:
+                self.store.clear_draft(db, task_id)
             for message in answer.get('messages',[]):
                 if not isinstance(message,dict):
                     continue
