@@ -55,6 +55,7 @@
   <section id="auth" class="hidden">
     <form id="authForm" class="card">
       <h1>Agent 群工作台</h1>
+      <p><a href="/guide" target="_blank" rel="noopener">第一次使用？打开图解教程 →</a></p>
       <p id="authHint" class="muted"></p>
       <label>用户名<input id="username" autocomplete="username" required maxlength="40"></label>
       <label>密码<input id="password" type="password" autocomplete="current-password"></label>
@@ -64,7 +65,7 @@
     </form>
   </section>
   <section id="app" class="hidden">
-    <header class="top row between"><strong>Agent 群工作台</strong><div class="row"><span id="who" class="muted"></span><button id="logout" class="secondary">退出</button></div></header>
+    <header class="top row between"><strong>Agent 群工作台</strong><div class="row"><a href="/guide" target="_blank" rel="noopener">新手教程</a><span id="who" class="muted"></span><button id="logout" class="secondary">退出</button></div></header>
     <div class="shell">
       <aside><div class="row between"><strong>项目</strong><button id="createProject" class="secondary">＋ 新建</button></div><div id="projectList"></div><button id="joinProject" class="secondary">加入项目</button></aside>
       <main><div id="notice" role="status"></div><div id="projectView"></div></main>
@@ -119,7 +120,7 @@
     function authView() {
       const bootstrap=state.bootstrap, register=state.authMode==='register';
       $('auth').classList.remove('hidden'); $('app').classList.add('hidden');
-      $('authHint').textContent=bootstrap ? '首次使用：创建你的管理账户。密码不限制长度，也可以留空；仅提交给本机服务。' : register ? '使用项目群主提供的邀请代码创建账户。密码不限制长度，也可以留空。' : '登录后查看项目群聊、私聊审计和自己的 agent 设置。';
+      $('authHint').textContent=bootstrap ? '首次使用：创建工作台账户，与 OpenAI/GitHub 账户无关。密码不限制长度，也可以留空。' : register ? '使用项目群主提供的邀请代码创建工作台账户。密码不限制长度，也可以留空。' : '使用这个工作台的用户名和密码登录，查看项目与协作消息。';
       $('authSubmit').textContent=bootstrap?'创建账户':register?'注册并加入':'登录';
       $('authSwitch').classList.toggle('hidden',bootstrap);
       $('authSwitch').textContent=register?'已有账户，去登录':'凭邀请注册';

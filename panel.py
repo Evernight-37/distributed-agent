@@ -131,6 +131,7 @@ def handler_for(root, backend=None, public_origin=None):
                 path = urlsplit(self.path)
                 token, csrf, user = self.session()
                 if path.path == '/': return self.send(200, (SOURCE/'web'/'index.html').read_bytes(), 'text/html; charset=utf-8')
+                if path.path == '/guide': return self.send(200, (SOURCE/'web'/'guide.html').read_bytes(), 'text/html; charset=utf-8')
                 if path.path == '/api/session': return self.send(200, {'csrf': csrf, 'user': user, 'bootstrap_required': store.bootstrap_required()})
                 if not user: return self.send(401, {'error': '请先登录'})
                 if path.path == '/api/snapshot':
