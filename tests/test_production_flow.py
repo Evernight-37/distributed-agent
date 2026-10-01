@@ -8,6 +8,18 @@ from pull_worker import enroll,Connector
 from common import read_json,write_json
 
 class ProductionFlow(unittest.TestCase):
+    def test_local_login_restarts_local_service_after_complete_exit(self):
+        from account_identity import generate_identity, encrypt_identity
+        from desktop_runtime import DesktopRuntime
+        with tempfile.TemporaryDirectory() as td:
+            bridge=AppBridge(Path(td))
+            profile={'id':'saved-local','username':'本机用户','server':'http://127.0.0.1:8765',
+                     'encrypted':encrypt_identity(generate_identity(),'password')}
+            with patch.object(bridge,'_profiles',return_value=[profile]), patch.object(DesktopRuntime,'start_workbench',return_value='http://127.0.0.1:8765') as start, patch.object(bridge,'_rpc',return_value={}), patch.object(bridge,'_enroll'):
+                result=bridge.invoke('login',{'profile':'saved-local','password':'password'})
+            self.assertTrue(result['ok'],result)
+            start.assert_called_once_with(open_browser=False)
+
     def test_two_devices_and_owner_controls(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);handler=handler_for(root/'service');server=ThreadingHTTPServer(('127.0.0.1',0),handler)

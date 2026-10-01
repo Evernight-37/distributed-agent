@@ -31,6 +31,8 @@ class AppBridge:
             try: message=json.load(exc).get('error','服务拒绝请求')
             except Exception: message='服务拒绝请求'
             raise RuntimeError(message) from None
+        except urllib.error.URLError as exc:
+            raise RuntimeError('无法连接协作服务 '+server+'。请检查该电脑的服务是否运行，以及 Tailscale 是否已连接。') from None
         if 'error' in result: raise RuntimeError(result['error'])
         return result.get('result',result)
     def _server(self,server):
@@ -101,6 +103,7 @@ class AppBridge:
             profile=next((p for p in self._profiles() if p['id']==data['profile']),None)
             if not profile: raise ValueError('本地账户不存在')
             identity=decrypt_identity(profile['encrypted'],data.get('password',''))
+            self._server(profile['server'])
             self.identity=identity;self.profile=profile
             self._rpc('dashboard');self._enroll();return {'unlocked':True}
         if action=='logout': self.identity=None;self.profile=None;return {}
