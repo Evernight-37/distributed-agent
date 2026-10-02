@@ -132,7 +132,10 @@ def outcome(exit_code, event_list, cancelled=False, timed_out=False):
     if timed_out:
         return "timed_out"
     types = {e["type"] for e in event_list}
-    if exit_code == 0 and "turn.completed" in types and "turn.failed" not in types and "error" not in types:
+    # Codex may emit a recoverable transport error, switch from WebSocket to
+    # HTTPS, and still complete the turn. Final completion and process exit are
+    # authoritative; worker.run separately requires a final report.
+    if exit_code == 0 and "turn.completed" in types and "turn.failed" not in types:
         return "needs_review"
     return "failed"
 

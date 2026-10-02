@@ -26,6 +26,12 @@ class CommonTests(unittest.TestCase):
         self.assertEqual(outcome(1, completed), "failed")
         self.assertEqual(outcome(0, [{"type": "turn.failed"}]), "failed")
         self.assertEqual(outcome(0, [{"type": "error"}]), "failed")
+        recovered = [{"type": "error", "message": "WebSocket timed out; switching to HTTPS"},
+                     {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}},
+                     {"type": "turn.completed"}]
+        self.assertEqual(outcome(0, recovered), "needs_review")
+        self.assertEqual(outcome(1, recovered), "failed")
+        self.assertEqual(outcome(0, recovered + [{"type": "turn.failed"}]), "failed")
         self.assertEqual(outcome(0, completed, cancelled=True), "cancelled")
         self.assertEqual(outcome(0, completed, timed_out=True), "timed_out")
         self.assertEqual(outcome(0, completed, cancelled=True, timed_out=True), "cancelled")
@@ -231,7 +237,10 @@ class WorkerTests(unittest.TestCase):
     def test_reader_failure_after_completion_event_is_not_success(self):
         self._run_mocked_job(reader_failure=True)
 
-    def _run_mocked_job(self, cancel=False, reader_failure=False):
+    def test_recoverable_transport_error_keeps_completed_report(self):
+        self._run_mocked_job(recoverable_error=True)
+
+    def _run_mocked_job(self, cancel=False, reader_failure=False, recoverable_error=False):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(worker, "ROOT", Path(directory)):
             remote = Path(directory) / "remote"
             remote.mkdir()
@@ -248,15 +257,19 @@ class WorkerTests(unittest.TestCase):
             proc.stdout = [b"report\n", b"complete\n", b"extra\n"]
             event_results = [[{"type": "item.completed", "item": {"type": "agent_message", "text": "report"}}],
                              [{"type": "turn.completed"}], RuntimeError("reader-write-failure") if reader_failure else []]
+            if recoverable_error:
+                event_results[0].insert(0, {"type": "error", "message": "WebSocket timeout; switching to HTTPS"})
             with mock.patch.object(worker, "cli_path", return_value="codex.exe"), \
                  mock.patch.object(worker.subprocess, "Popen", return_value=proc), \
                  mock.patch.object(worker, "events", side_effect=event_results), \
                  mock.patch.object(worker, "effective_model", return_value="gpt-5.6-sol"):
                 worker.run("job1")
             state = read_json(job / "state.json")
-            self.assertEqual(state["status"], "cancelled" if cancel else "failed")
+            self.assertEqual(state["status"], "cancelled" if cancel else "needs_review" if recoverable_error else "failed")
             if cancel:
                 self.assertIn("cancel_requested_at", state)
+            elif recoverable_error:
+                self.assertEqual((job / "report.txt").read_text(encoding="utf-8"), "report")
             else:
                 self.assertIn("reader-write-failure", state["error"])
 
