@@ -12,6 +12,24 @@ from common import read_json, write_json
 
 
 class WarmWorkerLifecycleTests(unittest.TestCase):
+    def test_managed_windows_worker_uses_detached_process_instead_of_wmi(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(worker, 'ROOT', Path(folder)), \
+             patch.object(worker.os, 'name', 'nt'), \
+             patch.object(worker.subprocess, 'Popen') as popen:
+            project = Path(folder) / 'projects' / 'project'
+            project.mkdir(parents=True)
+            popen.return_value.pid = 4321
+
+            pid = worker.launch_supervisor('job', 'project', 'launch-token')
+
+            self.assertEqual(pid, 4321)
+            args, kwargs = popen.call_args
+            self.assertIn('warm_worker.py', args[0][3])
+            self.assertEqual(args[0][-1], 'launch-token')
+            self.assertTrue(kwargs['creationflags'] & worker.subprocess.DETACHED_PROCESS)
+            self.assertTrue(kwargs['creationflags'] & worker.subprocess.CREATE_NO_WINDOW)
+
     def test_registered_worker_claims_active_job_despite_launch_pid_mismatch(self):
         with tempfile.TemporaryDirectory() as folder, \
              patch.object(worker, 'ROOT', Path(folder)), \

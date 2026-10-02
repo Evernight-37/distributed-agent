@@ -172,6 +172,17 @@ def launch_supervisor(job, warm_project=None, launch_token=None):
                                      stdin=subprocess.DEVNULL, stdout=output, stderr=output,
                                      start_new_session=True, close_fds=True)
         return child.pid
+    if warm_project:
+        # Managed turns are launched by the owner's persistent desktop
+        # receiver, so they do not need WMI to escape an SSH job object.  WMI
+        # intermittently rejects valid content-addressed runtime paths with
+        # ReturnValue 9; a detached hidden child is deterministic here.
+        flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        with output_path.open("ab") as output:
+            child = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.DEVNULL,
+                                     stdout=output, stderr=output, close_fds=True,
+                                     creationflags=flags)
+        return child.pid
     import base64
     command = subprocess.list2cmdline(argv)
     quoted = "'" + command.replace("'", "''") + "'"
