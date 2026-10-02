@@ -7,8 +7,9 @@ import time
 from pathlib import Path
 
 from appserver_client import AppServer, PublicReplyDecoder
-from common import apply_local_proxy, lock, read_json, write_json
-from worker import (GROUP_RULES, ROOT, cli_path, effective_model, execution_timeout,
+from common import lock, read_json, write_json
+from worker import (GROUP_RULES, ROOT, cli_path, codex_login_status, effective_model, execution_timeout,
+                    executor_environment,
                     job_dir, now, process_stamp, project_dir)
 
 DEFAULT_IDLE_SECONDS = 300
@@ -29,18 +30,7 @@ def response_schema():
 
 
 def local_env():
-    env = dict(os.environ, PYTHONIOENCODING='utf-8')
-    executor = read_json(ROOT / 'executor.json', {})
-    network = executor.get('network_env', {})
-    if not isinstance(network, dict) or set(network) - {'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'WS_PROXY', 'WSS_PROXY'}:
-        raise ValueError('Unsupported worker network environment')
-    for key, value in network.items():
-        if not isinstance(value, str) or '\n' in value or '\r' in value:
-            raise ValueError('Invalid network environment')
-        env[key] = value
-    if 'proxy' in executor:
-        env = apply_local_proxy(env, executor['proxy'])
-    return env
+    return executor_environment(ROOT)
 
 
 def server_command(stage):
@@ -124,6 +114,9 @@ class WarmManager:
         contract = json.loads(config['prompt'])
         stage = contract.get('stage', 'discuss')
         cwd = project['remote_path']
+        login=codex_login_status(cli_path(),ROOT)
+        if not login['logged_in']:
+            raise RuntimeError(login['login_error'])
         server = self.ensure_server(stage, cwd)
         existing = config.get('thread_id')
         thread_settings = {'model': project['model'], 'modelProvider': 'openai', 'cwd': cwd,

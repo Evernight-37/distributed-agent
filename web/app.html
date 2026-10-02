@@ -369,7 +369,7 @@ function codexCliCard(){
   const card=el('section','panel'),statusLine=el('p','muted small','正在检测 Codex CLI…'),controls=el('div','setting-row');
   statusLine.style.overflowWrap='anywhere';
   card.append(el('h2','','Codex CLI'),statusLine);
-  note(card,'Codex 需要在这台电脑上单独安装并登录。本检测只确认程序路径，不会检查或读取登录凭据。');
+  note(card,'Codex 需要在这台电脑上单独安装并登录。这里只读取 CLI 返回的登录状态，不会读取登录凭据。');
   const path=field(card,'手动指定程序（留空则自动检测）','');
   path.placeholder='选择 codex.exe 或 codex.cmd';
   const browse=button('浏览…',async()=>{const r=await api('codex-cli-choose');if(r?.path)path.value=r.path});
@@ -380,7 +380,7 @@ function codexCliCard(){
     detect.disabled=true;
     try{
       const r=await api(force?'codex-cli-redetect':'codex-cli-status');
-      if(r?.found){statusLine.className='muted small';statusLine.textContent='已找到'+(r.version?' · '+r.version:'')+(r.path?' · '+r.path:'');if(r.configured&&!path.value.trim()&&r.path)path.value=r.path}
+      if(r?.found){statusLine.className=r.logged_in?'muted small':'error small';statusLine.textContent='已找到'+(r.version?' · '+r.version:'')+(r.path?' · '+r.path:'')+(r.logged_in?' · 已登录':' · '+(r.login_error||'尚未登录'));if(r.configured&&!path.value.trim()&&r.path)path.value=r.path}
       else{statusLine.className='error small';statusLine.textContent='未找到 Codex CLI'+(r?.error?'：'+r.error:'。请安装后浏览选择 codex.exe。')}
     }catch(e){statusLine.className='error small';statusLine.textContent='检测失败：'+e.message}
     finally{detect.disabled=false}

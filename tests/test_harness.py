@@ -260,6 +260,7 @@ class WorkerTests(unittest.TestCase):
             if recoverable_error:
                 event_results[0].insert(0, {"type": "error", "message": "WebSocket timeout; switching to HTTPS"})
             with mock.patch.object(worker, "cli_path", return_value="codex.exe"), \
+                 mock.patch.object(worker, "codex_login_status", return_value={'logged_in':True}), \
                  mock.patch.object(worker.subprocess, "Popen", return_value=proc), \
                  mock.patch.object(worker, "events", side_effect=event_results), \
                  mock.patch.object(worker, "effective_model", return_value="gpt-5.6-sol"):

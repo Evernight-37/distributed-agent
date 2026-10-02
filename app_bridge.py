@@ -500,16 +500,18 @@ class AppBridge:
                     'team_service':status,'proxy':self._proxy_settings(),'warm_idle_seconds':self._idle_seconds()}
         if action=='codex-cli-status':
             if not self.profile or not self.identity:raise PermissionError('请先登录')
-            from worker import cli_status
+            from worker import cli_status,codex_login_status
             saved=read_json(self.root/'codex-cli.json',{})
             if isinstance(saved,dict) and isinstance(saved.get('path'),str) and saved['path'] and Path(saved['path']).is_file():
-                return {'found':True,'configured':saved.get('mode')=='manual','path':saved['path'],
+                result={'found':True,'configured':saved.get('mode')=='manual','path':saved['path'],
                         'version':saved.get('version','')}
+                result.update(codex_login_status(saved['path'],self._runtime().root));return result
             if isinstance(saved,dict) and saved.get('mode')=='manual':
                 return {'found':False,'configured':True,'error':'设置的 Codex 路径已失效，请重新选择程序'}
             if isinstance(saved,dict) and saved.get('mode')=='auto' and not saved.get('path'):
                 return {'found':False,'configured':False,'error':saved.get('error','未找到可运行的 Codex CLI；请点击重新检测')}
             result=cli_status(self._runtime().root)
+            if result.get('found'):result.update(codex_login_status(result['path'],self._runtime().root))
             write_json(self.root/'codex-cli.json',{'path':result.get('path',''),'version':result.get('version',''),
                                                    'error':result.get('error',''),'mode':'auto'})
             if result['found']:
@@ -518,10 +520,11 @@ class AppBridge:
             return result
         if action=='codex-cli-redetect':
             if not self.profile or not self.identity:raise PermissionError('请先登录')
-            from worker import cli_status
+            from worker import cli_status,codex_login_status
             for receiver in (self.root/'receivers').glob('device-*'):
                 if receiver.is_dir():self._sync_cli(DesktopRuntime(receiver),'')
             result=cli_status(self._runtime().root)
+            if result.get('found'):result.update(codex_login_status(result['path'],self._runtime().root))
             selected=result.get('path','') if result.get('found') else ''
             for receiver in (self.root/'receivers').glob('device-*'):
                 if receiver.is_dir():self._sync_cli(DesktopRuntime(receiver),selected)
@@ -547,13 +550,14 @@ class AppBridge:
             for path in receivers.glob('device-*'):
                 if path.is_dir() and path.resolve().parent==receivers.resolve():
                     self._sync_cli(DesktopRuntime(path),selected)
-            from worker import cli_status
+            from worker import cli_status,codex_login_status
             result=cli_status(self._runtime().root)
             if not selected and result.get('found'):
                 selected=result['path']
                 for path in receivers.glob('device-*'):
                     if path.is_dir() and path.resolve().parent==receivers.resolve():
                         self._sync_cli(DesktopRuntime(path),selected)
+            if result.get('found'):result.update(codex_login_status(result['path'],self._runtime().root))
             write_json(self.root/'codex-cli.json',{'path':selected,'version':result.get('version',''),
                                                      'error':result.get('error',''),'mode':'manual' if data.get('path','').strip() else 'auto'})
             return result

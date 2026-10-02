@@ -82,6 +82,37 @@ def codex_version(exe):
     return tuple(map(int, match.groups())) if match else None
 
 
+def executor_environment(root=ROOT):
+    """Build the exact environment used by Codex and its login preflight."""
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    executor=read_json(Path(root)/'executor.json',{})
+    network=executor.get('network_env',{})
+    if not isinstance(network,dict) or set(network)-{'HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','WS_PROXY','WSS_PROXY'}:
+        raise ValueError('Unsupported worker network environment')
+    for key,value in network.items():
+        if not isinstance(value,str) or '\n' in value or '\r' in value: raise ValueError('Invalid network environment')
+        env[key]=value
+    if 'proxy' in executor:
+        env=apply_local_proxy(env,executor['proxy'])
+    return env
+
+
+def codex_login_status(exe,root=ROOT):
+    """Check the selected CLI login without reading credentials or making a model call."""
+    try:
+        result=subprocess.run([str(exe),'login','status'],capture_output=True,text=True,encoding='utf-8',errors='replace',
+                              env=executor_environment(root),timeout=12,
+                              creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+    except subprocess.TimeoutExpired:
+        return {'logged_in':False,'login_error':'Codex 登录状态检查超时；请检查本机代理'}
+    except OSError:
+        return {'logged_in':False,'login_error':'无法检查 Codex 登录状态'}
+    output=(result.stdout+'\n'+result.stderr).casefold()
+    if result.returncode==0 and 'not logged in' not in output:
+        return {'logged_in':True}
+    return {'logged_in':False,'login_error':'Codex CLI 尚未登录；请使用当前 Windows 用户完成登录'}
+
+
 def cli_status(root=ROOT):
     """Find a working CLI in the worker account, including npm/PATH installs."""
     import shutil
@@ -409,6 +440,9 @@ def run(job):
         config = read_json(path / "request.json")
         directory = project_dir(config["project"]["name"])
         exe = cli_path()
+        login=codex_login_status(exe,ROOT)
+        if not login['logged_in']:
+            raise RuntimeError(login['login_error'])
         command_project = dict(config['project'])
         if command_project.get('local_control'):
             command_project['_stage'] = json.loads(config['prompt']).get('stage', 'discuss')
@@ -429,16 +463,7 @@ def run(job):
         rules = GROUP_RULES if config.get('managed_turn') else PEER_RULES
         prompt = rules + "\nPROJECT MEMORY:\n" + json.dumps(config["memory"], ensure_ascii=False) + "\nTASK CONTRACT:\n" + config["prompt"]
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
-        env = dict(os.environ, PYTHONIOENCODING="utf-8")
-        executor=read_json(ROOT/'executor.json',{})
-        network=executor.get('network_env',{})
-        if not isinstance(network,dict) or set(network)-{'HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','WS_PROXY','WSS_PROXY'}:
-            raise ValueError('Unsupported worker network environment')
-        for key,value in network.items():
-            if not isinstance(value,str) or '\n' in value or '\r' in value: raise ValueError('Invalid network environment')
-            env[key]=value
-        if 'proxy' in executor:
-            env = apply_local_proxy(env, executor['proxy'])
+        env=executor_environment(ROOT)
         with (path / "prompt.txt").open("rb") as source, (path / "stderr.log").open("wb") as error:
             proc = subprocess.Popen(command, stdin=source, stdout=subprocess.PIPE, stderr=error,
                                     cwd=config["project"]["remote_path"], env=env, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0, start_new_session=os.name != "nt")
