@@ -9,6 +9,12 @@ from pull_worker import enroll,Connector
 from common import read_json,write_json
 
 class ProductionFlow(unittest.TestCase):
+    def test_default_local_state_uses_clean_app_v6_namespace(self):
+        with tempfile.TemporaryDirectory() as td, patch.dict('os.environ', {'LOCALAPPDATA': td}):
+            bridge=AppBridge()
+            self.assertEqual(bridge.root, (Path(td)/'AgentHarness'/'app-v6').resolve())
+            self.assertFalse((Path(td)/'AgentHarness'/'app-v5').exists())
+
     def test_local_login_restarts_local_service_after_complete_exit(self):
         from account_identity import generate_identity, encrypt_identity
         from desktop_runtime import DesktopRuntime

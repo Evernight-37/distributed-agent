@@ -17,7 +17,7 @@ from account_identity import generate_identity, sign_envelope, encrypt_identity,
 
 class AppBridge:
     def __init__(self, root=None):
-        self.root=Path(root or Path(os.environ.get('LOCALAPPDATA',Path.home()))/'AgentHarness'/'app-v5').resolve()
+        self.root=Path(root or Path(os.environ.get('LOCALAPPDATA',Path.home()))/'AgentHarness'/'app-v6').resolve()
         self.root.mkdir(parents=True,exist_ok=True)
         self.identity=None;self.profile=None;self.window=None;self.pending=None;self.inspected={}
         self.project_servers={};self.employee_servers={};self.command_servers={};self.job_servers={}

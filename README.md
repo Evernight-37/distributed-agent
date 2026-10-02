@@ -78,7 +78,7 @@
 
 设备撤销目前在执行操作的协作服务内生效，不会自动撤销其他服务中同一设备的权限。每个服务的负责人应分别处理遗失设备；跨服务统一撤销尚未提供。
 
-本机账户数据在 `%LOCALAPPDATA%\AgentHarness\app-v5`，后台执行状态按设备分开。首次运行模型前，每台机器需要已有可用 Codex 登录。新界面不读取或传输 Codex、SSH 或 GitHub 凭据。
+6.0.0 是清洁重置版。本机账户数据在 `%LOCALAPPDATA%\AgentHarness\app-v6`，不会自动迁移或读取旧版 `app-v5` 的 profiles、receivers、Codex 或代理缓存；历史账户需要重新创建。后台执行状态按设备分开。首次运行模型前，每台机器需要已有可用 Codex 登录。新界面不读取或传输 Codex、SSH 或 GitHub 凭据。
 
 ## 再了解细节
 
