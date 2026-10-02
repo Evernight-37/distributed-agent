@@ -1,6 +1,7 @@
 """Authenticated project workgroups; standard-library HTTP service."""
 import argparse
 import json
+import re
 import secrets
 import sqlite3
 import threading
@@ -14,7 +15,7 @@ from collaboration_store import Store, digest
 from coordinator import Coordinator
 from controller import DEFAULT_STATE, SOURCE
 from broker import PullBackend
-from common import lock
+from common import lock,read_json
 
 
 def action(store, user, data, backend):
@@ -92,6 +93,7 @@ def action(store, user, data, backend):
 
 
 def handler_for(root, backend=None, public_origin=None):
+    root=Path(root)
     store = Store(root)
     backend = backend or PullBackend(store)
     from account_backend import AccountBackend
@@ -103,9 +105,29 @@ def handler_for(root, backend=None, public_origin=None):
             self.connection.settimeout(15)
 
         def log_message(self, *args): pass
-        def origin(self): return public_origin or f'http://127.0.0.1:{self.server.server_port}'
+        def public_origin(self):
+            candidate=public_origin
+            if not candidate:
+                setting=read_json(root/'team-service.json',{})
+                if setting.get('mode')!='tailscale-serve' or setting.get('proxy')!='http://127.0.0.1:8765' or setting.get('tailnet_only') is not True:
+                    return None
+                candidate=setting.get('url')
+            if not isinstance(candidate,str):return None
+            parsed=urlsplit(candidate)
+            if parsed.scheme!='https' or parsed.path or parsed.query or parsed.fragment or parsed.username:
+                return None
+            if not parsed.hostname or not re.fullmatch(r'[a-z0-9-]+\.[a-z0-9-]+\.ts\.net',parsed.hostname.lower()):
+                return None
+            return 'https://'+parsed.netloc
+        def origin(self):
+            public=self.public_origin()
+            return public if public and self.headers.get('Host')==urlsplit(public).netloc else f'http://127.0.0.1:{self.server.server_port}'
         def allowed(self):
-            return self.headers.get('Host') == urlsplit(self.origin()).netloc and self.headers.get('Sec-Fetch-Site') != 'cross-site'
+            local=f'127.0.0.1:{self.server.server_port}'
+            public=self.public_origin()
+            allowed={local}
+            if public:allowed.add(urlsplit(public).netloc)
+            return self.headers.get('Host') in allowed and self.headers.get('Sec-Fetch-Site') != 'cross-site'
 
         def session(self):
             cookie = SimpleCookie()
