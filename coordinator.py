@@ -176,8 +176,24 @@ Return only visible context; you cannot request other agents' private conversati
             reply_to=original.get('reply_to')
             private=bool(original.get('private_turn'))
             if task['state']!='needs_review':
-                self.store.clear_draft(db, task_id)
-                self.store._message(db,project['id'],'system','system','任务结束：'+task['state']+'。等待人工处理，不自动重试。',agent['id'],task_id)
+                answer=None
+                try:
+                    candidate=json.loads(task['report'])
+                    if isinstance(candidate,dict) and isinstance(candidate.get('reply',''),str):
+                        answer=candidate
+                except (ValueError,TypeError):
+                    pass
+                reply=(answer or {}).get('reply','').strip()
+                if reply.casefold().startswith('[checkpoint]'):
+                    reply=''
+                if reply:
+                    if not self.store.finalize_draft(db,task_id,reply,reply_to):
+                        self.store._message(db,project['id'],agent['id'],'agent',reply,reply_to,task_id)
+                    notice=agent['name']+' 已生成回复，但本机执行状态为 '+task['state']+'；本轮未执行派工、记忆或后台请求。'
+                else:
+                    self.store.clear_draft(db,task_id)
+                    notice=agent['name']+' 未能回复：本机执行状态为 '+task['state']+'。请由机器所有者检查 Codex、客户端版本和超时设置。'
+                self.store._message(db,project['id'],'system','system',notice,reply_to if private else None,task_id)
                 return
             try:
                 answer=json.loads(task['report'])

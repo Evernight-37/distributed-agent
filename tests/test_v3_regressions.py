@@ -48,6 +48,23 @@ class Regressions(unittest.TestCase):
         c.process_completed(task)
         c.tick()
         self.assertEqual(self.backend.submissions,[])
+        bodies=[m['body'] for m in self.store.project_view(self.owner['id'],self.project)['messages']]
+        self.assertTrue(any('未能回复' in body and 'failed' in body for body in bodies))
+
+    def test_terminal_error_keeps_completed_reply_without_running_actions(self):
+        a,b=self.agents()
+        report=json.dumps({'reply':'已经生成的完整回复','messages':[],
+                           'tasks':[{'agent':b,'title':'不应执行'}],
+                           'executions':[{'template':'not-run'}],'memory_notes':['不应保存']})
+        task=self.finished(a,report,'timed_out')
+        Coordinator(self.store,self.backend).process_completed(task)
+        view=self.store.project_view(self.owner['id'],self.project)
+        self.assertIn('已经生成的完整回复',[m['body'] for m in view['messages']])
+        self.assertTrue(any('timed_out' in m['body'] and '未执行派工' in m['body'] for m in view['messages']))
+        with self.store.connect() as db:
+            self.assertFalse(db.execute("SELECT 1 FROM tasks WHERE id<>?",(task,)).fetchone())
+            self.assertFalse(db.execute('SELECT 1 FROM executions').fetchone())
+            self.assertFalse(db.execute('SELECT 1 FROM project_memory_notes').fetchone())
 
     def test_private_plain_report_does_not_fall_back_to_group(self):
         a,b=self.agents()
