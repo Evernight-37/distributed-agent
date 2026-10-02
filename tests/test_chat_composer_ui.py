@@ -11,6 +11,9 @@ class ChatComposerUiTests(unittest.TestCase):
         self.assertIn("compositionstart",html)
         self.assertIn("compositionend",html)
         self.assertNotIn("e.target.form?.requestSubmit()",html)
+        self.assertIn("client_message_id:submission.client_message_id",html)
+        self.assertIn("client_message_id:messageId()",html)
+        self.assertLess(html.index("await api('message'"),html.index("S.drafts.delete(draftKey)"))
         self.assertNotIn("e.keyCode!==229",html)
 
 

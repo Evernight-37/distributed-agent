@@ -25,8 +25,31 @@ class Coordinator:
         self.stop_event=threading.Event()
 
     def recover(self):
+        completed=[]
         with self.store.connect() as db:
-            db.execute("UPDATE tasks SET state='unknown',error='Controller restarted during launch; reconcile stored job ID before retry' WHERE state='starting'")
+            starting=db.execute("SELECT * FROM tasks WHERE state='starting'").fetchall()
+            for task in starting:
+                if isinstance(self.backend,PullBackend):
+                    remote=db.execute('SELECT state,result FROM pull_jobs WHERE id=?',(task['job'],)).fetchone()
+                    if not remote:
+                        db.execute("UPDATE tasks SET state='failed',processed=0,error=? WHERE id=?",
+                                   ('Controller stopped before the durable pull job was created; no remote execution was started',task['id']))
+                        self.consumed(db,task)
+                        completed.append(task['id'])
+                        continue
+                    result=json.loads(remote['result'] or '{}')
+                    state=remote['state']
+                    if state in {'queued','claimed','running'}: state='running'
+                    db.execute('UPDATE tasks SET state=?,report=?,error=?,processed=? WHERE id=?',
+                               (state,result.get('report',''),result.get('error'),0 if state in TERMINAL else task['processed'],task['id']))
+                    if state in TERMINAL:
+                        self.consumed(db,task)
+                        completed.append(task['id'])
+                else:
+                    db.execute("UPDATE tasks SET state='unknown',error='Controller restarted during launch; reconcile stored job ID before retry' WHERE id=?",(task['id'],))
+        # Finalization opens its own transaction and must run after the recovery
+        # transaction releases the SQLite writer lock.
+        for task_id in completed:self.process_completed(task_id)
 
     def consumed(self,db,task):
         channel=channel_for(json.loads(task['contract']))

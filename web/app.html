@@ -231,7 +231,10 @@ function renderProject(){
     chat.append(el('div','composer-readonly','Agent 内部会话仅供项目成员旁观。'));
   }else{
     const composer=el('form','composer'),draftKey=S.project+':'+selectedId;
-    const draft=S.drafts.get(draftKey)||{body:'',mention:''};
+    const messageId=()=>globalThis.crypto?.randomUUID?.()||'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.floor(Math.random()*16);return(c==='x'?r:(r&3|8)).toString(16)});
+    const draft=S.drafts.get(draftKey)||{body:'',mention:'',client_message_id:messageId()};
+    if(!draft.client_message_id)draft.client_message_id=messageId();
+    if(!S.drafts.has(draftKey))S.drafts.set(draftKey,draft);
     const mention=el('select','mention-agent'),text=el('textarea');
     if(isGroup){
       mention.setAttribute('aria-label','呼叫 Agent');mention.append(el('option','','默认由管理员回复'));
@@ -239,7 +242,7 @@ function renderProject(){
       mention.value=draft.mention||'';composer.append(mention);
     }
     text.value=draft.body;text.rows=2;text.placeholder=isGroup?'发送到项目大群；可选择呼叫指定 Agent…':'发送私聊消息…';
-    const save=()=>S.drafts.set(draftKey,{body:text.value,mention:isGroup?mention.value:''});
+    const save=()=>{const mentionValue=isGroup?mention.value:'';const previous=S.drafts.get(draftKey);S.drafts.set(draftKey,{body:text.value,mention:mentionValue,client_message_id:previous&&previous.body===text.value&&previous.mention===mentionValue?previous.client_message_id:messageId()})};
     text.oninput=save;if(isGroup)mention.onchange=save;
     const send=button('发送',null,'primary');send.type='submit';composer.append(text,send);
     let sending=false,composing=false;
@@ -252,8 +255,9 @@ function renderProject(){
     composer.onsubmit=e=>{e.preventDefault();run(async()=>{
       if(sending)return;const body=text.value.trim();if(!body)return;sending=true;
       const recipient=selected.recipient_id||(!isGroup?conversationParticipants(selected).find(id=>id!==me):null);
+      const submission=S.drafts.get(draftKey)||draft;
       try{
-        await api('message',{project:S.project,body,conversation_id:selectedId.startsWith('new:')?null:selectedId,recipient_id:recipient||null,mention_agent_id:isGroup?mention.value||null:null});
+        await api('message',{project:S.project,body,conversation_id:selectedId.startsWith('new:')?null:selectedId,recipient_id:recipient||null,mention_agent_id:isGroup?mention.value||null:null,client_message_id:submission.client_message_id});
         text.value='';S.drafts.delete(draftKey);
         if(selectedId.startsWith('new:')){
           const view=await api('project',{id:S.project,visit:true});S.view=view;

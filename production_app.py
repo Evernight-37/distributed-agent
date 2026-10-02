@@ -8,6 +8,34 @@ from pathlib import Path
 from desktop_runtime import assets
 from app_bridge import AppBridge
 
+
+def request_close_dialog(window, bridge):
+    """Ask the loaded page how to close, or safely close only the UI.
+
+    Native close events can arrive before pywebview has loaded the page.  In
+    that case there is no UI in which to offer the full-exit choice, so the
+    safe fallback is the same as "continue in background": permit destruction
+    of the native window without touching any service.
+    """
+    try:
+        handled = window.evaluate_js(
+            "typeof window.requestAppClose === 'function' "
+            "? (window.requestAppClose(), true) : false"
+        )
+    except Exception:
+        handled = False
+    if handled:
+        return True
+    bridge.allow_window_close = True
+    try:
+        window.destroy()
+    except Exception:
+        # The native close is already in progress on some pywebview backends.
+        # Setting allow_window_close still lets the next close event complete.
+        pass
+    return False
+
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--data');parser.add_argument('--smoke-report');args=parser.parse_args()
     import webview
@@ -20,7 +48,7 @@ def main():
         if bridge.allow_window_close or args.smoke_report: return True
         # WinForms raises closing on its UI thread. Queue JavaScript after the
         # cancellation so a synchronous WebView call cannot deadlock the form.
-        threading.Thread(target=lambda: window.evaluate_js('window.requestAppClose && window.requestAppClose()'), daemon=True).start()
+        threading.Thread(target=request_close_dialog, args=(window, bridge), daemon=True).start()
         return False
     window.events.closing += closing
     window.events.closed += bridge.close

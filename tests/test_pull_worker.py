@@ -97,10 +97,10 @@ class PullWorkerTests(unittest.TestCase):
         self.jobs=[job];self.connector.cycle()
         self.assertFalse(self.starts());self.assertEqual(self.reports[-1]['state'],'needs_review')
 
-    def test_disable_running_binding_cancels_and_waits_for_terminal_state(self):
+    def test_disable_running_binding_does_not_cancel_existing_turn(self):
         self.local_state='running';self.jobs=[self.job('turn')];self.connector.cycle()
         self.connector.save_binding(dict(self.binding,enabled=False));self.connector.cycle()
-        self.assertTrue(self.starts('cancel'))
+        self.assertFalse(self.starts('cancel'))
         self.assertEqual(self.reports[-1]['state'],'running')
         self.local_state='cancelled';self.connector.cycle()
         self.assertEqual(self.reports[-1]['state'],'cancelled')
@@ -118,6 +118,20 @@ class PullWorkerTests(unittest.TestCase):
         result=self.connector.resolve('unknown')
         self.assertEqual(result['status'],'needs_review');self.assertFalse(self.starts())
         self.connector.cycle();self.assertEqual(self.reports[-1]['state'],'needs_review')
+
+    def test_transient_status_failure_never_requests_cancellation(self):
+        receipt=self.connector.accept(self.job('transient'))
+        receipt['phase']='running';write_json(self.connector.receipt_path('transient'),receipt)
+        calls=[]
+        def executor(request):
+            calls.append(request['action'])
+            if request['action']=='fetch':raise OSError('temporary observer failure')
+            return {'status':'running'}
+        self.connector.executor=executor
+        result=self.connector.advance(receipt)
+        self.assertEqual(result['phase'],'running')
+        self.assertEqual(result['result']['status'],'unknown')
+        self.assertEqual(calls,['fetch'])
 
     def test_unknown_no_job_requires_explicit_owner_confirmation(self):
         receipt=self.connector.accept(self.job('missing'))

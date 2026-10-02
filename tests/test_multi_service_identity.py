@@ -1,8 +1,10 @@
 import tempfile
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from app_bridge import AppBridge
 from collaboration_store import Store
@@ -16,6 +18,25 @@ class QuietBridge(AppBridge):
 
 
 class MultiServiceIdentityTests(unittest.TestCase):
+    def test_dashboard_fetches_services_concurrently_and_marks_offline(self):
+        with tempfile.TemporaryDirectory() as td:
+            bridge=QuietBridge(Path(td));bridge.identity={'account_id':'account','public_key':'public'}
+            bridge.profile={'server':'https://one.example','services':['https://two.example','https://bad.example']}
+            def activate(server,timeout=15):
+                time.sleep(.15)
+                if 'bad' in server:raise RuntimeError('offline')
+            def rpc(operation,payload=None,server=None,timeout=15):
+                self.assertEqual(operation,'dashboard')
+                return {'service_id':server,'hosted_by_me':False,'projects':[],'employees':[],'devices':[],
+                        'user':{'id':'account','username':'owner'}}
+            started=time.monotonic()
+            with patch.object(bridge,'_sync_service_links'),patch.object(bridge,'_activate_service',side_effect=activate),patch.object(bridge,'_rpc',side_effect=rpc):
+                result=bridge._dashboard()
+            elapsed=time.monotonic()-started
+            self.assertLess(elapsed,.4)
+            self.assertEqual(result['unavailable_services'],['https://bad.example'])
+            self.assertEqual(len(result['services']),2)
+
     def test_one_identity_joins_other_service_and_linked_device_sees_project(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

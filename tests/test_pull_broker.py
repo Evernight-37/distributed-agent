@@ -136,5 +136,19 @@ class PullBrokerTests(unittest.TestCase):
         self.backend.device_api('/api/device/report',dict(job_id=job['id'],lease_id=job['lease_id'],state='cancelled'),token)
         self.assertEqual(self.backend.status(job['id'])['status'],'cancelled')
 
+    def test_model_audit_metadata_round_trips_and_is_validated(self):
+        token,_=self.enroll();agent=self.advertise(token);self.submit(agent);job=self.claim(token)
+        result={'report':'done','requested_model':'gpt-5.6-sol','reasoning_effort':'medium',
+                'effective_model':'gpt-5.6-sol','model_verified':True}
+        self.backend.device_api('/api/device/report',dict(job_id=job['id'],lease_id=job['lease_id'],
+            state='needs_review',result=result),token)
+        status=self.backend.status(job['id'])
+        for key,value in result.items():self.assertEqual(status[key],value)
+        token,_=self.enroll('second');other=self.advertise(token,node='second',backend='other')
+        self.submit(other,job='job-invalid');claimed=self.claim(token)
+        with self.assertRaises(ValueError):
+            self.backend.device_api('/api/device/report',dict(job_id=claimed['id'],lease_id=claimed['lease_id'],
+                state='needs_review',result={'model_verified':'yes'}),token)
+
 
 if __name__=='__main__': unittest.main()

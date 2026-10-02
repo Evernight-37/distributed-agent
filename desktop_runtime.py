@@ -1,17 +1,37 @@
 """Desktop controls for an independent, locally owned worker service."""
 import json
+import hashlib
 import os
 import subprocess
 import sys
 import threading
 import time
+import shutil
 import urllib.request
 import urllib.error
 import webbrowser
 from pathlib import Path
 
-from common import lock, read_json
+from common import lock, read_json, write_json
 from pull_worker import NoRedirect, deploy_runtime
+
+SERVICE_RUNTIME_FILES = ('desktop_service.py', 'local_panel.py', 'pull_worker.py', 'common.py',
+                         'worker.py', 'warm_worker.py', 'jobrunner.py', 'appserver_client.py',
+                         'owner_worker.py', 'owner_backend.py', 'account_identity.py', 'VERSION')
+
+
+def reconcile_orphaned_turns(root):
+    """Close non-terminal model jobs that no project ownership record can reach."""
+    root = Path(root)
+    with lock(root / 'registry.lock'):
+        owned = {record['job'] for path in (root / 'projects').glob('*/active.json')
+                 if (record := read_json(path)) and record.get('job')}
+        for path in (root / 'jobs').glob('*/state.json'):
+            state = read_json(path, {})
+            if state.get('status') in {'starting', 'running', 'launching', 'unknown'} and state.get('job') not in owned:
+                state.update(status='interrupted', finished_at=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                             error='No active worker owns this non-terminal job; start a new turn explicitly')
+                write_json(path, state)
 
 
 def assets():
@@ -76,24 +96,51 @@ class DesktopRuntime:
         if not value.get('ok'): raise RuntimeError(value.get('error', '配对失败'))
         return value.get('result')
 
+    def _service_snapshot(self):
+        """Create/reuse an immutable code directory for one receiver version."""
+        source = assets()
+        digest = hashlib.sha256()
+        for name in SERVICE_RUNTIME_FILES:
+            path = source / name
+            digest.update(name.encode()); digest.update(path.read_bytes() if path.is_file() else b'')
+        snapshot = self.root / 'service-runtime' / digest.hexdigest()[:16]
+        if not snapshot.is_dir():
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            temporary = snapshot.with_name(snapshot.name + '.tmp-' + str(os.getpid()))
+            if temporary.exists(): shutil.rmtree(temporary)
+            temporary.mkdir()
+            for name in SERVICE_RUNTIME_FILES:
+                source_file = source / name
+                if source_file.is_file(): shutil.copyfile(source_file, temporary / name)
+            try: os.replace(temporary, snapshot)
+            except FileExistsError: shutil.rmtree(temporary)
+        return snapshot
+
     def start(self):
         if not self.config_path.exists(): raise ValueError('请先填写地址和配对码，连接这台机器')
         self.root.mkdir(parents=True, exist_ok=True)
         with lock(self.root / 'desktop-start.lock'):
+            snapshot = self._service_snapshot()
             existing = self.status()
             if existing.get('stopping'): raise RuntimeError('正在停止接收，请稍后再启动')
             if existing['running']:
                 info = read_json(self.control_path, {})
-                if info.get('assets') == str(assets()): return existing
+                if info.get('assets') in {str(snapshot), str(assets())}: return existing
                 self.stop_and_wait()
             # A paired receiver keeps its identity and project state across
             # app upgrades, but its executable Python files must come from the
             # currently installed bundle before the new service starts.
-            deploy_runtime(self.root, assets())
+            reconcile_orphaned_turns(self.root)
+            active = any(read_json(path) for path in (self.root / 'projects').glob('*/active.json'))
+            if not active:
+                deploy_runtime(self.root, assets())
+            # Every receiver generation runs from an immutable snapshot. This
+            # permits the observer service to restart while an old warm worker
+            # is active, without overwriting files that process may use.
             flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS if os.name == 'nt' else 0
             with (self.root / 'desktop-service.stdout.log').open('ab') as out, (self.root / 'desktop-service.stderr.log').open('ab') as err:
-                process = subprocess.Popen([python_command(), '-X', 'utf8', str(assets() / 'desktop_service.py'), 'serve', str(self.root)],
-                    cwd=assets(), stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                process = subprocess.Popen([python_command(), '-X', 'utf8', str(snapshot / 'desktop_service.py'), 'serve', str(self.root)],
+                    cwd=snapshot, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                     creationflags=flags, start_new_session=os.name != 'nt')
             threading.Thread(target=process.wait, daemon=True).start()
             deadline = time.monotonic() + 12

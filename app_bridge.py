@@ -7,6 +7,7 @@ import socket
 import sys
 import time
 import threading
+import uuid
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -27,11 +28,11 @@ class AppBridge:
         self.allow_window_close=False
     def _profiles(self):
         return [read_json(p) for p in (self.root/'profiles').glob('*.json')]
-    def _post(self,server,data):
+    def _post(self,server,data,timeout=15):
         validate_server(server)
         req=urllib.request.Request(server.rstrip('/')+'/api/account',data=json.dumps(data,ensure_ascii=False).encode(),headers={'Content-Type':'application/json'})
         try:
-            with urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect()).open(req,timeout=15) as response: result=json.load(response)
+            with urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect()).open(req,timeout=timeout) as response: result=json.load(response)
         except urllib.error.HTTPError as exc:
             try: message=json.load(exc).get('error','服务拒绝请求')
             except Exception: message='服务拒绝请求'
@@ -144,16 +145,16 @@ class AppBridge:
         if not isinstance(url,str) or not url.startswith('https://'):return
         write_json(self._host_state_root()/'team-service.json',{
             'mode':'tailscale-serve','url':url,'proxy':'http://127.0.0.1:8765','tailnet_only':True})
-    def _rpc(self,operation,payload=None,server=None):
+    def _rpc(self,operation,payload=None,server=None,timeout=15):
         if not self.identity: raise PermissionError('请先解锁账户')
-        server=server or self.profile['server']; challenge=self._post(server,{'action':'challenge','public_key':self.identity['public_key']})
+        server=server or self.profile['server']; challenge=self._post(server,{'action':'challenge','public_key':self.identity['public_key']},timeout)
         features=set(challenge.get('features',[]))
         if operation in {'project','message','conversation-read','memory-note-add','memory-note-delete'} and 'conversation_privacy_v2' not in features:
             raise RuntimeError('协作服务版本过旧，尚不能保护新会话的隐私。请让托管电脑更新应用并重启协作服务。')
         if operation=='message' and not {'mention_agent_id','anchored_reply_draft'}.issubset(features):
             raise RuntimeError('协作服务版本过旧。请让托管电脑更新应用并重启协作服务后再发送消息。')
         envelope=sign_envelope(self.identity,{'domain':'harness-account-request-v1','nonce':challenge['nonce'],'operation':operation,'payload':payload or {}})
-        result=self._post(server,{'action':'rpc','envelope':envelope})
+        result=self._post(server,{'action':'rpc','envelope':envelope},timeout)
         if operation=='project' and isinstance(result,dict):
             result['capabilities']=sorted(features)
         return result
@@ -180,7 +181,7 @@ class AppBridge:
         if not self.profile or not self.identity:return
         if not force and time.monotonic()-self.last_service_sync<30:return
         self.last_service_sync=time.monotonic()
-        try: remote=self._rpc('service-links').get('servers',[])
+        try: remote=self._rpc('service-links',timeout=5).get('servers',[])
         except (OSError,RuntimeError,ValueError,PermissionError):return
         changed=False
         for server in remote:
@@ -193,11 +194,11 @@ class AppBridge:
             if server not in remote:
                 try:self._rpc('link-service',{'server':server})
                 except (OSError,RuntimeError,ValueError):pass
-    def _activate_service(self,server):
+    def _activate_service(self,server,timeout=15):
         if server in self.activated_services:return
-        challenge=self._post(server,{'action':'challenge','public_key':self.identity['public_key']})
+        challenge=self._post(server,{'action':'challenge','public_key':self.identity['public_key']},timeout)
         envelope=sign_envelope(self.identity,{'domain':'harness-account-request-v1','nonce':challenge['nonce'],'operation':'activate-device','payload':{'device_name':socket.gethostname()}})
-        self._post(server,{'action':'activate-device','envelope':envelope})
+        self._post(server,{'action':'activate-device','envelope':envelope},timeout)
         self.activated_services.add(server)
     def _secure(self,path):
         if os.name=='nt':
@@ -288,12 +289,25 @@ class AppBridge:
         hosting={}
         listed=[]
         seen_services=set()
-        for server in self._services():
+        services=self._services()
+        fetched={}
+        from concurrent.futures import ThreadPoolExecutor,as_completed
+        def fetch(server):
+            self._activate_service(server,5)
+            return self._rpc('dashboard',server=server,timeout=5)
+        with ThreadPoolExecutor(max_workers=min(8,max(1,len(services))),thread_name_prefix='service-dashboard') as pool:
+            futures={pool.submit(fetch,server):server for server in services}
+            for future in as_completed(futures):
+                server=futures[future]
+                try:fetched[server]=future.result()
+                except PermissionError as exc:denied.append((server,str(exc)))
+                except (OSError,RuntimeError,ValueError):unavailable.append(server)
+        for server in services:
+            if server not in fetched:continue
             try:
-                self._activate_service(server)
-                extra=self._rpc('dashboard',server=server)
-            except PermissionError as exc:denied.append((server,str(exc)));continue
-            except (OSError,RuntimeError,ValueError):unavailable.append(server);continue
+                extra=fetched[server]
+            except Exception:
+                unavailable.append(server);continue
             service_id=extra.get('service_id')
             if service_id and service_id in seen_services:continue
             if service_id:seen_services.add(service_id)
@@ -468,7 +482,9 @@ class AppBridge:
         if action in {'project','invite','message','set-admin','conversation-read','memory-note-add','memory-note-delete'}:
             project=data.get('project',data.get('id'))
             server=self.project_servers.get(project,self.profile['server'])
-            result=self._rpc(action,data,server=server)
+            payload=dict(data)
+            if action=='message':payload.setdefault('client_message_id',str(uuid.uuid4()))
+            result=self._rpc(action,payload,server=server)
             if action=='project':result['server']=server
             if action=='invite':
                 from team_service import TeamService

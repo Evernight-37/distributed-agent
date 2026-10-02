@@ -164,7 +164,7 @@ class AccountBackend:
         if op=='create-project':return self.store.project_create(user,p['name'])
         if op in {'join','join-project'}:return self.store.join(user,p['invite'])
         if op=='invite':return self.store.invite(user,p['project'])
-        if op=='message':return self.store.message(user,p['project'],p['body'],p.get('recipient_id'),p.get('mention_agent_id'),p.get('conversation_id'))
+        if op=='message':return self.store.message(user,p['project'],p['body'],p.get('recipient_id'),p.get('mention_agent_id'),p.get('conversation_id'),p.get('client_message_id'))
         if op=='conversation-read':return self.store.mark_conversation_read(user,p['project'],p['conversation_id'])
         if op=='memory-note-add':
             from project_memory import ProjectMemory

@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from common import lock, read_json
 from desktop_runtime import DesktopRuntime
@@ -103,10 +104,40 @@ class Lifecycle:
                 'active_jobs': self.active_jobs()}
 
     def stop(self):
-        for runtime in self.receivers(): runtime.stop_and_wait()
-        host = HostRuntime(self.host_root)
-        if host.status()['running']: host.stop_and_wait()
-        else:
-            legacy = legacy_host(self.host_root)
-            if legacy: stop_legacy_host(self.host_root, legacy)
+        errors = []
+        receiver_paths = sorted(path for path in (self.root/'receivers').glob('device-*') if path.is_dir())
+        def stop_receiver(item):
+            index, path = item
+            try:
+                runtime = DesktopRuntime(path)
+                runtime.stop_and_wait()
+                return None
+            except Exception as exc:
+                return ('接收服务 ' + str(index), exc)
+        if receiver_paths:
+            # Each runtime has its own bounded wait.  Stop them concurrently so
+            # one slow receiver cannot multiply the full-exit delay by the
+            # number of paired machines.  map preserves stable error ordering.
+            with ThreadPoolExecutor(max_workers=min(8, len(receiver_paths)),
+                                    thread_name_prefix='stop-receiver') as pool:
+                errors.extend(error for error in pool.map(stop_receiver, enumerate(receiver_paths, 1)) if error)
+        try:
+            host = HostRuntime(self.host_root)
+            if host.status()['running']:
+                host.stop_and_wait()
+            else:
+                legacy = legacy_host(self.host_root)
+                if legacy: stop_legacy_host(self.host_root, legacy)
+        except Exception as exc:
+            errors.append(('本机协作服务', exc))
+        if errors:
+            # Bound both the number and length of external error strings.  The
+            # user needs actionable service names without an unbounded process
+            # or OS error being injected into the window.
+            details = '; '.join(f'{name}: {str(exc).strip()[:240] or type(exc).__name__}'
+                                for name, exc in errors[:8])
+            omitted = len(errors) - 8
+            if omitted:
+                details += f'; 另有 {omitted} 个服务未能停止'
+            raise RuntimeError('部分后台服务未能完全停止。' + details)
         return {'stopped': True, 'jobs_continue': self.active_jobs()}

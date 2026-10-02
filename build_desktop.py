@@ -5,18 +5,43 @@ import subprocess
 import sys
 import urllib.request
 import zipfile
+import json
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parent
-VERSION = '3.14.7'
-URL = f'https://www.python.org/ftp/python/{VERSION}/python-{VERSION}-embed-amd64.zip'
+PYTHON_VERSION = '3.14.7'
+URL = f'https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-amd64.zip'
 # SHA-256 published on the Python.org release page; never run an unverified download.
 SHA256 = 'd297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15'
 CLIENT_FILES = ('common.py', 'pull_worker.py', 'local_panel.py', 'desktop_service.py', 'desktop_runtime.py', 'service_install.py', 'host_control.py', 'app_lifecycle.py',
                 'worker.py', 'jobrunner.py', 'warm_worker.py', 'appserver_client.py', 'panel.py', 'broker.py', 'collaboration_store.py', 'coordinator.py', 'project_memory.py', 'controller.py',
                 'account_identity.py', 'account_backend.py', 'owner_backend.py', 'owner_worker.py',
-                'app_bridge.py', 'production_app.py', 'team_service.py')
+                'app_bridge.py', 'production_app.py', 'team_service.py', 'VERSION')
 CRYPTOGRAPHY_VERSION = '46.0.3'
+
+
+def application_version(source=SOURCE):
+    version = (Path(source) / 'VERSION').read_text(encoding='utf-8').strip()
+    if not version or any(character.isspace() for character in version):
+        raise RuntimeError('VERSION must contain one non-empty version token')
+    return version
+
+
+def write_release_metadata(destination, source=SOURCE):
+    destination = Path(destination)
+    version = application_version(source)
+    (destination / 'VERSION').write_text(version + '\n', encoding='utf-8')
+    (destination / 'app-manifest.json').write_text(json.dumps({
+        'format': 1,
+        'name': 'AgentHarness',
+        'version': version,
+        'python_runtime': PYTHON_VERSION,
+    }, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    return version
+
+
+def getting_started_text(version):
+    return f'Agent Harness {version}\n双击 AgentHarness.exe。\n6.0 首次启用时不会迁移 app-v5 的账户或本机缓存；同一 Windows 用户后续升级会继续使用 %LOCALAPPDATA%\\AgentHarness\\app-v6 中的身份和接收设置。\n首次使用点击“创建账户”；自己的另一台电脑点击“关联我的另一台电脑”，由已登录设备批准。\n控制台管理所有关联机器上的员工。凭服务地址和项目邀请代码加入其他团队，不用重新创建身份。\n进入项目后派遣自己的员工，群主设置管理员与邀请成员。\n设置页管理设备、后台接收和服务连接。\n首次运行 agent 前，每台机器需要已有可用的 Codex 登录。\n账户身份保存在当前 Windows 用户目录；项目文件不会自动同步。\n只有本机协作服务的项目数据保存在应用目录旁的 data 文件夹，请升级时完整保留该文件夹。\n请保留整个目录，不要只复制 exe。\n'
 
 
 def main(output_root=None):
@@ -25,7 +50,7 @@ def main(output_root=None):
     missing = [name for name in CLIENT_FILES if not (SOURCE / name).is_file()]
     if missing: raise RuntimeError('Missing production sources: ' + ', '.join(missing))
     cache = SOURCE / 'build' / 'downloads'; cache.mkdir(parents=True, exist_ok=True)
-    archive = cache / f'python-{VERSION}-embed-amd64.zip'
+    archive = cache / f'python-{PYTHON_VERSION}-embed-amd64.zip'
     if not archive.exists():
         with urllib.request.urlopen(URL, timeout=60) as response: archive.write_bytes(response.read())
     if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256: raise RuntimeError('Python runtime checksum mismatch')
@@ -53,7 +78,8 @@ def main(output_root=None):
     client = destination / 'client'; client.mkdir(exist_ok=True)
     for name in CLIENT_FILES: shutil.copyfile(SOURCE / name, client / name)
     shutil.copytree(SOURCE / 'web', client / 'web', dirs_exist_ok=True)
-    (destination / '开始使用.txt').write_text('双击 AgentHarness.exe。\n这是 6.0 清洁重置系列，作为空白账户开始使用，不会从旧版迁移账户或本机缓存。\n首次使用点击“创建账户”；自己的另一台电脑点击“关联我的另一台电脑”，由已登录设备批准。\n控制台管理所有关联机器上的员工。凭服务地址和项目邀请代码加入其他团队，不用重新创建身份。\n进入项目后派遣自己的员工，群主设置管理员与邀请成员。\n设置页管理设备、后台接收和服务连接。\n首次运行 agent 前，每台机器需要已有可用的 Codex 登录。\n账户身份保存在本机；项目文件不会自动同步。\n本机协作服务的数据保存在本目录的 data 文件夹，请升级时完整保留该文件夹。\n请保留整个目录，不要只复制 exe。\n', encoding='utf-8-sig')
+    app_version = write_release_metadata(destination)
+    (destination / '开始使用.txt').write_text(getting_started_text(app_version), encoding='utf-8-sig')
     print(destination)
 
 

@@ -58,6 +58,9 @@ class Store:
                 db.execute('ALTER TABLE messages ADD COLUMN mention_agent_id TEXT')
             if 'conversation_id' not in {r['name'] for r in db.execute('PRAGMA table_info(messages)')}:
                 db.execute('ALTER TABLE messages ADD COLUMN conversation_id TEXT')
+            if 'client_message_id' not in {r['name'] for r in db.execute('PRAGMA table_info(messages)')}:
+                db.execute('ALTER TABLE messages ADD COLUMN client_message_id TEXT')
+            db.execute('CREATE UNIQUE INDEX IF NOT EXISTS one_human_message_submission ON messages(project_id,sender_id,client_message_id) WHERE client_message_id IS NOT NULL')
             self._backfill_conversations(db)
             for table in ('tasks','executions'):
                 if 'cancel_requested' not in {r['name'] for r in db.execute('PRAGMA table_info('+table+')')}:
@@ -353,8 +356,9 @@ class Store:
             self.log(db,user,'configure_agent',{'agent':agent['id'],'model':data['model'],'effort':data['effort']})
         return {'updated':agent['id']}
 
-    def message(self,user,project,body,recipient=None,mention_agent_id=None,conversation_id=None):
+    def message(self,user,project,body,recipient=None,mention_agent_id=None,conversation_id=None,client_message_id=None):
         with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
             self.require_member(db,project,user)
             if conversation_id is not None:
                 kind, partner = self._conversation_access(db, project, user, conversation_id)
@@ -369,9 +373,26 @@ class Store:
                 agent=db.execute('SELECT owner_id FROM agents WHERE id=? AND project_id=?',(recipient,project)).fetchone()
                 if agent and agent['owner_id']!=user:
                     raise PermissionError('只能私聊你自己的 Agent')
-            return self._message(db,project,user,'human',body,recipient,mention_agent_id=mention_agent_id)
+            if client_message_id is not None:
+                try:
+                    parsed=uuid.UUID(client_message_id)
+                except (ValueError,TypeError,AttributeError):
+                    raise ValueError('消息幂等标识必须为 UUID') from None
+                if str(parsed)!=client_message_id.lower():
+                    raise ValueError('消息幂等标识必须为规范 UUID')
+                existing=db.execute('SELECT * FROM messages WHERE project_id=? AND sender_id=? AND client_message_id=?',
+                                    (project,user,client_message_id.lower())).fetchone()
+                if existing:
+                    expected_body=body.strip() if isinstance(body,str) else body
+                    if (existing['sender_type']!='human' or existing['body']!=expected_body
+                            or existing['recipient_id']!=recipient or existing['mention_agent_id']!=mention_agent_id):
+                        raise ValueError('消息幂等标识已用于其他内容')
+                    return {'id':existing['id'],'conversation_id':existing['conversation_id'],'duplicate':True}
+                client_message_id=client_message_id.lower()
+            return self._message(db,project,user,'human',body,recipient,mention_agent_id=mention_agent_id,
+                                 client_message_id=client_message_id)
 
-    def _message(self,db,project,sender,kind,body,recipient=None,causal_task=None,mention_agent_id=None):
+    def _message(self,db,project,sender,kind,body,recipient=None,causal_task=None,mention_agent_id=None,client_message_id=None):
         if not isinstance(body,str) or not 1 <= len(body.strip()) <= 16000:
             raise ValueError('消息不能为空，最多 16000 字符')
         if recipient and not (db.execute('SELECT 1 FROM agents WHERE id=? AND project_id=?',(recipient,project)).fetchone()
@@ -385,8 +406,8 @@ class Store:
             if not db.execute('SELECT 1 FROM agents WHERE id=? AND project_id=? AND enabled=1 AND configuring=0',(mention_agent_id,project)).fetchone():
                 raise ValueError('要呼叫的 Agent 不在项目中或尚未启用')
         conversation=self._conversation_for_message(db, {'project_id':project,'sender_id':sender,'sender_type':kind,'recipient_id':recipient})
-        cursor=db.execute('INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task,mention_agent_id,conversation_id) VALUES(?,?,?,?,?,?,?,?,?)',
-                          (project,sender,kind,recipient,body.strip(),time.time(),causal_task,mention_agent_id,conversation))
+        cursor=db.execute('INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task,mention_agent_id,conversation_id,client_message_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                          (project,sender,kind,recipient,body.strip(),time.time(),causal_task,mention_agent_id,conversation,client_message_id))
         return {'id':cursor.lastrowid,'conversation_id':conversation}
 
     def draft_message(self, db, project, sender, body, recipient, task_id):

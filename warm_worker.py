@@ -14,6 +14,7 @@ import traceback
 from pathlib import Path
 
 DEFAULT_IDLE_SECONDS = 300
+DEFAULT_INTERRUPT_GRACE_SECONDS = 5
 ROOT = None
 
 
@@ -22,9 +23,12 @@ def configure_runtime(root):
     global worker, GROUP_RULES, cli_path, codex_login_status, effective_model
     global execution_timeout, executor_environment, job_dir, now, process_stamp, project_dir
     root = Path(root).resolve()
-    if not root.is_dir() or not (root / 'worker.py').is_file():
+    if not root.is_dir():
         raise ValueError('Explicit receiver root is invalid')
-    value = str(root)
+    # Import code from this immutable service bundle; root contains mutable
+    # receiver state and may belong to an older active runtime generation.
+    code_root = Path(__file__).resolve().parent
+    value = str(code_root)
     sys.path[:] = [value] + [item for item in sys.path if os.path.normcase(os.path.abspath(item or '.')) != os.path.normcase(value)]
     # A fresh CLI process has no local modules yet. Tests may rebind a loaded
     # module; worker.set_root still makes all state paths explicit.
@@ -163,13 +167,35 @@ class WarmManager:
             'outputSchema': response_schema()}, 40)['turn']['id']
         deadline = time.monotonic() + execution_timeout(config); decoder = PublicReplyDecoder(); report = None
         cancelled = timed_out = interrupted = False
+        interrupt_deadline = None
+        executor = read_json(ROOT / 'executor.json', {}) or {}
+        grace = executor.get('interrupt_grace_seconds', DEFAULT_INTERRUPT_GRACE_SECONDS)
+        if isinstance(grace, bool) or not isinstance(grace, (int, float)) or not 1 <= grace <= 30:
+            grace = DEFAULT_INTERRUPT_GRACE_SECONDS
         while True:
             if (path / 'cancel.json').exists(): cancelled = True
             if time.monotonic() >= deadline: timed_out = True
             if (cancelled or timed_out) and not interrupted:
-                server.call('turn/interrupt', {'threadId': thread_id, 'turnId': turn_id}, 10); interrupted = True
+                interrupted = True
+                interrupt_deadline = time.monotonic() + grace
+                try:
+                    server.call('turn/interrupt', {'threadId': thread_id, 'turnId': turn_id}, min(grace, 10))
+                except (RuntimeError, TimeoutError):
+                    pass
+            if interrupted and time.monotonic() >= interrupt_deadline:
+                self.update_state(path, status='cancelled' if cancelled else 'timed_out',
+                                  finished_at=now(), error=None)
+                self.close_server()
+                return
             try: event = server.event(.2)
             except TimeoutError: continue
+            except RuntimeError:
+                if not interrupted:
+                    raise
+                self.update_state(path, status='cancelled' if cancelled else 'timed_out',
+                                  finished_at=now(), error=None)
+                self.close_server()
+                return
             if 'id' in event: continue
             method, params = event.get('method'), event.get('params') or {}
             if params.get('turnId') not in {None, turn_id}: continue
@@ -189,7 +215,9 @@ class WarmManager:
                 if effective and effective != project['model']: status = 'failed'
                 self.update_state(path, status=status, finished_at=now(),
                     error=('Effective model differs from requested model' if effective and effective != project['model'] else (turn.get('error') or {}).get('message') if status == 'failed' else None),
-                    effective_model=effective, model_verified=bool(effective)); return
+                    effective_model=effective, model_verified=bool(effective))
+                if interrupted: self.close_server()
+                return
 
     def loop(self):
         executor = read_json(ROOT / 'executor.json', {}); idle = executor.get('warm_idle_seconds', DEFAULT_IDLE_SECONDS)

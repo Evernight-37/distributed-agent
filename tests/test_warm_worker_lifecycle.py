@@ -87,7 +87,8 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             root = self.runtime_root(state); token = uuid.uuid4().hex; generation = uuid.uuid4().hex
             self.launch_record(root, token, generation)
             script = Path(external) / 'warm_worker.py'
-            shutil.copyfile(Path(__file__).parents[1] / 'warm_worker.py', script)
+            for name in ('common.py', 'worker.py', 'warm_worker.py', 'appserver_client.py', 'jobrunner.py'):
+                shutil.copyfile(Path(__file__).parents[1] / name, Path(external) / name)
             output = (root / 'projects' / 'project' / 'external.log').open('wb')
             child = subprocess.Popen([sys.executable, '-X', 'utf8', str(script), '--root', str(root),
                 '--project', 'project', '--token', token, '--generation', generation], stdout=output, stderr=output)
@@ -135,6 +136,24 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             self.assertEqual(read_json(job / 'state.json')['exit_code'], 7)
             self.assertIsNone(read_json(project / 'active.json'))
 
+    def test_guardian_prefers_same_generation_worker_exception(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); project = root / 'projects' / 'project'; job = root / 'jobs' / 'job'
+            project.mkdir(parents=True); job.mkdir(parents=True); worker.set_root(root)
+            generation = 'generation'
+            write_json(job / 'state.json', {'job': 'job', 'project': 'project', 'status': 'running'})
+            write_json(project / 'active.json', {'job': 'job', 'pid': 123, 'stamp': 'x', 'generation': generation})
+            write_json(project / 'worker-self-exit.json', {
+                'generation': generation, 'pid': 123, 'reason': 'exception', 'error': 'specific worker failure'})
+            class Child:
+                pid = 123
+                def wait(self): return 9
+            runtime = worker.ManagedRuntime(root)
+            runtime._watch('project', generation, Child(), open(os.devnull, 'wb'))
+            state = read_json(job / 'state.json')
+            self.assertEqual(state['error'], 'specific worker failure')
+            self.assertEqual(read_json(project / 'worker-exit.json')['error'], 'specific worker failure')
+
     def test_post_ready_persistence_failure_cleans_only_failed_generation(self):
         with tempfile.TemporaryDirectory() as folder:
             root = self.runtime_root(folder)
@@ -179,8 +198,105 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             first = worker.reconcile(active)
             self.assertEqual(first['unknown_observations'], 1)
             self.assertEqual(read_json(job / 'state.json')['status'], 'starting')
-            self.assertIsNone(worker.reconcile(first))
+            # Repeated UI fetches at the same instant are one observation.
+            second = worker.reconcile(first)
+            self.assertEqual(second['unknown_observations'], 1)
+            second['unknown_observed_at'] -= worker.PROCESS_MISSING_CONFIRM_SECONDS + .1
+            self.assertIsNone(worker.reconcile(second))
             self.assertEqual(read_json(job / 'state.json')['status'], 'interrupted')
+
+    def test_managed_fetch_returns_bounded_relevant_logs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); worker.set_root(root)
+            project = root / 'projects' / 'project'; job = root / 'jobs' / 'job'
+            project.mkdir(parents=True); job.mkdir(parents=True)
+            write_json(job / 'state.json', {'job': 'job', 'project': 'project', 'status': 'failed'})
+            write_json(job / 'request.json', {'managed_turn': True})
+            (project / 'app-server-stderr.log').write_text('a' * 40000, encoding='utf-8')
+            (project / 'warm-supervisor.log').write_text('b' * 40000, encoding='utf-8')
+            result = worker.rpc({'action': 'fetch', 'job': 'job'})
+            self.assertEqual(len(result['app_server_stderr']), 32768)
+            self.assertEqual(len(result['warm_supervisor_log']), 32768)
+
+    def test_nonterminal_job_without_active_owner_converges_interrupted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); worker.set_root(root)
+            project = root / 'projects' / 'project'; job = root / 'jobs' / 'orphan'
+            project.mkdir(parents=True); job.mkdir(parents=True)
+            write_json(job / 'state.json', {
+                'job': 'orphan', 'project': 'project', 'status': 'starting'})
+            write_json(project / 'active.json', None)
+
+            result = worker.rpc({'action': 'fetch', 'job': 'orphan'})
+
+            self.assertEqual(result['status'], 'interrupted')
+            self.assertIn('No active worker owns', result['error'])
+
+    def test_timeout_without_turn_completed_has_bounded_terminal_state_and_closes_server(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = self.runtime_root(folder); worker.set_root(root); warm_worker.configure_runtime(root)
+            project_dir = root / 'projects' / 'project'; job = root / 'jobs' / 'job'; job.mkdir(parents=True)
+            project = {'name': 'project', 'remote_path': str(root), 'model': 'test-model',
+                       'effort': 'low', 'timeout': .05, 'local_control': True}
+            write_json(job / 'request.json', {'project': project, 'prompt': json.dumps({'stage': 'discuss'}),
+                                               'managed_turn': True, 'memory': {}, 'thread_id': None})
+            write_json(job / 'state.json', {'job': 'job', 'project': 'project', 'status': 'starting'})
+            write_json(root / 'executor.json', {'interrupt_grace_seconds': 1})
+
+            class Process: pid = 456
+            class Server:
+                process = Process()
+                def __init__(self): self.interrupted = False; self.closed = False
+                def call(self, method, params, timeout=30):
+                    if method == 'thread/start': return {'thread': {'id': 'thread'}}
+                    if method == 'turn/start': return {'turn': {'id': 'turn'}}
+                    if method == 'turn/interrupt': self.interrupted = True; return {}
+                    raise AssertionError(method)
+                def event(self, timeout): raise TimeoutError()
+                def close(self): self.closed = True
+            server = Server(); manager = warm_worker.WarmManager('project', 'token', 'generation'); manager.server = server
+            with patch.object(manager, 'ensure_server', return_value=server), \
+                 patch.object(warm_worker, 'cli_path', return_value='codex'), \
+                 patch.object(warm_worker, 'codex_login_status', return_value={'logged_in': True}), \
+                 patch.object(warm_worker, 'effective_model', return_value='test-model'):
+                started = time.monotonic(); manager.run_job('job')
+            state = read_json(job / 'state.json')
+            self.assertEqual(state['status'], 'timed_out')
+            self.assertTrue(server.interrupted); self.assertTrue(server.closed)
+            self.assertLess(time.monotonic() - started, 2.5)
+
+    def test_disconnect_after_interrupt_preserves_timeout_terminal_state(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = self.runtime_root(folder); worker.set_root(root); warm_worker.configure_runtime(root)
+            job = root / 'jobs' / 'job'; job.mkdir(parents=True)
+            project = {'name': 'project', 'remote_path': str(root), 'model': 'test-model',
+                       'effort': 'low', 'timeout': .01, 'local_control': True}
+            write_json(job / 'request.json', {'project': project, 'prompt': json.dumps({'stage': 'discuss'}),
+                                               'managed_turn': True, 'memory': {}, 'thread_id': None})
+            write_json(job / 'state.json', {'job': 'job', 'project': 'project', 'status': 'starting'})
+            class Process: pid = 456
+            class Server:
+                process = Process()
+                closed = False
+                events = 0
+                def call(self, method, params, timeout=30):
+                    if method == 'thread/start': return {'thread': {'id': 'thread'}}
+                    if method == 'turn/start': return {'turn': {'id': 'turn'}}
+                    if method == 'turn/interrupt': return {}
+                def event(self, timeout):
+                    self.events += 1
+                    if self.events == 1:
+                        time.sleep(.02); raise TimeoutError()
+                    raise RuntimeError('disconnected')
+                def close(self): self.closed = True
+            server = Server(); manager = warm_worker.WarmManager('project'); manager.server = server
+            with patch.object(manager, 'ensure_server', return_value=server), \
+                 patch.object(warm_worker, 'cli_path', return_value='codex'), \
+                 patch.object(warm_worker, 'codex_login_status', return_value={'logged_in': True}), \
+                 patch.object(warm_worker, 'effective_model', return_value='test-model'):
+                manager.run_job('job')
+            self.assertEqual(read_json(job / 'state.json')['status'], 'timed_out')
+            self.assertTrue(server.closed)
 
     def test_reconcile_uses_worker_self_exit_after_receiver_restart(self):
         with tempfile.TemporaryDirectory() as folder:

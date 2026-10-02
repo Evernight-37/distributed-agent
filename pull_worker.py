@@ -222,12 +222,12 @@ class Connector:
         if receipt['phase'] == 'terminal':
             return receipt
         try:
-            binding = self.binding_for(job)
             execution = job['kind'] == 'execution'
             if job['kind'] not in {'task', 'execution'}:
                 raise ValueError('Unsupported assignment kind')
             if set(request) - ({'template'} if execution else {'prompt','stage','scope','acceptance','validation','session_channel'}):
                 raise ValueError('Broker assignment contains forbidden configuration')
+            binding = self.binding_for(job) if receipt['phase'] in {'received','waiting_local_approval'} else None
             if cancelled and receipt['phase'] in {'received', 'waiting_local_approval'}:
                 receipt.update(phase='terminal', result={'status':'cancelled'})
             elif receipt['phase'] == 'received':
@@ -268,14 +268,11 @@ class Connector:
                 receipt['result'] = {k:result[k] for k in ('status','report','reply_draft','error','exit_code','stdout_tail','stderr_tail','requested_model','reasoning_effort','effective_model','model_verified') if k in result and (k != 'reply_draft' or isinstance(result[k], str) and len(result[k]) <= 16000)}
         except Exception as exc:
             if receipt['phase'] in {'running','launching'}:
-                try:
-                    self.executor({'action':'execution_cancel' if job['kind']=='execution' else 'cancel', 'execution' if job['kind']=='execution' else 'job':local_id})
-                    result = self.executor({'action':'execution_status' if job['kind']=='execution' else 'fetch', 'execution' if job['kind']=='execution' else 'job':local_id})
-                    receipt.update(phase='terminal' if result.get('status') in TERMINAL else 'running',result={'status':result.get('status','running'),'error':str(exc)[:2000]})
-                    write_json(path,receipt)
-                    return receipt
-                except Exception:
-                    pass
+                # Observation failures are not cancellation authority.  Keep
+                # the durable local ID and reconcile it on a later cycle.
+                receipt.update(phase='running', result={'status':'unknown','error':str(exc)[:2000]})
+                write_json(path,receipt)
+                return receipt
             receipt.update(phase='terminal', result={'status':'unknown' if receipt['phase'] in {'launching','running'} else 'failed','error':str(exc)[:2000]})
         write_json(path, receipt)
         return receipt

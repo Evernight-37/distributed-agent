@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import desktop_runtime
 import desktop_service
-from common import write_json
+from common import read_json, write_json
 
 
 class FakeConnector:
@@ -136,6 +136,42 @@ class DesktopServiceTests(unittest.TestCase):
 
 
 class DesktopRuntimeContractTests(unittest.TestCase):
+    def test_start_reconciles_orphan_before_runtime_deploy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); project = root / 'projects' / 'p'; job = root / 'jobs' / 'orphan'
+            project.mkdir(parents=True); job.mkdir(parents=True)
+            write_json(project / 'active.json', None)
+            write_json(job / 'state.json', {'job': 'orphan', 'project': 'p', 'status': 'starting'})
+
+            desktop_runtime.reconcile_orphaned_turns(root)
+
+            state = read_json(job / 'state.json')
+            self.assertEqual(state['status'], 'interrupted')
+            self.assertIn('No active worker owns', state['error'])
+
+    def test_active_worker_restart_uses_immutable_snapshot_without_deploy(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as source_dir:
+            root, source = Path(directory), Path(source_dir)
+            (root / 'projects' / 'p').mkdir(parents=True)
+            write_json(root / 'pull-config.json', {'node': 'n', 'server': 'https://broker.example'})
+            write_json(root / 'projects' / 'p' / 'active.json', {'job': 'j', 'pid': 1, 'stamp': 's'})
+            # An older active generation keeps its receiver-root files intact.
+            (root / 'worker.py').write_text('old', encoding='utf-8')
+            for name in ('desktop_service.py', 'worker.py', 'warm_worker.py', 'VERSION'):
+                (source / name).write_text('new-' + name, encoding='utf-8')
+            runtime = desktop_runtime.DesktopRuntime(root)
+            statuses = iter(({'running': False}, {'running': True}))
+            fake_process = mock.Mock(); fake_process.poll.return_value = None; fake_process.wait.return_value = 0
+            with mock.patch.object(runtime, 'status', side_effect=lambda: next(statuses)), \
+                 mock.patch.object(desktop_runtime, 'assets', return_value=source), \
+                 mock.patch.object(desktop_runtime, 'deploy_runtime') as deploy, \
+                 mock.patch.object(desktop_runtime.subprocess, 'Popen', return_value=fake_process) as spawn:
+                result = runtime.start()
+            self.assertTrue(result['running']); deploy.assert_not_called()
+            self.assertEqual((root / 'worker.py').read_text(encoding='utf-8'), 'old')
+            script = Path(spawn.call_args.args[0][3])
+            self.assertIn('service-runtime', str(script)); self.assertEqual(script.read_text(encoding='utf-8'), 'new-desktop_service.py')
+
     def test_windows_sid_ignores_chinese_username_encoding(self):
         sid = 'S-1-5-21-123-456-789-1001'
         for encoding in ('gbk', 'utf-8'):
@@ -223,9 +259,9 @@ class PackagedReceiverTests(unittest.TestCase):
             with self.assertRaises(ValueError): runtime.pair('http://127.0.0.1:1', 'again')
             try:
                 self.assertTrue(runtime.start()['running'])
-                instance = json.loads((runtime.root / 'desktop-service.json').read_text())['instance']
+                instance = json.loads((runtime.root / 'desktop-service.json').read_text(encoding='utf-8'))['instance']
                 runtime.start()
-                self.assertEqual(instance, json.loads((runtime.root / 'desktop-service.json').read_text())['instance'])
+                self.assertEqual(instance, json.loads((runtime.root / 'desktop-service.json').read_text(encoding='utf-8'))['instance'])
                 workdir = root / 'project'; workdir.mkdir()
                 runtime.register_project('local-test', str(workdir), 'owner-model', 'high')
                 runtime.save_binding({'project_id': 'project-test', 'backend_project': 'local-test', 'name': 'Test', 'model': 'owner-model', 'effort': 'high', 'timeout': 120, 'enabled': False, 'stages': ['discuss']})

@@ -31,7 +31,7 @@ def action(store, user, data, backend):
     if op == 'configure-agent':
         if isinstance(backend, PullBackend): raise PermissionError('模型与资源设置由机器主人在本地控制台修改')
         return store.configure_agent(who, data, backend)
-    if op == 'message': return store.message(who, data['project'], data['body'], data.get('recipient_id'), data.get('mention_agent_id'), data.get('conversation_id'))
+    if op == 'message': return store.message(who, data['project'], data['body'], data.get('recipient_id'), data.get('mention_agent_id'), data.get('conversation_id'), data.get('client_message_id'))
     if op == 'conversation-read': return store.mark_conversation_read(who, data['project'], data['conversation_id'])
     if op == 'memory-note-add':
         from project_memory import ProjectMemory

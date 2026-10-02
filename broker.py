@@ -104,11 +104,18 @@ class PullBackend:
                 if state not in allowed or row['kind']=='task' and state=='completed': raise ValueError('无效的任务状态')
                 result=data.get('result',{})
                 if not isinstance(result,dict): raise ValueError('结果必须为对象')
-                result={k:v for k,v in result.items() if k in {'report','reply_draft','error','local_status','exit_code','stdout','stderr','started_at','finished_at','status','job','execution'}}
+                result={k:v for k,v in result.items() if k in {'report','reply_draft','error','local_status','exit_code','stdout','stderr','started_at','finished_at','status','job','execution','requested_model','reasoning_effort','effective_model','model_verified'}}
                 if 'reply_draft' in result and (not isinstance(result['reply_draft'], str) or len(result['reply_draft']) > 16000):
                     result.pop('reply_draft', None)
                 for key in ('report','error'):
                     if key in data: result[key]=data[key]
+                for key in ('requested_model','effective_model'):
+                    if key in result and (not isinstance(result[key],str) or len(result[key])>120):
+                        raise ValueError('无效的模型审计字段')
+                if 'reasoning_effort' in result and result['reasoning_effort'] not in {'low','medium','high','xhigh','max','ultra'}:
+                    raise ValueError('无效的思考强度审计字段')
+                if 'model_verified' in result and not isinstance(result['model_verified'],bool):
+                    raise ValueError('无效的模型核验字段')
                 result['status']=state
                 serialized=json.dumps(result,ensure_ascii=False,sort_keys=True)
                 if len(serialized)>1000000: raise ValueError('结果过长')

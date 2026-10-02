@@ -120,6 +120,74 @@ class ExitTests(unittest.TestCase):
                 self.assertEqual(receiver_class.return_value.stop_and_wait.call_count, 2)
                 host_class.return_value.stop_and_wait.assert_called_once()
 
+    def test_complete_exit_attempts_every_service_and_bounds_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(10): (root/'receivers'/f'device-{index}').mkdir(parents=True)
+            runtimes = []
+            def receiver(path):
+                runtime = mock.Mock()
+                runtime.root = path
+                runtime.stop_and_wait.side_effect = RuntimeError('x' * 1000)
+                runtimes.append(runtime)
+                return runtime
+            with mock.patch('app_lifecycle.DesktopRuntime', side_effect=receiver), \
+                 mock.patch('app_lifecycle.HostRuntime') as host_class:
+                host_class.return_value.status.return_value = {'running': True}
+                host_class.return_value.stop_and_wait.side_effect = RuntimeError('host failure')
+                with self.assertRaisesRegex(RuntimeError, '部分后台服务未能完全停止') as caught:
+                    Lifecycle(root).stop()
+            self.assertEqual(len(runtimes), 10)
+            self.assertTrue(all(runtime.stop_and_wait.call_count == 1 for runtime in runtimes))
+            host_class.return_value.stop_and_wait.assert_called_once()
+            self.assertLess(len(str(caught.exception)), 2200)
+            self.assertIn('另有 3 个服务未能停止', str(caught.exception))
+
+    def test_receiver_construction_failure_does_not_skip_later_receiver_or_host(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ('device-a', 'device-b'): (root/'receivers'/name).mkdir(parents=True)
+            good = mock.Mock()
+            def receiver(path):
+                if path.name == 'device-a': raise RuntimeError('invalid receiver state')
+                return good
+            with mock.patch('app_lifecycle.DesktopRuntime', side_effect=receiver), \
+                 mock.patch('app_lifecycle.HostRuntime') as host_class:
+                host_class.return_value.status.return_value = {'running': True}
+                with self.assertRaisesRegex(RuntimeError, '接收服务 1'):
+                    Lifecycle(root).stop()
+            good.stop_and_wait.assert_called_once()
+            host_class.return_value.stop_and_wait.assert_called_once()
+
+    def test_slow_receiver_does_not_delay_stopping_another_receiver(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ('device-a', 'device-b'): (root/'receivers'/name).mkdir(parents=True)
+            slow_started, fast_stopped, release_slow = threading.Event(), threading.Event(), threading.Event()
+            slow, fast = mock.Mock(), mock.Mock()
+            def wait_slow():
+                slow_started.set()
+                if not release_slow.wait(2): raise RuntimeError('test did not release slow receiver')
+            slow.stop_and_wait.side_effect = wait_slow
+            fast.stop_and_wait.side_effect = fast_stopped.set
+            def receiver(path):
+                runtime = slow if path.name == 'device-a' else fast
+                runtime.root = path
+                return runtime
+            host_status = {'running': False}
+            with mock.patch('app_lifecycle.DesktopRuntime', side_effect=receiver), \
+                 mock.patch('app_lifecycle.HostRuntime') as host_class, \
+                 mock.patch('app_lifecycle.legacy_host', return_value=None):
+                host_class.return_value.status.return_value = host_status
+                result = {}
+                thread = threading.Thread(target=lambda: result.setdefault('value', Lifecycle(root).stop()))
+                thread.start()
+                self.assertTrue(slow_started.wait(1))
+                self.assertTrue(fast_stopped.wait(1), 'second receiver was serialized behind the slow receiver')
+                release_slow.set(); thread.join(2)
+            self.assertFalse(thread.is_alive())
+            self.assertTrue(result['value']['stopped'])
+
     def test_unmanaged_host_is_not_stopped(self):
         with tempfile.TemporaryDirectory() as directory:
             with mock.patch('app_lifecycle.HostRuntime') as host_class, mock.patch('app_lifecycle.legacy_host', return_value=None), mock.patch('app_lifecycle.stop_legacy_host') as stop_legacy:

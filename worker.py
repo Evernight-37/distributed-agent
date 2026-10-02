@@ -14,6 +14,7 @@ from common import apply_local_proxy, events, identifier, lock, outcome, read_js
 
 ROOT = Path(__file__).resolve().parent
 TERMINAL = {"needs_review", "failed", "cancelled", "timed_out", "interrupted"}
+PROCESS_MISSING_CONFIRM_SECONDS = 5.0
 
 
 def now():
@@ -74,6 +75,7 @@ def codex_version(exe):
     import re
     try:
         result = subprocess.run([str(exe), "--version"], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace",
                                 timeout=8, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -213,7 +215,10 @@ class ManagedRuntime:
     def launch(self, project, token, generation):
         directory = project_dir(project)
         output_path = directory / 'warm-supervisor.log'
-        argv = [sys.executable, '-X', 'utf8', str(self.root / 'warm_worker.py'),
+        # Code is immutable for the lifetime of this receiver. State lives in
+        # self.root and is passed explicitly; never execute a file that an app
+        # upgrade may overwrite underneath an active process.
+        argv = [sys.executable, '-X', 'utf8', str(Path(__file__).resolve().parent / 'warm_worker.py'),
                 '--root', str(self.root), '--project', project,
                 '--token', token, '--generation', generation]
         flags = 0
@@ -242,9 +247,12 @@ class ManagedRuntime:
         output.close()
         directory = project_dir(project)
         startup = read_json(directory / 'startup-error.json', {}) or {}
+        self_exit = read_json(directory / 'worker-self-exit.json', {}) or {}
         evidence = {'generation': generation, 'pid': child.pid, 'exit_code': code,
                     'finished_at': now()}
-        if startup.get('generation') == generation:
+        if self_exit.get('generation') == generation and self_exit.get('error'):
+            evidence['error'] = self_exit.get('error')
+        elif startup.get('generation') == generation:
             evidence['error'] = startup.get('error')
         with lock(ROOT / 'registry.lock'):
             write_json(directory / 'worker-exit.json', evidence)
@@ -254,7 +262,7 @@ class ManagedRuntime:
                 state = read_json(path / 'state.json', {})
                 if state.get('status') not in TERMINAL:
                     state.update(status='failed', finished_at=now(), exit_code=code,
-                                 error='Managed worker exited before completing its active turn')
+                                 error=evidence.get('error') or 'Managed worker exited before completing its active turn')
                     write_json(path / 'state.json', state)
                 write_json(directory / 'active.json', None)
             warm = read_json(directory / 'warm.json')
@@ -280,6 +288,13 @@ def reconcile(active):
     evidence = (read_json(directory / "worker-exit.json", {}) or {}) if directory and generation else {}
     startup = (read_json(directory / "startup-error.json", {}) or {}) if directory and generation else {}
     self_exit = (read_json(directory / "worker-self-exit.json", {}) or {}) if directory and generation else {}
+    # The worker's own exception is more specific than the guardian's generic
+    # exit observation, and both records are generation scoped.
+    if generation and self_exit.get("generation") == generation:
+        state.update(status="failed", finished_at=now(),
+                     error=self_exit.get("error") or "Managed worker exited before completing its active turn")
+        write_json(path / "state.json", state)
+        return None
     if generation and evidence.get("generation") == generation:
         state.update(status="failed", finished_at=now(), exit_code=evidence.get("exit_code"),
                      error=evidence.get("error") or "Managed worker exited before completing its active turn")
@@ -289,23 +304,26 @@ def reconcile(active):
         state.update(status="failed", finished_at=now(), error=startup.get("error") or "Managed worker startup failed")
         write_json(path / "state.json", state)
         return None
-    if generation and self_exit.get("generation") == generation:
-        state.update(status="failed", finished_at=now(),
-                     error=self_exit.get("error") or "Managed worker exited before completing its active turn")
-        write_json(path / "state.json", state)
-        return None
     stamp = process_stamp(active["pid"])
     if stamp is None or stamp != active.get("stamp"):
         # A single Windows process query can transiently fail.  Persist one
         # unknown observation and require a later independent reconciliation.
-        observations = int(active.get("unknown_observations", 0)) + 1
-        if observations < 2:
-            return dict(active, unknown_observations=observations, unknown_since=now())
+        observed_at = time.time()
+        observations = int(active.get("unknown_observations", 0))
+        unknown_at = active.get("unknown_observed_at")
+        # Two HTTP fetches in the same UI refresh are not independent process
+        # observations. Require a real wall-clock interval before escalation.
+        if observations < 1 or not isinstance(unknown_at, (int, float)):
+            return dict(active, unknown_observations=1, unknown_since=now(),
+                        unknown_observed_at=observed_at)
+        if observed_at - unknown_at < PROCESS_MISSING_CONFIRM_SECONDS:
+            return active
         state.update(status="interrupted", finished_at=now(), error="Worker could not be found in two consecutive reconciliations; resume session explicitly")
         write_json(path / "state.json", state)
         return None
     active.pop("unknown_observations", None)
     active.pop("unknown_since", None)
+    active.pop("unknown_observed_at", None)
     return active
 
 
@@ -383,7 +401,8 @@ def rpc(request, managed_runtime=None):
     if action == "probe":
         exe = cli_path()
         return {"hostname": os.environ.get("COMPUTERNAME"), "python": sys.executable,
-                "cli": exe, "version": subprocess.check_output([exe, "--version"], text=True).strip()}
+                "cli": exe, "version": subprocess.check_output(
+                    [exe, "--version"], text=True, encoding="utf-8", errors="replace").strip()}
     if action == "mkdir_demo":
         path = ROOT / "demo-project"
         path.mkdir(exist_ok=True)
@@ -522,9 +541,22 @@ def rpc(request, managed_runtime=None):
         directory = project_dir(state["project"])
         with lock(ROOT / "registry.lock"):
             active = read_json(directory / "active.json")
-            if active and active["job"] == request["job"]:
+            owned = bool(active and active["job"] == request["job"])
+            if owned:
                 active = reconcile(active)
                 write_json(directory / "active.json", active)
+            else:
+                current_state = read_json(path / "state.json", {})
+            if not owned and current_state.get("status") not in TERMINAL:
+                # A non-terminal turn without the project's durable ownership
+                # record cannot still be managed safely.  The start path holds
+                # this same lock until active.json is committed, and workers
+                # write their terminal state before clearing it, so observing
+                # this combination after acquiring the lock proves the turn
+                # was orphaned by a crash or an older broken launcher.
+                current_state.update(status="interrupted", finished_at=now(),
+                                     error="No active worker owns this non-terminal job; start a new turn explicitly")
+                write_json(path / "state.json", current_state)
             state = read_json(path / "state.json")
             if action == "cancel" and state["status"] not in TERMINAL:
                 write_json(path / "cancel.json", {"requested_at": now()})
@@ -536,6 +568,12 @@ def rpc(request, managed_runtime=None):
             state["report"] = tail(path / "report.txt", 262144)
             state["stderr"] = tail(path / "stderr.log")
             state["supervisor_log"] = tail(path / "supervisor.log")
+            request_config = read_json(path / "request.json", {}) or {}
+            if request_config.get("managed_turn"):
+                # These files are shared by sequential warm turns, so expose
+                # only bounded tails and only for managed jobs on this project.
+                state["app_server_stderr"] = tail(directory / "app-server-stderr.log", 32768)
+                state["warm_supervisor_log"] = tail(directory / "warm-supervisor.log", 32768)
         state["recent_events"] = events(tail(path / "events.jsonl"))[-30:]
         return state
     raise ValueError("Unknown action")
