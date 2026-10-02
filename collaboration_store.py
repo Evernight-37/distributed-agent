@@ -149,7 +149,7 @@ class Store:
             raise PermissionError('无权访问此会话')
         kind, first, second = parts
         if kind == 'human_agent' and first == user:
-            if db.execute('SELECT 1 FROM agents WHERE id=? AND project_id=?', (second, project)).fetchone():
+            if db.execute('SELECT 1 FROM agents WHERE id=? AND project_id=? AND owner_id=?', (second, project, user)).fetchone():
                 return kind, second
         elif kind == 'human_human' and user in {first, second} and first < second:
             partner = second if first == user else first
@@ -365,6 +365,10 @@ class Store:
                 recipient = partner
             if recipient == user:
                 raise ValueError('不能给自己发送私聊')
+            if recipient:
+                agent=db.execute('SELECT owner_id FROM agents WHERE id=? AND project_id=?',(recipient,project)).fetchone()
+                if agent and agent['owner_id']!=user:
+                    raise PermissionError('只能私聊你自己的 Agent')
             return self._message(db,project,user,'human',body,recipient,mention_agent_id=mention_agent_id)
 
     def _message(self,db,project,sender,kind,body,recipient=None,causal_task=None,mention_agent_id=None):
@@ -418,8 +422,8 @@ class Store:
             row=db.execute('SELECT * FROM agents WHERE id=?',(agent,)).fetchone()
             if not row:
                 raise ValueError('未知 agent')
-            return [dict(x) for x in db.execute("SELECT * FROM messages WHERE project_id=? AND id>? AND id<=? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (recipient_id IS NULL OR recipient_id=? OR sender_id=?) ORDER BY id",
-                        (row['project_id'],after,cutoff or 9223372036854775807,agent,agent)).fetchall()]
+            return [dict(x) for x in db.execute("SELECT * FROM messages WHERE project_id=? AND id>? AND id<=? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (recipient_id IS NULL OR recipient_id=? OR sender_id=?) AND NOT (sender_type='human' AND recipient_id=? AND sender_id<>?) ORDER BY id",
+                        (row['project_id'],after,cutoff or 9223372036854775807,agent,agent,agent,row['owner_id'])).fetchall()]
 
     def task(self,user,data):
         with self.connect() as db:

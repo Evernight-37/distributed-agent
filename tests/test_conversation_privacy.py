@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app_bridge import AppBridge
 from collaboration_store import Store
+from coordinator import Coordinator
 from panel import action, handler_for
 from tests import test_collaboration as fixtures
 
@@ -59,6 +60,29 @@ class ConversationPrivacyTests(unittest.TestCase):
             self.store.message(owner, self.project, 'impersonation', conversation_id='agent_agent:' + ':'.join(sorted((first, second))))
         with self.assertRaises(ValueError):
             self.store.message(owner, self.project, 'self', recipient=owner)
+
+    def test_human_can_only_private_message_agents_they_own(self):
+        own=self.add_agent(self.owner['id'],'backend-a','Own')
+        (self.root/'nodes'/'peer.json').write_text(json.dumps({'host':'fake','platform':'test'}),encoding='utf-8')
+        self.store.bind_node(self.other['id'],'peer')
+        self.backend.projects['backend-b']={'node':'peer'}
+        foreign=self.store.add_agent(self.other['id'],{'project':self.project,'name':'Foreign','node':'peer',
+            'backend_project':'backend-b','model':'gpt-test','effort':'low','timeout':30},self.backend)['id']
+        sent=self.store.message(self.owner['id'],self.project,'allowed',own)
+        self.assertTrue(sent['conversation_id'].startswith('human_agent:'+self.owner['id']+':'))
+        with self.assertRaisesRegex(PermissionError,'自己的 Agent'):
+            self.store.message(self.owner['id'],self.project,'blocked',foreign)
+        forged='human_agent:'+self.owner['id']+':'+foreign
+        with self.assertRaises(PermissionError):
+            self.store.message(self.owner['id'],self.project,'blocked again',conversation_id=forged)
+        # Historical rows created before this rule must neither reach nor wake the foreign Agent.
+        with self.store.connect() as db:
+            db.execute('INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,conversation_id) VALUES(?,?,?,?,?,?,?)',
+                       (self.project,self.owner['id'],'human',foreign,'legacy forbidden',1,forged))
+        self.assertNotIn('legacy forbidden',[m['body'] for m in self.store.visible_messages(foreign)])
+        Coordinator(self.store,self.backend).wake_messages()
+        with self.store.connect() as db:
+            self.assertFalse(db.execute('SELECT 1 FROM tasks WHERE agent_id=?',(foreign,)).fetchone())
 
     def test_legacy_backfill_never_exposes_direct_message_to_other_human(self):
         third, first, second = self.people_and_agents()

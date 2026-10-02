@@ -41,6 +41,9 @@ with tempfile.TemporaryDirectory() as td:
    wait("document.querySelector('#content h1')?.textContent==='图形验收项目'")
    report['project_entered']=True
    report['two_column_project']=bool(window.evaluate_js("document.querySelectorAll('.conversation-layout > *').length===2 && !document.querySelector('.project-rail')"))
+   window.evaluate_js("S.view.tasks=Array.from({length:40},(_,i)=>({id:'scroll-'+i,title:'任务 '+i,state:'needs_review'}));renderProject();let t=document.querySelector('#projectTasks');t.open=true;t.scrollTop=80;document.querySelector('#projectMembers').open=true;renderProject()")
+   wait("document.querySelector('#projectMembers')?.open && document.querySelector('#projectTasks')?.open && document.querySelector('#projectTasks')?.scrollTop>0")
+   report['project_panel_state_preserved']=True
    window.evaluate_js("document.querySelector('.composer textarea').value='<script>原样文本</script>';document.querySelector('.composer').dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}))")
    wait("document.querySelector('.bubble p')?.textContent==='<script>原样文本</script>'")
    report['message_safe_text']=True

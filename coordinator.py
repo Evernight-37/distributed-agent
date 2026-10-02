@@ -70,8 +70,8 @@ Return only visible context; you cannot request other agents' private conversati
                 cursors={x['channel']:x['last_message'] for x in db.execute('SELECT * FROM agent_cursors WHERE agent_id=?',(r['id'],))}
                 source=None
                 partner=None
-                for candidate in db.execute("SELECT * FROM messages WHERE project_id=? AND sender_id<>? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (sender_type<>'system' OR causal_task='execution-completed') AND (recipient_id=? OR (recipient_id IS NULL AND (mention_agent_id=? OR (mention_agent_id IS NULL AND ?=1)))) ORDER BY id",
-                    (r['project_id'],r['id'],r['id'],r['id'],int(r['admin_agent_id']==r['id']))):
+                for candidate in db.execute("SELECT * FROM messages WHERE project_id=? AND sender_id<>? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (sender_type<>'system' OR causal_task='execution-completed') AND (recipient_id=? OR (recipient_id IS NULL AND (mention_agent_id=? OR (mention_agent_id IS NULL AND ?=1)))) AND NOT (sender_type='human' AND recipient_id=? AND sender_id<>?) ORDER BY id",
+                    (r['project_id'],r['id'],r['id'],r['id'],int(r['admin_agent_id']==r['id']),r['id'],r['owner_id'])):
                     other=candidate['sender_id'] if candidate['recipient_id'] else None
                     if candidate['sender_type']=='system':
                         execution=db.execute('SELECT reply_to FROM executions WHERE id=?',(candidate['sender_id'],)).fetchone()

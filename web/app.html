@@ -141,12 +141,12 @@ async function selectConversation(conversation){
 }
 function startDirectConversation(){
   const v=S.view,me=S.dash.user.id,options=[
-    ...v.members.map(a=>({id:a.id,name:a.name,kind:'human_agent'})),
+    ...v.members.filter(a=>a.owner_id===me).map(a=>({id:a.id,name:a.name,kind:'human_agent'})),
     ...v.users.filter(u=>u.id!==me).map(u=>({id:u.id,name:u.username,kind:'human_human'}))
   ];
   modal('开始私聊',(body,actions)=>{
     if(!options.length){empty(body,'当前没有可以私聊的成员或 Agent。');actions.append(button('关闭',closeModal));return}
-    note(body,'人和 Agent 的私聊仅你可见；人与人的私聊仅双方可见。');
+    note(body,'你只能私聊自己的 Agent；人与人的私聊仅双方可见。');
     options.forEach(target=>{
       const existing=(v.conversations||[]).find(c=>conversationKind(c)===target.kind&&conversationParticipants(c).includes(target.id));
       const label=(target.kind==='human_agent'?'Agent · ':'成员 · ')+target.name;
@@ -172,7 +172,7 @@ function renderProject(){
   const saved=S.chatSelection.get(S.project)||group.id;
   let selected=conversations.find(x=>x.id===saved);
   if(!selected&&saved.startsWith('new:')){
-    const target=saved.slice(4),agent=v.members.find(a=>a.id===target),person=v.users.find(u=>u.id===target);
+    const target=saved.slice(4),agent=v.members.find(a=>a.id===target&&a.owner_id===me),person=v.users.find(u=>u.id===target);
     if(agent||person)selected={id:saved,kind:agent?'human_agent':'human_human',title:agent?.name||person?.username||target,recipient_id:target,participants:[me,target]};
   }
   if(!selected)selected=group;
@@ -182,6 +182,8 @@ function renderProject(){
   const oldInternal=c.querySelector('#internalConversations'),internalOpen=oldInternal?.open||false;
   const oldTasks=c.querySelector('#projectTasks'),tasksOpen=oldTasks?.open||false;
   const oldMemory=c.querySelector('#projectMemory'),memoryOpen=oldMemory?.open||false;
+  const oldMembers=c.querySelector('#projectMembers'),membersOpen=oldMembers?.open||false;
+  const panelScroll={tasks:oldTasks?.scrollTop||0,memory:oldMemory?.scrollTop||0,members:oldMembers?.scrollTop||0};
   c.dataset.projectId=S.project;c.dataset.conversationId=selectedId;
   c.replaceChildren(head(p.name,serviceName(v.server||p.server)));
   const layout=el('div','conversation-layout');
@@ -277,7 +279,7 @@ function renderProject(){
   const addMemory=button('加入项目记忆',null,'primary');addMemory.type='submit';memoryForm.append(memoryText,addMemory);
   memoryForm.onsubmit=e=>{e.preventDefault();run(async()=>{if(!memoryText.value.trim())return;await api('memory-note-add',{project:S.project,body:memoryText.value.trim()});await refresh(true)},addMemory)};
   memory.append(memoryForm);side.append(memory);
-  const members=el('details','panel side-section');members.append(el('summary','','成员与员工'));
+  const members=el('details','panel side-section');members.id='projectMembers';members.open=membersOpen;members.append(el('summary','','成员与员工'));
   v.users.forEach(u=>members.append(el('div','member',u.username+(u.id===p.owner_id?' · 群主':''))));
   v.members.forEach(a=>members.append(el('div','member',a.name+(a.id===p.admin_agent_id?' · 管理员':'')+(a.online?'':' · 机器离线'))));
   members.append(button('派遣我的员工',dispatch));
@@ -290,6 +292,10 @@ function renderProject(){
     if(c.dataset.projectId!==S.project||c.dataset.conversationId!==selectedId)return;
     msgs.scrollTop=oldScroll.nearBottom?msgs.scrollHeight:Math.min(oldScroll.top,Math.max(0,msgs.scrollHeight-msgs.clientHeight));
     window.scrollTo({top:oldScroll.outer,behavior:'instant'});
+  });
+  requestAnimationFrame(()=>{
+    if(c.dataset.projectId!==S.project||c.dataset.conversationId!==selectedId)return;
+    tasks.scrollTop=panelScroll.tasks;memory.scrollTop=panelScroll.memory;members.scrollTop=panelScroll.members;
   });
 }
 function invite(){modal('邀请成员',(b,a)=>{note(b,'邀请将授予对方项目成员权限，对方可派遣自己的员工。');a.append(button('关闭',closeModal),button('生成邀请',async()=>{const r=await api('invite',{project:S.project});b.replaceChildren();const code=field(b,'项目邀请代码',r.invite);code.readOnly=true;note(b,'协作服务：'+r.server+'。请把地址和邀请代码交给对方。');a.replaceChildren(button('完成',closeModal,'primary'))},'primary'))})}
