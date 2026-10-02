@@ -10,6 +10,7 @@ from broker import PullBackend
 class IdentityTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.store=Store(Path(self.temp.name));self.api=AccountBackend(self.store,PullBackend(self.store));self.root=generate_identity()
+        self.store.claim_local_host(self.root['account_id'])
     def tearDown(self):self.temp.cleanup()
     def call(self,identity,operation,payload,action='rpc'):
         nonce=self.api.api({'action':'challenge','public_key':identity['public_key']})['nonce']
@@ -43,6 +44,7 @@ class IdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as other_dir:
             other_store=Store(Path(other_dir));other=AccountBackend(other_store,PullBackend(other_store))
             host=generate_identity()
+            other_store.claim_local_host(host['account_id'])
             def invoke(identity,operation,payload,action):
                 nonce=other.api({'action':'challenge','public_key':identity['public_key']})['nonce']
                 envelope=sign_envelope(identity,{'domain':'harness-account-request-v1','nonce':nonce,'operation':operation,'payload':payload})
@@ -62,6 +64,7 @@ class IdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as other_dir:
             other_store=Store(Path(other_dir));other=AccountBackend(other_store,PullBackend(other_store))
             host=generate_identity()
+            other_store.claim_local_host(host['account_id'])
             def invoke(identity,operation,payload,action):
                 nonce=other.api({'action':'challenge','public_key':identity['public_key']})['nonce']
                 return other.api({'action':action,'envelope':sign_envelope(identity,{'domain':'harness-account-request-v1','nonce':nonce,'operation':operation,'payload':payload})})

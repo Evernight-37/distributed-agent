@@ -46,7 +46,10 @@ class Store:
             CREATE TABLE IF NOT EXISTS invitations(hash TEXT PRIMARY KEY,project_id TEXT NOT NULL,expires REAL NOT NULL,used INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT,action TEXT,details TEXT,created_at REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS agent_cursors(agent_id TEXT,channel TEXT,last_message INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(agent_id,channel));
+            CREATE TABLE IF NOT EXISTS service_host(id INTEGER PRIMARY KEY CHECK(id=1),owner_account_id TEXT NOT NULL,host_node TEXT);
+            CREATE TABLE IF NOT EXISTS service_metadata(id INTEGER PRIMARY KEY CHECK(id=1),service_id TEXT NOT NULL);
             ''')
+            db.execute('INSERT OR IGNORE INTO service_metadata(id,service_id) VALUES(1,?)',(uid('service'),))
             if 'configuring' not in {r['name'] for r in db.execute('PRAGMA table_info(agents)')}:
                 db.execute('ALTER TABLE agents ADD COLUMN configuring INTEGER NOT NULL DEFAULT 0')
             if 'reply_to' not in {r['name'] for r in db.execute('PRAGMA table_info(executions)')}:
@@ -77,6 +80,31 @@ class Store:
 
     def log(self, db, actor, action, details):
         db.execute('INSERT INTO audit(actor,action,details,created_at) VALUES(?,?,?,?)', (actor, action, json.dumps(details, ensure_ascii=False), time.time()))
+
+    def host_owner(self):
+        with self.connect() as db:
+            row=db.execute('SELECT owner_account_id,host_node FROM service_host WHERE id=1').fetchone()
+            return dict(row) if row else None
+
+    def service_id(self):
+        with self.connect() as db:
+            return db.execute('SELECT service_id FROM service_metadata WHERE id=1').fetchone()['service_id']
+
+    def claim_local_host(self, account_id, host_node=None):
+        """Local filesystem authority only; never expose as an HTTP operation."""
+        if not isinstance(account_id,str) or not account_id:
+            raise ValueError('需要已解锁的账户身份')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT owner_account_id,host_node FROM service_host WHERE id=1').fetchone()
+            if row and row['owner_account_id']!=account_id:
+                raise PermissionError('这台机器的协作服务已属于其他账户')
+            if not row:
+                db.execute('INSERT INTO service_host(id,owner_account_id,host_node) VALUES(1,?,?)',
+                           (account_id,host_node))
+            elif host_node and not row['host_node']:
+                db.execute('UPDATE service_host SET host_node=? WHERE id=1',(host_node,))
+            return {'owner_account_id':account_id,'host_node':host_node or (row['host_node'] if row else None)}
 
     @staticmethod
     def group_conversation(project):
@@ -178,6 +206,8 @@ class Store:
                 project = invitation['project_id']
             user_id = uid('user')
             db.execute('INSERT INTO users VALUES(?,?,?,?)',(user_id,username,salt,hashed))
+            if bootstrap:
+                db.execute('INSERT OR IGNORE INTO service_host(id,owner_account_id) VALUES(1,?)',(user_id,))
             if project:
                 db.execute('INSERT INTO project_users VALUES(?,?)',(project,user_id))
                 db.execute('UPDATE invitations SET used=1 WHERE hash=?',(digest(invite),))
@@ -201,6 +231,9 @@ class Store:
         if not isinstance(name,str) or not 1 <= len(name.strip()) <= 120:
             raise ValueError('项目名称不能为空，最多 120 字符')
         with self.connect() as db:
+            host=db.execute('SELECT owner_account_id FROM service_host WHERE id=1').fetchone()
+            if not host or host['owner_account_id']!=user:
+                raise PermissionError('只有这台协作服务所属账户可以在此创建项目')
             project = uid('project')
             db.execute('INSERT INTO projects(id,name,owner_id) VALUES(?,?,?)',(project,name.strip(),user))
             db.execute('INSERT INTO project_users VALUES(?,?)',(project,user))

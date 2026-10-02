@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from broker import PullBackend
-from collaboration_store import Store
+from collaboration_store import Store, uid
 
 
 class PullBrokerTests(unittest.TestCase):
@@ -57,7 +57,13 @@ class PullBrokerTests(unittest.TestCase):
         other=self.store.signup('other','',invite=invite)['id']
         with self.assertRaises(PermissionError): self.backend.create_pair(other,'worker')
         other_token,_=self.enroll('other-worker',other)
-        other_project=self.store.project_create(other,'Private project')['id']
+        # Legacy databases may contain projects created before host ownership
+        # was enforced; their agent and report isolation must still hold.
+        other_project=uid('project')
+        with self.store.connect() as db:
+            db.execute('INSERT INTO projects(id,name,owner_id) VALUES(?,?,?)',
+                       (other_project,'Private project',other))
+            db.execute('INSERT INTO project_users VALUES(?,?)',(other_project,other))
         with self.assertRaises(PermissionError): self.advertise(token,project=other_project)
         agent=self.advertise(token)
         self.submit(agent); job=self.claim(token)

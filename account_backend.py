@@ -28,7 +28,8 @@ class AccountBackend:
             public=data['public_key'];decode(public,32);nonce=secrets.token_urlsafe(32)
             with self.store.connect() as db:
                 db.execute('DELETE FROM account_challenges WHERE expires<?',(time.time(),));db.execute('INSERT INTO account_challenges VALUES(?,?,?)',(nonce,public,time.time()+60))
-            return {'nonce':nonce,'expires_in':60,'features':['mention_agent_id','anchored_reply_draft','conversation_privacy_v2']}
+            return {'nonce':nonce,'expires_in':60,'service_id':self.store.service_id(),
+                    'features':['mention_agent_id','anchored_reply_draft','conversation_privacy_v2','service_host_owner_v1']}
         if action=='request-device':
             public=data['public_key'];decode(public,32);name=self._name(data.get('name','新电脑'));code=secrets.token_urlsafe(24);rid='request-'+secrets.token_hex(16)
             with self.store.connect() as db:
@@ -52,14 +53,13 @@ class AccountBackend:
             db.execute('DELETE FROM account_challenges WHERE nonce=?',(body['nonce'],))
         # Consume even rejected authenticated operations to prevent replay after state changes.
         if action=='register':
-            if body.get('operation')!='register' or verified['chain_keys']!=[public]:raise PermissionError('Registration requires a root identity')
+            if body.get('operation')!='register':raise PermissionError('Wrong registration proof')
             name=self._name(body['payload'].get('name'));device_name=self._name(body['payload'].get('device_name','我的电脑'))
             with self.store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                if db.execute('SELECT 1 FROM users WHERE id=?',(user,)).fetchone():raise ValueError('Account already registered')
-                db.execute('INSERT INTO users VALUES(?,?,?,?)',(user,name+' · '+user[-8:],secrets.token_hex(16),secrets.token_hex(64)))
-                db.execute('INSERT INTO account_devices VALUES(?,?,?,?,0)',(public,user,device_name,'[]'))
-                self._node(db,public,user)
+                if not db.execute('SELECT 1 FROM users WHERE id=?',(user,)).fetchone():
+                    db.execute('INSERT INTO users VALUES(?,?,?,?)',(user,name+' · '+user[-8:],secrets.token_hex(16),secrets.token_hex(64)))
+                self._register_chain(db,verified,data['envelope'].get('chain',[]),device_name)
             return {'account_id':user,'name':name,'username':name,'node':device_node(public),'public_key':public}
         if action=='activate-device':
             if body.get('operation')!='activate-device':raise PermissionError('Wrong device proof')
@@ -113,6 +113,10 @@ class AccountBackend:
             return {'server':server}
         if op=='dashboard':
             result=self.store.snapshot(user);result.update(self.owners.snapshot(user))
+            host=self.store.host_owner()
+            result['hosted_by_me']=bool(host and host['owner_account_id']==user)
+            result['host_node']=host['host_node'] if result['hosted_by_me'] else None
+            result['service_id']=self.store.service_id()
             with self.store.connect() as db:
                 result['user']={'id':user,'username':self._username(db,user)}
                 visits={r['project_id']:r['visited'] for r in db.execute('SELECT * FROM account_project_visits WHERE account_id=?',(user,))}

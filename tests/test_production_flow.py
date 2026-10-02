@@ -4,6 +4,7 @@ from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 from panel import handler_for
 from app_bridge import AppBridge
+from collaboration_store import Store
 from pull_worker import enroll,Connector
 from common import read_json,write_json
 
@@ -36,6 +37,7 @@ class ProductionFlow(unittest.TestCase):
                 result=client.invoke(op,data);self.assertTrue(result['ok'],result);return result['result']
             try:
                 call(a,'register',{'username':'测试账户','password':'','server':url})
+                Store(root/'service').claim_local_host(a.identity['account_id'],a.profile['node'])
                 dash=call(a,'dashboard');self.assertEqual(len(dash['devices']),1)
                 req=call(b,'device-request',{'name':'第二台','password':'短','server':url})
                 call(a,'device-inspect',{'code':req['code']});call(a,'device-approve',{'request_id':req['request_id']})

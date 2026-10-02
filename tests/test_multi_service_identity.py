@@ -5,6 +5,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from app_bridge import AppBridge
+from collaboration_store import Store
 from panel import handler_for
 
 
@@ -39,7 +40,9 @@ class MultiServiceIdentityTests(unittest.TestCase):
                 linked = QuietBridge(root / 'linked')
                 call(member, 'register', {'username': 'Member', 'password': 'local', 'server': home_url})
                 member_account = member.identity['account_id']
+                Store(root / 'home').claim_local_host(member_account,member.profile['node'])
                 call(host, 'register', {'username': 'Host', 'password': 'local', 'server': team_url})
+                Store(root / 'team').claim_local_host(host.identity['account_id'],host.profile['node'])
                 project = call(host, 'new-project', {'name': 'Team project'})['id']
                 invite = call(host, 'invite', {'project': project})['invite']
 
@@ -50,9 +53,12 @@ class MultiServiceIdentityTests(unittest.TestCase):
                 self.assertEqual(next(p for p in dashboard['projects'] if p['id'] == project)['server'], team_url)
                 call(member, 'message', {'project': project, 'body': 'Existing identity works'})
                 self.assertEqual(call(host, 'project', {'id': project})['messages'][-1]['body'], 'Existing identity works')
-                own_project = call(member, 'new-project', {'name': 'Member project', 'server': team_url})
-                self.assertEqual(own_project['server'], team_url)
-                self.assertEqual(call(member, 'project', {'id': own_project['id']})['project']['owner_id'], member_account)
+                self.assertFalse(next(s for s in dashboard['services'] if s['server']==team_url)['hosted_by_me'])
+                rejected=member.invoke('new-project', {'name':'Member project','server':team_url})
+                self.assertFalse(rejected['ok'])
+                self.assertIn('只能',rejected['error'])
+                own_project=call(member,'new-project',{'name':'Member project','server':home_url})
+                self.assertEqual(own_project['server'],home_url)
 
                 request = call(linked, 'device-request', {'name': 'Second device', 'password': 'other', 'server': home_url})
                 call(member, 'device-inspect', {'code': request['code']})

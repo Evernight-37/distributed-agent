@@ -45,6 +45,60 @@ class AppBridge:
         validate_server(server)
         if server=='http://127.0.0.1:8765': DesktopRuntime(self.root/'host').start_workbench(open_browser=False)
         return server
+    def _local_host_state(self,state_path=None,public_key=None):
+        import sqlite3
+        from contextlib import closing
+        from collaboration_store import Store
+        default=Path(os.environ.get('LOCALAPPDATA',Path.home()))/'AgentHarness'/'shared-data'
+        state=Path(state_path).resolve() if state_path else default.resolve()
+        database=state/'collaboration.sqlite3'
+        if not database.is_file():
+            if not state_path:
+                raise ValueError('本机服务可能使用自定义数据目录，请选择该服务的数据目录。')
+            raise ValueError('所选目录不是现有协作服务的数据目录')
+        try:
+            with closing(sqlite3.connect(database.as_uri()+'?mode=ro',uri=True)) as db:
+                local_id=db.execute('SELECT service_id FROM service_metadata WHERE id=1').fetchone()[0]
+        except (sqlite3.Error,TypeError,IndexError):
+            if not state_path:
+                raise ValueError('本机服务可能使用自定义数据目录，请选择该服务的数据目录。') from None
+            raise ValueError('所选目录不是已升级的协作服务数据目录') from None
+        challenge=self._post('http://127.0.0.1:8765',{'action':'challenge','public_key':public_key or self.identity['public_key']})
+        if challenge.get('service_id')!=local_id:
+            raise ValueError('当前 8765 服务使用其它数据目录。请在“启用本机托管”时选择该服务的数据目录。')
+        return Store(state)
+    def _enable_local_host(self,state_path=None):
+        if not self.identity:raise PermissionError('请先解锁账户')
+        local=self._server('http://127.0.0.1:8765')
+        store=self._local_host_state(state_path)
+        store.claim_local_host(self.identity['account_id'],self.profile['node'])
+        challenge=self._post(local,{'action':'challenge','public_key':self.identity['public_key']})
+        body={'domain':'harness-account-request-v1','nonce':challenge['nonce'],'operation':'register',
+              'payload':{'name':self.profile['username'],'device_name':socket.gethostname()}}
+        self._post(local,{'action':'register','envelope':sign_envelope(self.identity,body)})
+        self.activated_services.add(local)
+        self.profile['local_host_enabled']=True
+        self.profile['local_host_state']=str(store.root)
+        if local!=self.profile['server']:
+            self.profile.setdefault('attached_services',[]).append(local)
+        self._save_public_profile()
+        self._enroll(local)
+        return {'enabled':True,'server':local}
+    def _hosting_server(self):
+        if self.profile and (self.profile['server']=='http://127.0.0.1:8765' or self.profile.get('local_host_enabled')):
+            return 'http://127.0.0.1:8765'
+        return self.profile['server']
+    def _publish_hosted_service(self,status):
+        if not self.profile.get('local_host_enabled') or self.profile['server']=='http://127.0.0.1:8765':return
+        url=status.get('url') if isinstance(status,dict) and status.get('state')=='ready' else None
+        if not isinstance(url,str) or not url.startswith('https://'):return
+        if self.profile.get('hosted_service_url')==url:return
+        try:self._rpc('link-service',{'server':url},server=self.profile['server'])
+        except (OSError,RuntimeError,PermissionError):return
+        self.profile['hosted_service_url']=url
+        self.profile.setdefault('services',[]).append(url)
+        self.profile.setdefault('attached_services',[]).append(url)
+        self._save_public_profile()
     def _rpc(self,operation,payload=None,server=None):
         if not self.identity: raise PermissionError('请先解锁账户')
         server=server or self.profile['server']; challenge=self._post(server,{'action':'challenge','public_key':self.identity['public_key']})
@@ -67,9 +121,16 @@ class AppBridge:
         write_json(path,self.profile);self._secure(path)
     def _services(self):
         if not self.profile:return []
-        return list(dict.fromkeys([self.profile['server'],*self.profile.get('services',[])]))
+        services=[self.profile['server']]
+        if self.profile.get('local_host_enabled'):
+            services.append('http://127.0.0.1:8765')
+        services.extend(self.profile.get('services',[]))
+        return list(dict.fromkeys(services))
     def _attached_services(self):
-        return list(dict.fromkeys([self.profile['server'],*self.profile.get('attached_services',[])]))
+        services=[self.profile['server'],*self.profile.get('attached_services',[])]
+        if self.profile.get('hosted_service_url') and self.profile['server']!='http://127.0.0.1:8765':
+            services=[server for server in services if server!=self.profile['hosted_service_url']]
+        return list(dict.fromkeys(services))
     def _sync_service_links(self,force=False):
         if not self.profile or not self.identity:return
         if not force and time.monotonic()-self.last_service_sync<30:return
@@ -83,6 +144,7 @@ class AppBridge:
             if server not in self._services():self.profile.setdefault('services',[]).append(server);changed=True
         if changed:self._save_public_profile()
         for server in self._services()[1:]:
+            if server=='http://127.0.0.1:8765':continue
             if server not in remote:
                 try:self._rpc('link-service',{'server':server})
                 except (OSError,RuntimeError,ValueError):pass
@@ -103,6 +165,8 @@ class AppBridge:
     def _runtime(self,server=None):
         if not self.profile: raise PermissionError('请先登录')
         server=server or self.profile['server']
+        if server==self.profile.get('hosted_service_url'):
+            server='http://127.0.0.1:8765'
         path=self.root/'receivers'/self.profile['node']
         if server!=self.profile['server']:
             path=path.with_name(path.name+'-'+hashlib.sha256(server.encode()).hexdigest()[:16])
@@ -175,12 +239,20 @@ class AppBridge:
         result=None
         unavailable=[]
         denied=[]
+        hosting={}
+        listed=[]
+        seen_services=set()
         for server in self._services():
             try:
                 self._activate_service(server)
                 extra=self._rpc('dashboard',server=server)
             except PermissionError as exc:denied.append((server,str(exc)));continue
             except (OSError,RuntimeError,ValueError):unavailable.append(server);continue
+            service_id=extra.get('service_id')
+            if service_id and service_id in seen_services:continue
+            if service_id:seen_services.add(service_id)
+            listed.append(server)
+            hosting[server]=bool(extra.get('hosted_by_me'))
             if result is None:result=extra
             else:
                 result['projects'].extend(extra.get('projects',[]))
@@ -197,7 +269,9 @@ class AppBridge:
             result={'user':{'id':self.identity['account_id'],'username':self.profile['username']},'projects':[],'employees':[],'devices':[]}
         result['unavailable_services']=unavailable+[server for server,_ in denied]
         result['primary_server']=self.profile['server']
-        result['services']=[{'server':server,'primary':server==self.profile['server'],'attached':server in self._attached_services()} for server in self._services()]
+        result['services']=[{'server':server,'primary':server==self.profile['server'],
+                             'attached':server in self._attached_services(),
+                             'hosted_by_me':hosting.get(server,False)} for server in listed]
         return result
     def _missing(self): raise ValueError('员工不存在')
     def invoke(self,action,data=None):
@@ -220,10 +294,14 @@ class AppBridge:
         if action=='local-status': return {'profiles':[{'id':p['id'],'username':p['username']} for p in self._profiles()],'unlocked':bool(self.identity),'server':(self.profile or {}).get('server','http://127.0.0.1:8765')}
         if action=='register':
             identity=generate_identity();server=self._server(data.get('server'))
+            if server=='http://127.0.0.1:8765':
+                store=self._local_host_state(public_key=identity['public_key'])
+                store.claim_local_host(identity['account_id'],'device-'+hashlib.sha256(identity['public_key'].encode()).hexdigest()[:24])
             challenge=self._post(server,{'action':'challenge','public_key':identity['public_key']})
             body={'domain':'harness-account-request-v1','nonce':challenge['nonce'],'operation':'register','payload':{'name':data['username'],'device_name':socket.gethostname()}}
             self._post(server,{'action':'register','envelope':sign_envelope(identity,body)})
-            self.identity=identity;self.profile={'id':secrets.token_hex(16),'username':data['username'],'server':server,'node':'device-'+hashlib.sha256(identity['public_key'].encode()).hexdigest()[:24]}
+            self.identity=identity;self.profile={'id':secrets.token_hex(16),'username':data['username'],'server':server,'node':'device-'+hashlib.sha256(identity['public_key'].encode()).hexdigest()[:24],
+                                                'local_host_enabled':server=='http://127.0.0.1:8765'}
             self._save_profile(data.get('password',''));self._enroll();return {'created':True}
         if action=='login':
             profile=next((p for p in self._profiles() if p['id']==data['profile']),None)
@@ -275,6 +353,8 @@ class AppBridge:
                         self.job_servers[job['id']]=server
                         result['pending_approvals'].append({'job_id':job['id'],'template':template_name,'expected_template':template,'argv':(template or {}).get('argv'),'cwd':project.get('remote_path'),'node':self.profile['node'],'server':server})
             return result
+        if action=='host-local-enable':
+            return self._enable_local_host(data.get('state_path'))
         if action=='device-inspect':
             request=self._rpc('inspect-device',{'code':data['code']});request['public_key_fingerprint']=hashlib.sha256(request['public_key'].encode()).hexdigest()[:16];self.inspected[request['id']]=request
             return request
@@ -310,6 +390,8 @@ class AppBridge:
         if action=='new-project':
             server=data.get('server') or self.profile['server']
             if server not in self._services():raise ValueError('请先加入该协作服务')
+            owned=next((item.get('hosted_by_me') for item in self._dashboard()['services'] if item['server']==server),False)
+            if not owned:raise PermissionError('只能在自己账户名下的协作服务创建项目')
             self._activate_service(server)
             result=self._rpc('create-project',{'name':data['name']},server=server)
             self.project_servers[result['id']]=server
@@ -359,7 +441,16 @@ class AppBridge:
         if action=='approve-execution': return self._runtime(self.job_servers.get(data['job_id']))._control('action',dict(action='approve-execution',**data))
         if action=='settings-get':
             from team_service import TeamService
-            return {'server':self.profile['server'],'services':[{'server':server,'primary':server==self.profile['server'],'attached':server in self._attached_services()} for server in self._services()],'background':self.profile.get('background',True),'autostart':False,'data_root':str(self.root),'team_service':TeamService(self.root,self.profile['server']).status(),'proxy':self._proxy_settings(),'warm_idle_seconds':self._idle_seconds()}
+            dashboard=self._dashboard()
+            local_owned=any(s['server']=='http://127.0.0.1:8765' and s['hosted_by_me'] for s in dashboard['services'])
+            enabled=bool(self.profile.get('local_host_enabled') or local_owned)
+            service=TeamService(self.root,self._hosting_server())
+            status=service.status()
+            if enabled:self._publish_hosted_service(status)
+            return {'server':self.profile['server'],'services':dashboard['services'],
+                    'can_host_locally':not enabled,'local_host_enabled':enabled,
+                    'background':self.profile.get('background',True),'autostart':False,'data_root':str(self.root),
+                    'team_service':status,'proxy':self._proxy_settings(),'warm_idle_seconds':self._idle_seconds()}
         if action=='codex-cli-status':
             if not self.profile or not self.identity:raise PermissionError('请先登录')
             from worker import cli_status
@@ -441,12 +532,13 @@ class AppBridge:
             return {'seconds':seconds}
         if action.startswith('team-service-'):
             from team_service import TeamService
-            service=TeamService(self.root,self.profile['server'])
-            if action=='team-service-status':return service.status()
+            service=TeamService(self.root,self._hosting_server())
+            if action=='team-service-status':
+                status=service.status();self._publish_hosted_service(status);return status
             if action=='team-service-create':
                 status=service.status()
                 if not status.get('can_manage'):raise PermissionError('请在托管协作服务的电脑创建入口。')
-                self._rpc('dashboard')
+                self._rpc('dashboard',server=self._hosting_server())
                 return service.create()
             if action=='team-service-stop':return service.stop()
             if action=='team-service-authorize':return service.authorize()

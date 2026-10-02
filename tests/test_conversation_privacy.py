@@ -130,6 +130,7 @@ class SignedConversationApiTests(unittest.TestCase):
             try:
                 for bridge,name in ((a,'alice'),(b,'bob'),(c,'charlie')):
                     call(bridge,'register',{'username':name,'password':'pw','server':address})
+                Store(root/'service').claim_local_host(a.identity['account_id'],a.profile['node'])
                 project=call(a,'new-project',{'name':'private test'})['id']
                 for bridge in (b,c):
                     invite=call(a,'invite',{'project':project})['invite']
