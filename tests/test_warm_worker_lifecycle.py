@@ -16,6 +16,72 @@ from common import read_json, write_json
 
 
 class WarmWorkerLifecycleTests(unittest.TestCase):
+    def test_attached_thread_is_reused_without_second_resume(self):
+        class Server:
+            def __init__(self): self.calls = []
+            def call(self, method, params, timeout):
+                self.calls.append((method, params, timeout))
+                return {'thread': {'id': params.get('threadId', 'new-thread')}}
+        manager = warm_worker.WarmManager('project')
+        server = Server()
+        settings = {'model': 'test-model', 'cwd': 'C:\\project'}
+        first, replaced = manager.attach_thread(server, settings, 'existing-thread')
+        second, replaced_again = manager.attach_thread(server, settings, 'existing-thread')
+        self.assertEqual((first, second), ('existing-thread', 'existing-thread'))
+        self.assertIsNone(replaced)
+        self.assertIsNone(replaced_again)
+        self.assertEqual([item[0] for item in server.calls], ['thread/resume'])
+
+    def test_switching_channels_keeps_all_threads_attached(self):
+        class Server:
+            def __init__(self): self.calls = []
+            def call(self, method, params, timeout):
+                self.calls.append((method, params, timeout))
+                return {'thread': {'id': params['threadId']}}
+        manager = warm_worker.WarmManager('project')
+        server = Server(); settings = {'model': 'test-model', 'cwd': 'C:\\project'}
+        manager.attach_thread(server, settings, 'group-thread')
+        manager.attach_thread(server, settings, 'private-thread')
+        manager.attach_thread(server, settings, 'group-thread')
+        self.assertEqual([item[1]['threadId'] for item in server.calls],
+                         ['group-thread', 'private-thread'])
+
+    def test_active_writer_conflict_starts_fresh_session(self):
+        class Server:
+            def __init__(self): self.calls = []
+            def call(self, method, params, timeout):
+                self.calls.append((method, dict(params), timeout))
+                if method == 'thread/resume':
+                    raise RuntimeError('Codex app-server rejected thread/resume: thread old already has an active writer')
+                return {'thread': {'id': 'replacement-thread'}}
+        manager = warm_worker.WarmManager('project')
+        server = Server()
+        settings = {'model': 'test-model', 'cwd': 'C:\\project'}
+        thread_id, replaced = manager.attach_thread(server, settings, 'old-thread')
+        self.assertEqual(thread_id, 'replacement-thread')
+        self.assertEqual(replaced, 'old-thread')
+        self.assertEqual([item[0] for item in server.calls], ['thread/resume', 'thread/start'])
+        self.assertNotIn('threadId', server.calls[1][1])
+
+    def test_receiver_retires_its_idle_worker_without_touching_active(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = self.runtime_root(folder); worker.set_root(root)
+            idle = root / 'projects' / 'idle'; idle.mkdir(parents=True)
+            active = root / 'projects' / 'active'; active.mkdir(parents=True)
+            write_json(idle / 'active.json', None)
+            write_json(active / 'active.json', {'job': 'job-active'})
+            class Child:
+                pid = 101
+                def poll(self): return None
+                def wait(self, timeout): raise subprocess.TimeoutExpired('child', timeout)
+            runtime = worker.ManagedRuntime(root)
+            runtime._children = {'idle-generation': Child(), 'active-generation': Child()}
+            write_json(idle / 'warm.json', {'generation': 'idle-generation', 'pid': 101})
+            write_json(active / 'warm.json', {'generation': 'active-generation', 'pid': 101})
+            self.assertEqual(runtime.retire_idle_workers(), 1)
+            self.assertIsNone(read_json(idle / 'warm.json'))
+            self.assertEqual(read_json(active / 'warm.json')['generation'], 'active-generation')
+
     def setUp(self):
         self.original_root = worker.ROOT
 

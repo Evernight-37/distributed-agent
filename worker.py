@@ -275,6 +275,35 @@ class ManagedRuntime:
         with self._guard:
             return self._children.get(generation)
 
+    def owns(self, generation, pid):
+        child = self.child(generation)
+        return bool(child and child.pid == pid and child.poll() is None)
+
+    def retire_idle_workers(self):
+        """Revoke idle warm workers owned by this receiver before it exits."""
+        retired = []
+        with lock(ROOT / 'registry.lock'):
+            for directory in (ROOT / 'projects').glob('*'):
+                if not directory.is_dir() or read_json(directory / 'active.json'):
+                    continue
+                warm = read_json(directory / 'warm.json') or {}
+                generation, pid = warm.get('generation'), warm.get('pid')
+                if generation and isinstance(pid, int) and self.owns(generation, pid):
+                    write_json(directory / 'warm.json', None)
+                    retired.append(generation)
+        # Revocation is observed by the worker loop within 200 ms.  Do not
+        # terminate a process by PID here; identity can be recycled and active
+        # jobs are deliberately allowed to survive receiver shutdown.
+        deadline = time.monotonic() + 3
+        for generation in retired:
+            child = self.child(generation)
+            if not child: continue
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                try: child.wait(timeout=remaining)
+                except subprocess.TimeoutExpired: pass
+        return len(retired)
+
 
 def reconcile(active):
     if not active:
@@ -485,12 +514,19 @@ def rpc(request, managed_runtime=None):
                     warm = read_json(warm_path)
                     if (warm and warm.get('generation') and warm.get('token')
                             and isinstance(warm.get('pid'), int)
-                            and process_stamp(warm['pid']) == warm.get('stamp')):
+                            and process_stamp(warm['pid']) == warm.get('stamp')
+                            and managed_runtime is not None
+                            and managed_runtime.owns(warm.get('generation'), warm['pid'])):
                         pid, stamp = warm['pid'], warm['stamp']
                         generation = warm.get('generation')
                     else:
                         if managed_runtime is None:
                             raise RuntimeError('Managed turns require the persistent desktop receiver')
+                        # A live warm record from an older receiver generation
+                        # must not make the new service keep executing obsolete
+                        # code. Revocation lets it close its app-server safely.
+                        if warm and not read_json(directory / 'active.json'):
+                            write_json(warm_path, None)
                         launch_token = uuid.uuid4().hex
                         generation = uuid.uuid4().hex
                         launch_path = directory / 'launch.json'

@@ -90,6 +90,10 @@ class WarmManager:
         self.project, self.launch_token, self.generation = project, launch_token, generation
         self.directory = project_dir(project)
         self.server = self.stage = self.stderr = None
+        # A thread stays attached to one app-server for that process lifetime.
+        # Calling thread/resume again on the same server asks Codex to create a
+        # second writer for a thread it already owns and is rejected.
+        self.attached_thread_ids = set()
         self.stop_event = threading.Event()
 
     def publish_ready(self):
@@ -139,6 +143,35 @@ class WarmManager:
     def close_server(self):
         if self.server: self.server.close(); self.server = None
         if self.stderr: self.stderr.close(); self.stderr = None
+        self.attached_thread_ids.clear()
+
+    def attach_thread(self, server, settings, existing):
+        """Attach one session to this app-server, recovering stale writers safely."""
+        if existing and existing in self.attached_thread_ids:
+            return existing, None
+        if existing:
+            resume = dict(settings, threadId=existing)
+            try:
+                result = server.call('thread/resume', resume, 40)
+                thread_id = result['thread']['id']
+                self.attached_thread_ids.add(thread_id)
+                return thread_id, None
+            except RuntimeError as exc:
+                # A previous app-server (including another Codex client) can
+                # retain the thread-store writer after this worker has gone.
+                # It is unsafe to kill an unrelated process.  Start a fresh
+                # session instead; every turn already carries the bounded chat
+                # context and project memory needed to continue the project.
+                if 'already has an active writer' not in str(exc):
+                    raise
+                result = server.call('thread/start', settings, 40)
+                thread_id = result['thread']['id']
+                self.attached_thread_ids.add(thread_id)
+                return thread_id, existing
+        result = server.call('thread/start', settings, 40)
+        thread_id = result['thread']['id']
+        self.attached_thread_ids.add(thread_id)
+        return thread_id, None
 
     def update_state(self, path, **values):
         state = read_json(path / 'state.json', {}); state.update(values); write_json(path / 'state.json', state); return state
@@ -153,15 +186,16 @@ class WarmManager:
         server = self.ensure_server(stage, cwd); existing = config.get('thread_id')
         settings = {'model': project['model'], 'modelProvider': 'openai', 'cwd': cwd,
                     'approvalPolicy': 'never', 'sandbox': 'workspace-write' if stage == 'implement' else 'read-only'}
-        if existing: settings['threadId'] = existing
-        result = server.call('thread/resume' if existing else 'thread/start', settings, 40); thread_id = result['thread']['id']
+        thread_id, replaced_thread = self.attach_thread(server, settings, existing)
         with lock(ROOT / 'registry.lock'):
             write_json(self.directory / config.get('session_file', 'session.json'), {'thread_id': thread_id, 'last_job': job})
         prompt = GROUP_RULES + '\nPROJECT MEMORY:\n' + json.dumps(config['memory'], ensure_ascii=False) + '\nTASK CONTRACT:\n' + config['prompt']
         (path / 'prompt.txt').write_text(prompt, encoding='utf-8')
         sandbox = {'type': 'workspaceWrite', 'writableRoots': [cwd], 'networkAccess': False} if stage == 'implement' else {'type': 'readOnly'}
         started = now(); self.update_state(path, status='running', started_at=started, thread_id=thread_id,
-            requested_model=project['model'], reasoning_effort=project['effort'], app_server_pid=server.process.pid)
+            requested_model=project['model'], reasoning_effort=project['effort'], app_server_pid=server.process.pid,
+            session_replaced_from=replaced_thread,
+            session_replaced_reason=('active_writer_conflict' if replaced_thread else None))
         turn_id = server.call('turn/start', {'threadId': thread_id, 'input': [{'type': 'text', 'text': prompt}], 'cwd': cwd,
             'model': project['model'], 'effort': project['effort'], 'approvalPolicy': 'never', 'sandboxPolicy': sandbox,
             'outputSchema': response_schema()}, 40)['turn']['id']

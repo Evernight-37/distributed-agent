@@ -144,6 +144,8 @@ def serve(root):
                 else: write_json(root / 'connector-status.json', {'online': True, 'updated': time.time()})
                 stop.wait(3)
         finally:
+            retire = getattr(runtime, 'retire_idle_workers', None)
+            if retire: retire()
             server.shutdown(); server.server_close()
             write_json(root / 'connector-status.json', {'online': False, 'updated': time.time()})
 
