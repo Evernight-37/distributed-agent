@@ -125,6 +125,7 @@ class AppBridge:
             return 'http://127.0.0.1:8765'
         return self.profile['server']
     def _publish_hosted_service(self,status):
+        self._record_team_origin(status)
         if not self.profile.get('local_host_enabled') or self.profile['server']=='http://127.0.0.1:8765':return
         url=status.get('url') if isinstance(status,dict) and status.get('state')=='ready' else None
         if not isinstance(url,str) or not url.startswith('https://'):return
@@ -135,6 +136,14 @@ class AppBridge:
         self.profile.setdefault('services',[]).append(url)
         self.profile.setdefault('attached_services',[]).append(url)
         self._save_public_profile()
+
+    def _record_team_origin(self,status):
+        """Persist only a locally verified Tailscale Serve origin for panel restarts."""
+        if not isinstance(status,dict) or status.get('state')!='ready':return
+        url=status.get('url')
+        if not isinstance(url,str) or not url.startswith('https://'):return
+        write_json(self._host_state_root()/'team-service.json',{
+            'mode':'tailscale-serve','url':url,'proxy':'http://127.0.0.1:8765','tailnet_only':True})
     def _rpc(self,operation,payload=None,server=None):
         if not self.identity: raise PermissionError('请先解锁账户')
         server=server or self.profile['server']; challenge=self._post(server,{'action':'challenge','public_key':self.identity['public_key']})
@@ -591,7 +600,10 @@ class AppBridge:
                 if not status.get('can_manage'):raise PermissionError('请在托管协作服务的电脑创建入口。')
                 self._rpc('dashboard',server=self._hosting_server())
                 return service.create()
-            if action=='team-service-stop':return service.stop()
+            if action=='team-service-stop':
+                result=service.stop()
+                (self._host_state_root()/'team-service.json').unlink(missing_ok=True)
+                return result
             if action=='team-service-authorize':return service.authorize()
             if action=='team-service-copy':return service.copy()
             if action=='team-service-test':

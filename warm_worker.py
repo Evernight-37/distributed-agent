@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+import traceback
 from pathlib import Path
 
 from appserver_client import AppServer, PublicReplyDecoder
@@ -204,12 +205,16 @@ class WarmManager:
             while True:
                 with lock(ROOT / 'registry.lock'):
                     active = read_json(self.directory / 'active.json')
+                    warm = read_json(self.directory / 'warm.json')
+                    owns_project = (warm and warm.get('pid') == os.getpid()
+                                    and warm.get('stamp') == process_stamp(os.getpid()))
+                    if not owns_project:
+                        return
                     if not active and time.monotonic() - last_active >= idle:
-                        warm = read_json(self.directory / 'warm.json')
-                        if warm and warm.get('pid') == os.getpid():
+                        if warm.get('pid') == os.getpid():
                             write_json(self.directory / 'warm.json', None)
                         return
-                if active and active.get('pid') == os.getpid():
+                if active:
                     job = active['job']
                     state = read_json(job_dir(job) / 'state.json', {})
                     if state.get('status') == 'starting':
@@ -225,6 +230,26 @@ class WarmManager:
                                     write_json(self.directory / 'active.json', None)
                             last_active = time.monotonic()
                 time.sleep(.2)
+        except BaseException as exc:
+            # WMI-launched workers have no inherited console. Persist a bounded
+            # diagnostic and close the active job so a crash cannot masquerade
+            # as a five-minute model timeout.
+            log = self.directory / 'warm-supervisor.log'
+            with log.open('a', encoding='utf-8') as output:
+                output.write(time.strftime('%Y-%m-%dT%H:%M:%S') + ' ')
+                output.write(''.join(traceback.format_exception_only(type(exc), exc))[-2000:])
+            try:
+                with lock(ROOT / 'registry.lock'):
+                    active = read_json(self.directory / 'active.json')
+                    if active:
+                        path = job_dir(active['job'])
+                        state = read_json(path / 'state.json', {})
+                        if state.get('status') not in {'needs_review', 'completed', 'failed', 'cancelled', 'timed_out', 'interrupted'}:
+                            self.update_state(path, status='failed', error='Warm worker crashed: ' + str(exc)[:1800], finished_at=now())
+                        write_json(self.directory / 'active.json', None)
+            except Exception:
+                pass
+            raise
         finally:
             self.close_server()
 

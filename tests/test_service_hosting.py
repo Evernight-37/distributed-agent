@@ -128,6 +128,15 @@ class ServiceHostingTests(unittest.TestCase):
         start.assert_called_once_with(open_browser=False,state_root=self.store.root)
         secure.assert_not_called()
 
+    def test_verified_team_origin_is_persisted_with_host_data(self):
+        bridge=AppBridge(Path(self.temp.name)/'desktop')
+        bridge.profile={'server':'http://127.0.0.1:8765'}
+        with patch.object(bridge,'_host_state_root',return_value=self.store.root):
+            bridge._record_team_origin({'state':'ready','url':'https://host.tailnet.ts.net'})
+        saved=(self.store.root/'team-service.json').read_text(encoding='utf-8')
+        self.assertIn('https://host.tailnet.ts.net',saved)
+        self.assertIn('tailscale-serve',saved)
+
 
 if __name__=='__main__':
     unittest.main()
