@@ -23,8 +23,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def deploy_runtime(root):
+def deploy_runtime(root, source_root=None):
     root = Path(root).resolve()
+    source_root = Path(source_root or Path(__file__).resolve().parent).resolve()
     root.mkdir(parents=True, exist_ok=True)
     with lock(root / 'registry.lock'):
         if any(read_json(p) for p in (root/'projects').glob('*/active.json')):
@@ -34,7 +35,7 @@ def deploy_runtime(root):
                 if read_json(state, {}).get('status') not in TERMINAL - {'unknown'}:
                     raise ValueError('Cannot update a runtime with active jobs')
         for name in ('common.py', 'worker.py', 'jobrunner.py', 'warm_worker.py', 'appserver_client.py'):
-            source = Path(__file__).resolve().parent / name
+            source = source_root / name
             target = root / name
             if source != target:
                 shutil.copyfile(source, target)

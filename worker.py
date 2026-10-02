@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -159,9 +160,9 @@ def cli_path(root=ROOT):
     return result['path']
 
 
-def launch_supervisor(job, warm_project=None):
+def launch_supervisor(job, warm_project=None, launch_token=None):
     """WMI creates a hidden process outside the OpenSSH session's kill-on-close job."""
-    argv = ([sys.executable, '-X', 'utf8', str(ROOT / 'warm_worker.py'), warm_project]
+    argv = ([sys.executable, '-X', 'utf8', str(ROOT / 'warm_worker.py'), warm_project, launch_token]
             if warm_project else [sys.executable, '-X', 'utf8', str(ROOT / 'worker.py'), 'run', job])
     output_path = (project_dir(warm_project) / 'warm-supervisor.log' if warm_project
                    else job_dir(job) / 'supervisor.log')
@@ -323,10 +324,27 @@ def rpc(request):
                     if warm and isinstance(warm.get('pid'), int) and process_stamp(warm['pid']) == warm.get('stamp'):
                         pid, stamp = warm['pid'], warm['stamp']
                     else:
-                        pid = launch_supervisor(job, project['name'])
-                        stamp = process_stamp(pid)
-                        if stamp is not None:
-                            write_json(warm_path, {'pid': pid, 'stamp': stamp})
+                        launch_token = uuid.uuid4().hex
+                        launch_path = directory / 'launch.json'
+                        parent_pid = os.getpid()
+                        parent_stamp = process_stamp(parent_pid)
+                        if parent_stamp is None:
+                            raise RuntimeError("Parent process is not alive")
+                        write_json(launch_path, {'token': launch_token, 'parent_pid': parent_pid,
+                                                 'parent_stamp': parent_stamp})
+                        try:
+                            pid = launch_supervisor(job, project['name'], launch_token)
+                            stamp = process_stamp(pid)
+                            if stamp is None:
+                                raise RuntimeError("Supervisor failed to start")
+                            write_json(warm_path, {'pid': pid, 'stamp': stamp, 'token': launch_token})
+                            write_json(directory / 'active.json', {"job": job, "pid": pid, "stamp": stamp})
+                            write_json(launch_path, None)
+                        except Exception:
+                            current = read_json(launch_path)
+                            if current and current.get('token') == launch_token:
+                                write_json(launch_path, None)
+                            raise
                 else:
                     pid = launch_supervisor(job)
                     stamp = process_stamp(pid)
@@ -337,7 +355,8 @@ def rpc(request):
                 state.update(status="failed", error=str(exc), finished_at=now())
                 write_json(path / "state.json", state)
                 raise
-            write_json(directory / "active.json", {"job": job, "pid": pid, "stamp": stamp})
+            if not (config['managed_turn'] and project.get('local_control') and read_json(directory / 'active.json', {}).get('job') == job):
+                write_json(directory / "active.json", {"job": job, "pid": pid, "stamp": stamp})
             return {"job": job, "status": "starting", "supervisor_pid": pid}
     if action in {"status", "cancel", "fetch"}:
         path = job_dir(request["job"])

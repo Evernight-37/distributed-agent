@@ -58,8 +58,9 @@ def mcp_names(server):
 
 
 class WarmManager:
-    def __init__(self, project):
+    def __init__(self, project, launch_token=None):
         self.project = project
+        self.launch_token = launch_token
         self.directory = project_dir(project)
         self.server = None
         self.stage = None
@@ -203,17 +204,26 @@ class WarmManager:
         last_active = time.monotonic()
         try:
             while True:
+                wait_for_registration = False
                 with lock(ROOT / 'registry.lock'):
                     active = read_json(self.directory / 'active.json')
                     warm = read_json(self.directory / 'warm.json')
                     owns_project = (warm and warm.get('pid') == os.getpid()
-                                    and warm.get('stamp') == process_stamp(os.getpid()))
+                                    and warm.get('stamp') == process_stamp(os.getpid())
+                                    and (not self.launch_token or warm.get('token') == self.launch_token))
                     if not owns_project:
-                        return
-                    if not active and time.monotonic() - last_active >= idle:
+                        launch = read_json(self.directory / 'launch.json')
+                        if (not self.launch_token or not launch or launch.get('token') != self.launch_token
+                                or process_stamp(launch.get('parent_pid')) != launch.get('parent_stamp')):
+                            return
+                        wait_for_registration = True
+                    if owns_project and not active and time.monotonic() - last_active >= idle:
                         if warm.get('pid') == os.getpid():
                             write_json(self.directory / 'warm.json', None)
                         return
+                if wait_for_registration:
+                    time.sleep(.05)
+                    continue
                 if active:
                     job = active['job']
                     state = read_json(job_dir(job) / 'state.json', {})
@@ -257,4 +267,4 @@ class WarmManager:
 if __name__ == '__main__':
     import sys
     from common import identifier
-    WarmManager(identifier(sys.argv[1])).loop()
+    WarmManager(identifier(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else None).loop()

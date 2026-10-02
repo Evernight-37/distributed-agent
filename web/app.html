@@ -242,17 +242,26 @@ function renderProject(){
     const save=()=>S.drafts.set(draftKey,{body:text.value,mention:isGroup?mention.value:''});
     text.oninput=save;if(isGroup)mention.onchange=save;
     const send=button('发送',null,'primary');send.type='submit';composer.append(text,send);
+    let sending=false,composing=false;
+    text.addEventListener('compositionstart',()=>{composing=true});
+    text.addEventListener('compositionend',()=>{composing=false});
+    text.onkeydown=e=>{
+      if(e.key!=='Enter'||e.shiftKey||e.isComposing||composing)return;
+      e.preventDefault();composer.requestSubmit(send);
+    };
     composer.onsubmit=e=>{e.preventDefault();run(async()=>{
-      const body=text.value.trim();if(!body)return;
+      if(sending)return;const body=text.value.trim();if(!body)return;sending=true;
       const recipient=selected.recipient_id||(!isGroup?conversationParticipants(selected).find(id=>id!==me):null);
-      await api('message',{project:S.project,body,conversation_id:selectedId.startsWith('new:')?null:selectedId,recipient_id:recipient||null,mention_agent_id:isGroup?mention.value||null:null});
-      S.drafts.delete(draftKey);
-      if(selectedId.startsWith('new:')){
-        const view=await api('project',{id:S.project,visit:true});S.view=view;
-        const created=(view.conversations||[]).find(room=>conversationKind(room)===kind&&conversationParticipants(room).includes(recipient));
-        if(created)S.chatSelection.set(S.project,created.id);
-        renderProject();
-      }else await refresh(true);
+      try{
+        await api('message',{project:S.project,body,conversation_id:selectedId.startsWith('new:')?null:selectedId,recipient_id:recipient||null,mention_agent_id:isGroup?mention.value||null:null});
+        text.value='';S.drafts.delete(draftKey);
+        if(selectedId.startsWith('new:')){
+          const view=await api('project',{id:S.project,visit:true});S.view=view;
+          const created=(view.conversations||[]).find(room=>conversationKind(room)===kind&&conversationParticipants(room).includes(recipient));
+          if(created)S.chatSelection.set(S.project,created.id);
+          renderProject();
+        }else await refresh(true);
+      }finally{sending=false}
     },send)};
     chat.append(composer);
   }
@@ -406,7 +415,6 @@ async function boot(){try{const status=await api('local-status');S.profiles=stat
 $('quitApp').onclick=requestAppClose;$('dashboardNav').onclick=()=>renderDashboard();$('settingsNav').onclick=()=>run(renderSettings);$('accountNav').onclick=renderAccount;$('logout').onclick=()=>run(async()=>{S.epoch++;S.dash=null;await api('logout');S.dash=null;S.view=null;S.drafts.clear();$('app').classList.add('hidden');$('login').classList.remove('hidden');await boot()});$('closeModal').onclick=closeModal;$('modalWrap').onclick=e=>{if(e.target===$('modalWrap'))closeModal()};document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});window.addEventListener('pywebviewready',boot);if(window.pywebview?.api)boot();else $('login').append(el('h1','','协作工作台'),el('p','muted','正在连接本机应用。此页面需要在桌面应用中运行。'));setInterval(()=>{if(S.page==='project'&&!document.hidden)refresh()},1000);setInterval(()=>{if(S.page!=='project'&&!document.hidden)refresh()},5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh(true)});
 
 </script><script>
-document.addEventListener('keydown',e=>{if(e.target?.matches?.('.composer textarea')&&e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&e.keyCode!==229){e.preventDefault();e.target.form?.requestSubmit()}});
 const _renderProject=renderProject;renderProject=function(){const box=document.querySelector('.messages'),s=window.getSelection?.();if(box&&s?.rangeCount&&!s.isCollapsed&&box.contains(s.anchorNode)){S.dirty=true;return}return _renderProject()};
 const chatStyle=document.createElement('style');chatStyle.textContent='.bubble,.bubble p{user-select:text;-webkit-user-select:text;cursor:text}';document.head.append(chatStyle);
 </script></body></html>

@@ -11,7 +11,7 @@ import webbrowser
 from pathlib import Path
 
 from common import lock, read_json
-from pull_worker import NoRedirect
+from pull_worker import NoRedirect, deploy_runtime
 
 
 def assets():
@@ -86,6 +86,10 @@ class DesktopRuntime:
                 info = read_json(self.control_path, {})
                 if info.get('assets') == str(assets()): return existing
                 self.stop_and_wait()
+            # A paired receiver keeps its identity and project state across
+            # app upgrades, but its executable Python files must come from the
+            # currently installed bundle before the new service starts.
+            deploy_runtime(self.root, assets())
             flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS if os.name == 'nt' else 0
             with (self.root / 'desktop-service.stdout.log').open('ab') as out, (self.root / 'desktop-service.stderr.log').open('ab') as err:
                 process = subprocess.Popen([python_command(), '-X', 'utf8', str(assets() / 'desktop_service.py'), 'serve', str(self.root)],
