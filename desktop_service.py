@@ -15,6 +15,18 @@ from pathlib import Path
 from common import identifier, lock, read_json, validate_project, write_json
 from local_panel import handler_for
 from pull_worker import Connector, enroll
+from worker import ManagedRuntime
+
+
+def receiver_runtime(root):
+    """Bind the installed worker implementation to one receiver state root."""
+    root = Path(root).resolve()
+    if not (root / 'worker.py').is_file():
+        raise RuntimeError('Receiver worker runtime is missing')
+    # desktop_service and ManagedRuntime come from the same installed bundle;
+    # deploy_runtime copies that exact bundle to root before this process is
+    # started.  Only mutable state is rooted at the enrolled receiver path.
+    return ManagedRuntime(root)
 
 
 def windows_user_sid():
@@ -30,7 +42,8 @@ def windows_user_sid():
 
 def serve(root):
     root = Path(root).resolve()
-    connector = Connector(root / 'pull-config.json')
+    runtime = receiver_runtime(root)
+    connector = Connector(root / 'pull-config.json', executor=runtime.rpc)
     stop = threading.Event()
     key, instance = secrets.token_urlsafe(48), secrets.token_urlsafe(24)
     browser_tickets, browser_sessions = {}, {}

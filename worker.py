@@ -83,8 +83,18 @@ def codex_version(exe):
     return tuple(map(int, match.groups())) if match else None
 
 
-def executor_environment(root=ROOT):
+def set_root(root):
+    """Bind this loaded worker module to one explicit receiver state root."""
+    global ROOT
+    ROOT = Path(root).resolve()
+    if not ROOT.is_dir():
+        raise ValueError("Worker state root does not exist")
+    return ROOT
+
+
+def executor_environment(root=None):
     """Build the exact environment used by Codex and its login preflight."""
+    root = ROOT if root is None else Path(root)
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     executor=read_json(Path(root)/'executor.json',{})
     network=executor.get('network_env',{})
@@ -98,9 +108,10 @@ def executor_environment(root=ROOT):
     return env
 
 
-def codex_login_status(exe,root=ROOT):
+def codex_login_status(exe,root=None):
     """Check the selected CLI login without reading credentials or making a model call."""
     try:
+        root = ROOT if root is None else Path(root)
         result=subprocess.run([str(exe),'login','status'],capture_output=True,text=True,encoding='utf-8',errors='replace',
                               env=executor_environment(root),timeout=12,
                               creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
@@ -114,10 +125,10 @@ def codex_login_status(exe,root=ROOT):
     return {'logged_in':False,'login_error':'Codex CLI 尚未登录；请使用当前 Windows 用户完成登录'}
 
 
-def cli_status(root=ROOT):
+def cli_status(root=None):
     """Find a working CLI in the worker account, including npm/PATH installs."""
     import shutil
-    root = Path(root)
+    root = ROOT if root is None else Path(root)
     explicit = read_json(root / "executor.json", {}).get("cli_path")
     if explicit:
         if not isinstance(explicit, str) or not Path(explicit).is_absolute() or not Path(explicit).is_file():
@@ -153,35 +164,22 @@ def cli_status(root=ROOT):
     return {'found': True, 'configured': False, 'path': path, 'version': '.'.join(map(str, version))}
 
 
-def cli_path(root=ROOT):
+def cli_path(root=None):
     result = cli_status(root)
     if not result['found']:
         raise RuntimeError(result['error'])
     return result['path']
 
 
-def launch_supervisor(job, warm_project=None, launch_token=None):
-    """WMI creates a hidden process outside the OpenSSH session's kill-on-close job."""
-    argv = ([sys.executable, '-X', 'utf8', str(ROOT / 'warm_worker.py'), warm_project, launch_token]
-            if warm_project else [sys.executable, '-X', 'utf8', str(ROOT / 'worker.py'), 'run', job])
-    output_path = (project_dir(warm_project) / 'warm-supervisor.log' if warm_project
-                   else job_dir(job) / 'supervisor.log')
+def launch_supervisor(job):
+    """Launch a legacy one-shot worker outside an OpenSSH kill-on-close job."""
+    argv = [sys.executable, '-X', 'utf8', str(ROOT / 'worker.py'), 'run', job]
+    output_path = job_dir(job) / 'supervisor.log'
     if os.name != "nt":
         with output_path.open("ab") as output:
             child = subprocess.Popen(argv,
                                      stdin=subprocess.DEVNULL, stdout=output, stderr=output,
                                      start_new_session=True, close_fds=True)
-        return child.pid
-    if warm_project:
-        # Managed turns are launched by the owner's persistent desktop
-        # receiver, so they do not need WMI to escape an SSH job object.  WMI
-        # intermittently rejects valid content-addressed runtime paths with
-        # ReturnValue 9; a detached hidden child is deterministic here.
-        flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        with output_path.open("ab") as output:
-            child = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.DEVNULL,
-                                     stdout=output, stderr=output, close_fds=True,
-                                     creationflags=flags)
         return child.pid
     import base64
     command = subprocess.list2cmdline(argv)
@@ -202,6 +200,74 @@ def launch_supervisor(job, warm_project=None, launch_token=None):
     return int(response["ProcessId"])
 
 
+class ManagedRuntime:
+    """Own warm worker handles inside the long-lived desktop receiver."""
+    def __init__(self, root):
+        self.root = set_root(root)
+        self._children = {}
+        self._guard = threading.Lock()
+
+    def rpc(self, request):
+        return rpc(request, self)
+
+    def launch(self, project, token, generation):
+        directory = project_dir(project)
+        output_path = directory / 'warm-supervisor.log'
+        argv = [sys.executable, '-X', 'utf8', str(self.root / 'warm_worker.py'),
+                '--root', str(self.root), '--project', project,
+                '--token', token, '--generation', generation]
+        flags = 0
+        kwargs = {'cwd': self.root, 'stdin': subprocess.DEVNULL, 'close_fds': True}
+        if os.name == 'nt':
+            flags = (subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS |
+                     subprocess.CREATE_NEW_PROCESS_GROUP)
+            kwargs['creationflags'] = flags
+        else:
+            kwargs['start_new_session'] = True
+        output = output_path.open('ab')
+        try:
+            child = subprocess.Popen(argv, stdout=output, stderr=output, **kwargs)
+        except Exception:
+            output.close()
+            raise
+        with self._guard:
+            self._children[generation] = child
+        thread = threading.Thread(target=self._watch, args=(project, generation, child, output),
+                                  name='managed-worker-' + generation[:8], daemon=True)
+        thread.start()
+        return child
+
+    def _watch(self, project, generation, child, output):
+        code = child.wait()
+        output.close()
+        directory = project_dir(project)
+        startup = read_json(directory / 'startup-error.json', {}) or {}
+        evidence = {'generation': generation, 'pid': child.pid, 'exit_code': code,
+                    'finished_at': now()}
+        if startup.get('generation') == generation:
+            evidence['error'] = startup.get('error')
+        with lock(ROOT / 'registry.lock'):
+            write_json(directory / 'worker-exit.json', evidence)
+            active = read_json(directory / 'active.json')
+            if active and active.get('generation') == generation:
+                path = job_dir(active['job'])
+                state = read_json(path / 'state.json', {})
+                if state.get('status') not in TERMINAL:
+                    state.update(status='failed', finished_at=now(), exit_code=code,
+                                 error='Managed worker exited before completing its active turn')
+                    write_json(path / 'state.json', state)
+                write_json(directory / 'active.json', None)
+            warm = read_json(directory / 'warm.json')
+            if warm and warm.get('generation') == generation:
+                write_json(directory / 'warm.json', None)
+        with self._guard:
+            self._children.pop(generation, None)
+
+    def child(self, generation):
+        with self._guard:
+            return self._children.get(generation)
+
+
 def reconcile(active):
     if not active:
         return None
@@ -209,11 +275,37 @@ def reconcile(active):
     state = read_json(path / "state.json", {})
     if state.get("status") in TERMINAL:
         return None
-    stamp = process_stamp(active["pid"])
-    if stamp is None or stamp != active.get("stamp"):
-        state.update(status="interrupted", finished_at=now(), error="Worker process exited without a terminal result; resume session explicitly")
+    directory = project_dir(state.get("project", "")) if state.get("project") else None
+    generation = active.get("generation")
+    evidence = (read_json(directory / "worker-exit.json", {}) or {}) if directory and generation else {}
+    startup = (read_json(directory / "startup-error.json", {}) or {}) if directory and generation else {}
+    self_exit = (read_json(directory / "worker-self-exit.json", {}) or {}) if directory and generation else {}
+    if generation and evidence.get("generation") == generation:
+        state.update(status="failed", finished_at=now(), exit_code=evidence.get("exit_code"),
+                     error=evidence.get("error") or "Managed worker exited before completing its active turn")
         write_json(path / "state.json", state)
         return None
+    if generation and startup.get("generation") == generation:
+        state.update(status="failed", finished_at=now(), error=startup.get("error") or "Managed worker startup failed")
+        write_json(path / "state.json", state)
+        return None
+    if generation and self_exit.get("generation") == generation:
+        state.update(status="failed", finished_at=now(),
+                     error=self_exit.get("error") or "Managed worker exited before completing its active turn")
+        write_json(path / "state.json", state)
+        return None
+    stamp = process_stamp(active["pid"])
+    if stamp is None or stamp != active.get("stamp"):
+        # A single Windows process query can transiently fail.  Persist one
+        # unknown observation and require a later independent reconciliation.
+        observations = int(active.get("unknown_observations", 0)) + 1
+        if observations < 2:
+            return dict(active, unknown_observations=observations, unknown_since=now())
+        state.update(status="interrupted", finished_at=now(), error="Worker could not be found in two consecutive reconciliations; resume session explicitly")
+        write_json(path / "state.json", state)
+        return None
+    active.pop("unknown_observations", None)
+    active.pop("unknown_since", None)
     return active
 
 
@@ -243,7 +335,47 @@ def require_worktree(project):
     return {"worktree": str(top), "git_dir": str(git_dir), "common_dir": str(common)}
 
 
-def rpc(request):
+def _await_ready(directory, child, token, generation, timeout=10):
+    """Wait for the child's explicit READY record; timeout only bounds a hang."""
+    deadline = time.monotonic() + timeout
+    changed = threading.Event()
+    while True:
+        ready = read_json(directory / 'ready.json', {}) or {}
+        if (ready.get('token') == token and ready.get('generation') == generation
+                and ready.get('pid') == child.pid and ready.get('stamp')
+                and process_stamp(child.pid) == ready.get('stamp')):
+            if child.poll() is not None:
+                raise RuntimeError('Managed worker exited after READY')
+            return ready
+        startup = read_json(directory / 'startup-error.json', {}) or {}
+        if startup.get('token') == token and startup.get('generation') == generation:
+            raise RuntimeError(startup.get('error') or 'Managed worker startup failed')
+        code = child.poll()
+        if code is not None:
+            raise RuntimeError('Managed worker exited before READY (exit code %s)' % code)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('Managed worker did not publish READY before the startup deadline')
+        changed.wait(min(.05, remaining))
+
+
+def _cleanup_failed_managed_launch(directory, generation, child=None):
+    """Remove only records owned by one failed launch generation."""
+    if child is not None and child.poll() is None:
+        child.terminate()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=5)
+    for name in ('active.json', 'warm.json', 'launch.json', 'ready.json'):
+        path = directory / name
+        record = read_json(path, {}) or {}
+        if record.get('generation') == generation:
+            write_json(path, None)
+
+
+def rpc(request, managed_runtime=None):
     action = request["action"]
     if action.startswith('execution_'):
         from jobrunner import rpc as execution_rpc
@@ -332,29 +464,39 @@ def rpc(request):
                 if config['managed_turn'] and project.get('local_control'):
                     warm_path = directory / 'warm.json'
                     warm = read_json(warm_path)
-                    if warm and isinstance(warm.get('pid'), int) and process_stamp(warm['pid']) == warm.get('stamp'):
+                    if (warm and warm.get('generation') and warm.get('token')
+                            and isinstance(warm.get('pid'), int)
+                            and process_stamp(warm['pid']) == warm.get('stamp')):
                         pid, stamp = warm['pid'], warm['stamp']
+                        generation = warm.get('generation')
                     else:
+                        if managed_runtime is None:
+                            raise RuntimeError('Managed turns require the persistent desktop receiver')
                         launch_token = uuid.uuid4().hex
+                        generation = uuid.uuid4().hex
                         launch_path = directory / 'launch.json'
                         parent_pid = os.getpid()
                         parent_stamp = process_stamp(parent_pid)
                         if parent_stamp is None:
                             raise RuntimeError("Parent process is not alive")
-                        write_json(launch_path, {'token': launch_token, 'parent_pid': parent_pid,
-                                                 'parent_stamp': parent_stamp})
+                        write_json(directory / 'ready.json', None)
+                        write_json(directory / 'startup-error.json', None)
+                        write_json(directory / 'worker-self-exit.json', None)
+                        write_json(launch_path, {'token': launch_token, 'generation': generation,
+                                                 'project': project['name'], 'root': str(ROOT),
+                                                 'parent_pid': parent_pid, 'parent_stamp': parent_stamp})
+                        child = None
                         try:
-                            pid = launch_supervisor(job, project['name'], launch_token)
-                            stamp = process_stamp(pid)
-                            if stamp is None:
-                                raise RuntimeError("Supervisor failed to start")
-                            write_json(warm_path, {'pid': pid, 'stamp': stamp, 'token': launch_token})
-                            write_json(directory / 'active.json', {"job": job, "pid": pid, "stamp": stamp})
+                            child = managed_runtime.launch(project['name'], launch_token, generation)
+                            ready = _await_ready(directory, child, launch_token, generation)
+                            pid, stamp = ready['pid'], ready['stamp']
+                            write_json(warm_path, {'pid': pid, 'stamp': stamp, 'token': launch_token,
+                                                  'generation': generation})
+                            write_json(directory / 'active.json', {"job": job, "pid": pid, "stamp": stamp,
+                                                                   'generation': generation})
                             write_json(launch_path, None)
                         except Exception:
-                            current = read_json(launch_path)
-                            if current and current.get('token') == launch_token:
-                                write_json(launch_path, None)
+                            _cleanup_failed_managed_launch(directory, generation, child)
                             raise
                 else:
                     pid = launch_supervisor(job)
@@ -367,7 +509,10 @@ def rpc(request):
                 write_json(path / "state.json", state)
                 raise
             if not (config['managed_turn'] and project.get('local_control') and read_json(directory / 'active.json', {}).get('job') == job):
-                write_json(directory / "active.json", {"job": job, "pid": pid, "stamp": stamp})
+                active_record = {"job": job, "pid": pid, "stamp": stamp}
+                if config['managed_turn'] and project.get('local_control') and generation:
+                    active_record['generation'] = generation
+                write_json(directory / "active.json", active_record)
             return {"job": job, "status": "starting", "supervisor_pid": pid}
     if action in {"status", "cancel", "fetch"}:
         path = job_dir(request["job"])

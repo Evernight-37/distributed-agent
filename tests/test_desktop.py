@@ -15,10 +15,11 @@ from common import write_json
 
 
 class FakeConnector:
-    def __init__(self, config_path):
+    def __init__(self, config_path, transport=None, executor=None):
         self.root = Path(config_path).parent
         self.config = {"node": "test-node", "server": "http://127.0.0.1:1"}
         self._bindings = []
+        if executor is not None: self.executor = executor
 
     def cycle(self):
         write_json(self.root / "broker-projects.json", [])
@@ -45,7 +46,9 @@ class DesktopServiceTests(unittest.TestCase):
         self.thread = threading.Thread(target=desktop_service.serve,
                                        args=(self.root,), daemon=True)
         self.connector_patch = mock.patch.object(desktop_service, "Connector", FakeConnector)
+        self.runtime_patch = mock.patch.object(desktop_service, "receiver_runtime", lambda root: type("Runtime", (), {"rpc": lambda self, request: request.get("project", {})})())
         self.connector_patch.start()
+        self.runtime_patch.start()
         self.thread.start()
         deadline = time.time() + 5
         while not (self.root / "desktop-service.json").exists() and time.time() < deadline:
@@ -62,6 +65,7 @@ class DesktopServiceTests(unittest.TestCase):
         self.thread.join(timeout=8)
         self.assertFalse(self.thread.is_alive(), 'Receiver must not leak after a test')
         self.connector_patch.stop()
+        self.runtime_patch.stop()
         # Windows may release the receiver lock just after the serving thread
         # exits; retry cleanup instead of turning a successful contract test
         # into a file-handle race.
