@@ -4,6 +4,7 @@ import hashlib
 import os
 import secrets
 import socket
+import sys
 import time
 import threading
 import urllib.request
@@ -43,34 +44,69 @@ class AppBridge:
     def _server(self,server):
         server=(server or 'http://127.0.0.1:8765').rstrip('/')
         validate_server(server)
-        if server=='http://127.0.0.1:8765': DesktopRuntime(self.root/'host').start_workbench(open_browser=False)
+        if server=='http://127.0.0.1:8765':
+            if getattr(sys,'frozen',False) and not (self.profile or {}).get('local_host_state'):
+                state=self._host_state_root()
+                if state.is_symlink():raise ValueError('应用 data 目录不能是链接')
+                state.mkdir(parents=True,exist_ok=True)
+                self._secure(state)
+            DesktopRuntime(self.root/'host').start_workbench(open_browser=False,state_root=self._host_state_root())
         return server
-    def _local_host_state(self,state_path=None,public_key=None):
+    def _host_state_root(self):
+        saved=(self.profile or {}).get('local_host_state')
+        if saved:return Path(saved).resolve()
+        if getattr(sys,'frozen',False):return Path(sys.executable).resolve().parent/'data'
+        return Path(os.environ.get('LOCALAPPDATA',Path.home()))/'AgentHarness'/'shared-data'
+    def _active_host_state(self):
+        if os.name!='nt':return None
+        import subprocess
+        from app_lifecycle import split_windows_command
+        script=("[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
+                "$l=Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -LocalPort 8765 -ErrorAction SilentlyContinue | Select-Object -First 1; "
+                "if($l){$p=Get-CimInstance Win32_Process -Filter ('ProcessId='+$l.OwningProcess); "
+                "@{executable=$p.ExecutablePath;command=$p.CommandLine}|ConvertTo-Json -Compress}")
+        try:
+            result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',script],
+                                  capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=8,
+                                  creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            if result.returncode:return None
+            record=json.loads(result.stdout)
+            argv=split_windows_command(record.get('command') or '')
+            if len(argv) not in (6,7) or argv[1:3]!=['-X','utf8'] or argv[4]!='--state':return None
+            if len(argv)==7 and argv[6]!='--desktop-control':return None
+            executable=Path(record.get('executable') or '').resolve()
+            if executable.name.lower()!='python.exe' or Path(argv[0]).resolve()!=executable:return None
+            if Path(argv[3]).name.lower()!='panel.py' or not Path(argv[3]).is_file():return None
+            return Path(argv[5]).resolve()
+        except (OSError,ValueError,TypeError,KeyError):return None
+    def _local_host_state(self,public_key=None):
         import sqlite3
         from contextlib import closing
         from collaboration_store import Store
-        default=Path(os.environ.get('LOCALAPPDATA',Path.home()))/'AgentHarness'/'shared-data'
-        state=Path(state_path).resolve() if state_path else default.resolve()
-        database=state/'collaboration.sqlite3'
-        if not database.is_file():
-            if not state_path:
-                raise ValueError('本机服务可能使用自定义数据目录，请选择该服务的数据目录。')
-            raise ValueError('所选目录不是现有协作服务的数据目录')
-        try:
-            with closing(sqlite3.connect(database.as_uri()+'?mode=ro',uri=True)) as db:
-                local_id=db.execute('SELECT service_id FROM service_metadata WHERE id=1').fetchone()[0]
-        except (sqlite3.Error,TypeError,IndexError):
-            if not state_path:
-                raise ValueError('本机服务可能使用自定义数据目录，请选择该服务的数据目录。') from None
-            raise ValueError('所选目录不是已升级的协作服务数据目录') from None
         challenge=self._post('http://127.0.0.1:8765',{'action':'challenge','public_key':public_key or self.identity['public_key']})
-        if challenge.get('service_id')!=local_id:
-            raise ValueError('当前 8765 服务使用其它数据目录。请在“启用本机托管”时选择该服务的数据目录。')
-        return Store(state)
-    def _enable_local_host(self,state_path=None):
+        def candidates():
+            yield (self.profile or {}).get('local_host_state')
+            yield self._host_state_root()
+            yield Path(os.environ.get('LOCALAPPDATA',Path.home()))/'AgentHarness'/'shared-data'
+            yield self._active_host_state()
+        seen=set()
+        for candidate in candidates():
+            if not candidate:continue
+            state=Path(candidate).resolve()
+            if state in seen:continue
+            seen.add(state)
+            database=state/'collaboration.sqlite3'
+            if not database.is_file():continue
+            try:
+                with closing(sqlite3.connect(database.as_uri()+'?mode=ro',uri=True)) as db:
+                    local_id=db.execute('SELECT service_id FROM service_metadata WHERE id=1').fetchone()[0]
+            except (sqlite3.Error,TypeError,IndexError):continue
+            if challenge.get('service_id')==local_id:return Store(state)
+        raise ValueError('本机已有协作服务，但应用无法确认其数据目录。项目数据不会被覆盖；请更新服务后重试。')
+    def _enable_local_host(self):
         if not self.identity:raise PermissionError('请先解锁账户')
         local=self._server('http://127.0.0.1:8765')
-        store=self._local_host_state(state_path)
+        store=self._local_host_state()
         store.claim_local_host(self.identity['account_id'],self.profile['node'])
         challenge=self._post(local,{'action':'challenge','public_key':self.identity['public_key']})
         body={'domain':'harness-account-request-v1','nonce':challenge['nonce'],'operation':'register',
@@ -282,11 +318,11 @@ class AppBridge:
     def _invoke(self,action,data):
         if action=='app-services':
             from app_lifecycle import Lifecycle
-            return Lifecycle(self.root).status()
+            return Lifecycle(self.root,host_root=self._host_state_root()).status()
         if action in {'app-exit','app-background'}:
             if action=='app-exit':
                 from app_lifecycle import Lifecycle
-                result=Lifecycle(self.root).stop()
+                result=Lifecycle(self.root,host_root=self._host_state_root()).stop()
             else: result={'background':True}
             self.allow_window_close=True
             if self.window:
@@ -295,6 +331,7 @@ class AppBridge:
         if action=='local-status': return {'profiles':[{'id':p['id'],'username':p['username']} for p in self._profiles()],'unlocked':bool(self.identity),'server':(self.profile or {}).get('server','http://127.0.0.1:8765')}
         if action=='register':
             identity=generate_identity();server=self._server(data.get('server'))
+            store=None
             if server=='http://127.0.0.1:8765':
                 store=self._local_host_state(public_key=identity['public_key'])
                 store.claim_local_host(identity['account_id'],'device-'+hashlib.sha256(identity['public_key'].encode()).hexdigest()[:24])
@@ -303,6 +340,7 @@ class AppBridge:
             self._post(server,{'action':'register','envelope':sign_envelope(identity,body)})
             self.identity=identity;self.profile={'id':secrets.token_hex(16),'username':data['username'],'server':server,'node':'device-'+hashlib.sha256(identity['public_key'].encode()).hexdigest()[:24],
                                                 'local_host_enabled':server=='http://127.0.0.1:8765'}
+            if store:self.profile['local_host_state']=str(store.root)
             self._save_profile(data.get('password',''));self._enroll();return {'created':True}
         if action=='login':
             profile=next((p for p in self._profiles() if p['id']==data['profile']),None)
@@ -313,6 +351,12 @@ class AppBridge:
                 except (OSError,RuntimeError,ValueError):pass
             self.identity=identity;self.profile=profile
             self.activated_services={self.profile['server']}
+            if getattr(sys,'frozen',False) and self.profile['server']=='http://127.0.0.1:8765' and not self.profile.get('local_host_state'):
+                try:
+                    store=self._local_host_state()
+                    self.profile['local_host_state']=str(store.root)
+                    self._save_public_profile()
+                except (OSError,RuntimeError,ValueError,PermissionError):pass
             self._dashboard();self._sync_service_links(force=True)
             for server in self._attached_services():
                 try:
@@ -355,7 +399,7 @@ class AppBridge:
                         result['pending_approvals'].append({'job_id':job['id'],'template':template_name,'expected_template':template,'argv':(template or {}).get('argv'),'cwd':project.get('remote_path'),'node':self.profile['node'],'server':server})
             return result
         if action=='host-local-enable':
-            return self._enable_local_host(data.get('state_path'))
+            return self._enable_local_host()
         if action=='device-inspect':
             request=self._rpc('inspect-device',{'code':data['code']});request['public_key_fingerprint']=hashlib.sha256(request['public_key'].encode()).hexdigest()[:16];self.inspected[request['id']]=request
             return request
@@ -390,6 +434,8 @@ class AppBridge:
             return {'path':chosen[0] if chosen else ''}
         if action=='new-project':
             server=data.get('server') or self.profile['server']
+            if server=='http://127.0.0.1:8765' and not self.profile.get('local_host_enabled'):
+                self._enable_local_host()
             if server not in self._services():raise ValueError('请先加入该协作服务')
             owned=next((item.get('hosted_by_me') for item in self._dashboard()['services'] if item['server']==server),False)
             if not owned:raise PermissionError('只能在自己账户名下的协作服务创建项目')

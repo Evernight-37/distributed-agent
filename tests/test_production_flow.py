@@ -19,7 +19,7 @@ class ProductionFlow(unittest.TestCase):
             with patch.object(bridge,'_profiles',return_value=[profile]), patch.object(DesktopRuntime,'start_workbench',return_value='http://127.0.0.1:8765') as start, patch.object(bridge,'_rpc',return_value={}), patch.object(bridge,'_enroll'):
                 result=bridge.invoke('login',{'profile':'saved-local','password':'password'})
             self.assertTrue(result['ok'],result)
-            start.assert_called_once_with(open_browser=False)
+            start.assert_called_once_with(open_browser=False,state_root=bridge._host_state_root())
 
     def test_two_devices_and_owner_controls(self):
         with tempfile.TemporaryDirectory() as td:

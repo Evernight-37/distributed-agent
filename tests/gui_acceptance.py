@@ -37,7 +37,7 @@ with tempfile.TemporaryDirectory() as td:
    window.evaluate_js("document.querySelector('#modalBody input').value='GUI员工';Array.from(document.querySelectorAll('#modalActions button')).find(b=>b.textContent==='添加员工').click()")
    wait("document.querySelector('#content')?.textContent.includes('GUI员工')")
    report['employee_created']=True
-   window.evaluate_js("Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='＋ 新建项目').click();document.querySelector('#modalBody input').value='图形验收项目';Array.from(document.querySelectorAll('#modalActions button')).find(b=>b.textContent==='创建并进入').click()")
+   window.evaluate_js("Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='＋ 新建项目').click();document.querySelector('#modalBody input').value='图形验收项目';document.querySelector('#modalBody select').value="+json.dumps(url)+";Array.from(document.querySelectorAll('#modalActions button')).find(b=>b.textContent==='创建并进入').click()")
    wait("document.querySelector('#content h1')?.textContent==='图形验收项目'")
    report['project_entered']=True
    report['two_column_project']=bool(window.evaluate_js("document.querySelectorAll('.conversation-layout > *').length===2 && !document.querySelector('.project-rail')"))

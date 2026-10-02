@@ -30,6 +30,7 @@ connector-status.json
 pull-worker.lock
 build/
 dist/
+data/
 *.spec
 desktop-service.json
 desktop-start.lock

@@ -135,7 +135,7 @@ class DesktopRuntime:
             raise ValueError('这个地址是 4090 的设备通道。请在 5090 打开工作台，或使用团队提供的 HTTPS 工作台地址')
         webbrowser.open(server)
 
-    def start_workbench(self, open_browser=True):
+    def start_workbench(self, open_browser=True, state_root=None):
         """Host an ordinary loopback workbench, without changing network access."""
         url = 'http://127.0.0.1:8765'
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
@@ -145,7 +145,11 @@ class DesktopRuntime:
                 return 'bootstrap_required' in value and 'csrf' in value
             except (OSError, ValueError): return False
         if not ready():
-            state = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AgentHarness' / 'shared-data'
+            # Frozen desktop builds pass a directory beside the executable so the
+            # portable app owns its service data.  Keep the historical per-user
+            # location when called by source/older clients.
+            state = (Path(state_root).expanduser().resolve() if state_root else
+                     Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AgentHarness' / 'shared-data')
             state.mkdir(parents=True, exist_ok=True)
             with lock(state / 'desktop-host-start.lock'):
                 if not ready():

@@ -72,9 +72,12 @@ class HostRuntime(DesktopRuntime):
 
 
 class Lifecycle:
-    def __init__(self, root):
+    def __init__(self, root, host_root=None):
         self.root = Path(root)
-        self.host_root = Path(os.environ.get('LOCALAPPDATA', Path.home()))/'AgentHarness'/'shared-data'
+        # Match the host directory selected by the desktop runtime.  The
+        # optional argument keeps source and older callers backwards compatible.
+        self.host_root = (Path(host_root).expanduser().resolve() if host_root else
+                          Path(os.environ.get('LOCALAPPDATA', Path.home()))/'AgentHarness'/'shared-data')
 
     def receivers(self):
         return [DesktopRuntime(path) for path in (self.root/'receivers').glob('device-*') if path.is_dir()]

@@ -79,11 +79,54 @@ class ServiceHostingTests(unittest.TestCase):
         identity=generate_identity()
         bridge=AppBridge(Path(self.temp.name)/'desktop')
         bridge.identity=identity
+        bridge.profile={'local_host_state':self.temp.name}
         with patch.object(bridge,'_post',return_value={'service_id':self.store.service_id()}):
-            self.assertEqual(bridge._local_host_state(self.temp.name).service_id(),self.store.service_id())
+            self.assertEqual(bridge._local_host_state().service_id(),self.store.service_id())
         with patch.object(bridge,'_post',return_value={'service_id':'another-service'}):
-            with self.assertRaisesRegex(ValueError,'其它数据目录'):
-                bridge._local_host_state(self.temp.name)
+            with self.assertRaisesRegex(ValueError,'无法确认其数据目录'):
+                bridge._local_host_state()
+
+    def test_existing_live_service_is_found_without_directory_prompt(self):
+        identity=generate_identity()
+        bridge=AppBridge(Path(self.temp.name)/'desktop')
+        bridge.identity=identity
+        bridge.profile={}
+        with patch.object(bridge,'_active_host_state',return_value=self.store.root), \
+             patch.object(bridge,'_post',return_value={'service_id':self.store.service_id()}):
+            self.assertEqual(bridge._local_host_state().root,self.store.root)
+
+    def test_new_local_project_prepares_host_on_demand(self):
+        bridge=AppBridge(Path(self.temp.name)/'desktop')
+        bridge.identity=generate_identity()
+        bridge.profile={'server':'https://primary.example','username':'Owner','node':'device-test','services':[]}
+        def enable():
+            bridge.profile['local_host_enabled']=True
+            return {'enabled':True}
+        with patch.object(bridge,'_enable_local_host',side_effect=enable) as started, \
+             patch.object(bridge,'_dashboard',return_value={'services':[{'server':'http://127.0.0.1:8765','hosted_by_me':True}]}), \
+             patch.object(bridge,'_activate_service'), \
+             patch.object(bridge,'_rpc',return_value={'id':'project-local'}) as rpc:
+            result=bridge._invoke('new-project',{'server':'http://127.0.0.1:8765','name':'Mine'})
+        started.assert_called_once_with()
+        self.assertEqual(result['id'],'project-local')
+        self.assertEqual(rpc.call_args.kwargs['server'],'http://127.0.0.1:8765')
+
+    def test_frozen_app_uses_data_beside_executable(self):
+        bridge=AppBridge(Path(self.temp.name)/'desktop')
+        executable=Path(self.temp.name)/'AgentHarness'/'AgentHarness.exe'
+        with patch('app_bridge.sys.frozen',True,create=True), \
+             patch('app_bridge.sys.executable',str(executable)):
+            self.assertEqual(bridge._host_state_root(),executable.parent/'data')
+
+    def test_saved_legacy_host_data_is_reused_after_restart(self):
+        bridge=AppBridge(Path(self.temp.name)/'desktop')
+        bridge.profile={'local_host_state':str(self.store.root)}
+        with patch('app_bridge.sys.frozen',True,create=True), \
+             patch('app_bridge.DesktopRuntime.start_workbench') as start, \
+             patch.object(bridge,'_secure') as secure:
+            bridge._server('http://127.0.0.1:8765')
+        start.assert_called_once_with(open_browser=False,state_root=self.store.root)
+        secure.assert_not_called()
 
 
 if __name__=='__main__':

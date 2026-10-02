@@ -89,6 +89,18 @@ class ManagedHostTests(unittest.TestCase):
 
 
 class ExitTests(unittest.TestCase):
+    def test_explicit_host_root_is_used_for_status_and_shutdown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'app'
+            host_root = Path(directory) / 'data'
+            with mock.patch('app_lifecycle.HostRuntime') as host_class, mock.patch('app_lifecycle.legacy_host', return_value=None), mock.patch('app_lifecycle.stop_legacy_host') as stop_legacy:
+                host_class.return_value.status.return_value = {'running': False}
+                Lifecycle(root, host_root=host_root).status()
+                self.assertEqual(host_class.call_args.args[0], host_root.resolve())
+                Lifecycle(root, host_root=host_root).stop()
+                self.assertEqual(host_class.call_args.args[0], host_root.resolve())
+                stop_legacy.assert_not_called()
+
     def test_active_project_execution_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
