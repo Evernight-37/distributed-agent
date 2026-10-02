@@ -157,9 +157,10 @@ class AppBridge:
     def _secure(self,path):
         if os.name=='nt':
             import subprocess,csv
-            who=subprocess.check_output(['whoami.exe','/user','/fo','csv','/nh'],text=True,encoding='utf-8',errors='replace')
+            no_window=getattr(subprocess,'CREATE_NO_WINDOW',0)
+            who=subprocess.check_output(['whoami.exe','/user','/fo','csv','/nh'],text=True,encoding='utf-8',errors='replace',creationflags=no_window)
             sid=next(csv.reader(who.splitlines()))[-1]
-            proc=subprocess.run(['icacls.exe',str(path),'/inheritance:r','/grant:r','*'+sid+':F','*S-1-5-18:F'],capture_output=True,timeout=15)
+            proc=subprocess.run(['icacls.exe',str(path),'/inheritance:r','/grant:r','*'+sid+':F','*S-1-5-18:F'],capture_output=True,timeout=15,creationflags=no_window)
             if proc.returncode: raise RuntimeError('无法限制本地账户文件权限')
         else: path.chmod(0o600)
     def _runtime(self,server=None):

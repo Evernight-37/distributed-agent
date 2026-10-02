@@ -12,7 +12,8 @@ def protect(path):
     import subprocess
     from desktop_service import windows_user_sid
     result = subprocess.run(['icacls.exe', str(path), '/inheritance:r', '/grant:r',
-                             '*' + windows_user_sid() + ':F', '*S-1-5-18:F'], capture_output=True, timeout=15)
+                             '*' + windows_user_sid() + ':F', '*S-1-5-18:F'], capture_output=True, timeout=15,
+                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if result.returncode: raise RuntimeError('本机服务权限设置失败')
 
 

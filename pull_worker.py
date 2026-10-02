@@ -79,9 +79,10 @@ def enroll(server, pair_code, root, config_path=None):
     try:
         if os.name == 'nt':
             # Limit the bearer identity to this OS user and SYSTEM. Never print it.
-            who = subprocess.check_output(['whoami.exe','/user','/fo','csv','/nh'],text=True,encoding='utf-8',errors='replace')
+            no_window = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            who = subprocess.check_output(['whoami.exe','/user','/fo','csv','/nh'],text=True,encoding='utf-8',errors='replace',creationflags=no_window)
             sid = next(csv.reader(who.splitlines()))[-1]
-            result_acl = subprocess.run(['icacls.exe',str(config_path),'/inheritance:r','/grant:r','*'+sid+':F','*S-1-5-18:F'],capture_output=True,timeout=15)
+            result_acl = subprocess.run(['icacls.exe',str(config_path),'/inheritance:r','/grant:r','*'+sid+':F','*S-1-5-18:F'],capture_output=True,timeout=15,creationflags=no_window)
             if result_acl.returncode: raise RuntimeError('Device credential ACL failed')
         else:
             config_path.chmod(0o600)

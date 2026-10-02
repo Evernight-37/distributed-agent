@@ -21,7 +21,7 @@ def windows_user_sid():
     # whoami uses a Windows code page, even when Python runs with -X utf8.
     # Only the final ASCII SID field is needed; never decode the username.
     import subprocess
-    output = subprocess.check_output(['whoami.exe', '/user', '/fo', 'csv', '/nh'])
+    output = subprocess.check_output(['whoami.exe', '/user', '/fo', 'csv', '/nh'], creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     match = re.search(rb'"(S-1-[0-9]+(?:-[0-9]+)+)"\s*$', output)
     if not match:
         raise RuntimeError('无法确认当前 Windows 用户身份，接收服务未启动')
@@ -121,7 +121,7 @@ def serve(root):
             # Use the same ACL routine as enrollment without exposing the key.
             import subprocess
             sid = windows_user_sid()
-            result = subprocess.run(['icacls.exe', str(root / 'desktop-service.json'), '/inheritance:r', '/grant:r', '*' + sid + ':F', '*S-1-5-18:F'], capture_output=True)
+            result = subprocess.run(['icacls.exe', str(root / 'desktop-service.json'), '/inheritance:r', '/grant:r', '*' + sid + ':F', '*S-1-5-18:F'], capture_output=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if result.returncode: raise RuntimeError('本机服务权限设置失败')
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         try:
