@@ -38,7 +38,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS project_users(project_id TEXT,user_id TEXT,PRIMARY KEY(project_id,user_id));
             CREATE TABLE IF NOT EXISTS nodes(name TEXT PRIMARY KEY,owner_id TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS agents(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,name TEXT NOT NULL,owner_id TEXT NOT NULL,node TEXT NOT NULL,backend_project TEXT NOT NULL,model TEXT NOT NULL,effort TEXT NOT NULL,timeout INTEGER NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,last_message INTEGER NOT NULL DEFAULT 0,UNIQUE(node,backend_project));
-            CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT NOT NULL,sender_id TEXT NOT NULL,sender_type TEXT NOT NULL,recipient_id TEXT,body TEXT NOT NULL,created_at REAL NOT NULL,causal_task TEXT,mention_agent_id TEXT);
+            CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT NOT NULL,sender_id TEXT NOT NULL,sender_type TEXT NOT NULL,recipient_id TEXT,body TEXT NOT NULL,created_at REAL NOT NULL,causal_task TEXT,mention_agent_id TEXT,conversation_id TEXT);
+            CREATE TABLE IF NOT EXISTS conversation_reads(project_id TEXT NOT NULL,user_id TEXT NOT NULL,conversation_id TEXT NOT NULL,last_message INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(project_id,user_id,conversation_id));
             CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,agent_id TEXT NOT NULL,title TEXT NOT NULL,contract TEXT NOT NULL,state TEXT NOT NULL,job TEXT,report TEXT,created_at REAL NOT NULL,cutoff INTEGER NOT NULL DEFAULT 0,error TEXT,processed INTEGER NOT NULL DEFAULT 0);
             CREATE UNIQUE INDEX IF NOT EXISTS one_active_task ON tasks(agent_id) WHERE state IN ('queued','starting','running','unknown');
             CREATE TABLE IF NOT EXISTS executions(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,agent_id TEXT NOT NULL,template TEXT NOT NULL,state TEXT NOT NULL,result TEXT,created_at REAL NOT NULL,notified INTEGER NOT NULL DEFAULT 0);
@@ -52,6 +53,9 @@ class Store:
                 db.execute('ALTER TABLE executions ADD COLUMN reply_to TEXT')
             if 'mention_agent_id' not in {r['name'] for r in db.execute('PRAGMA table_info(messages)')}:
                 db.execute('ALTER TABLE messages ADD COLUMN mention_agent_id TEXT')
+            if 'conversation_id' not in {r['name'] for r in db.execute('PRAGMA table_info(messages)')}:
+                db.execute('ALTER TABLE messages ADD COLUMN conversation_id TEXT')
+            self._backfill_conversations(db)
             for table in ('tasks','executions'):
                 if 'cancel_requested' not in {r['name'] for r in db.execute('PRAGMA table_info('+table+')')}:
                     db.execute('ALTER TABLE '+table+' ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0')
@@ -73,6 +77,61 @@ class Store:
 
     def log(self, db, actor, action, details):
         db.execute('INSERT INTO audit(actor,action,details,created_at) VALUES(?,?,?,?)', (actor, action, json.dumps(details, ensure_ascii=False), time.time()))
+
+    @staticmethod
+    def group_conversation(project):
+        return 'group:' + project
+
+    @staticmethod
+    def _pair_conversation(kind, first, second):
+        if kind == 'human_agent':
+            return f'human_agent:{first}:{second}'
+        return kind + ':' + ':'.join(sorted((first, second)))
+
+    def _conversation_for_message(self, db, row):
+        project, sender, kind, recipient = (row[key] for key in ('project_id', 'sender_id', 'sender_type', 'recipient_id'))
+        if recipient is None:
+            return self.group_conversation(project)
+        if kind == 'system':
+            return None  # Directed system diagnostics are not a human conversation.
+        agent = db.execute('SELECT id FROM agents WHERE id=? AND project_id=?', (recipient, project)).fetchone()
+        human = db.execute('SELECT user_id FROM project_users WHERE user_id=? AND project_id=?', (recipient, project)).fetchone()
+        if kind == 'human' and agent:
+            return self._pair_conversation('human_agent', sender, recipient)
+        if kind == 'human' and human:
+            return self._pair_conversation('human_human', sender, recipient)
+        if kind == 'agent' and human:
+            return self._pair_conversation('human_agent', recipient, sender)
+        if kind == 'agent' and agent:
+            return self._pair_conversation('agent_agent', sender, recipient)
+        return None
+
+    def _backfill_conversations(self, db):
+        for row in db.execute('SELECT * FROM messages WHERE conversation_id IS NULL').fetchall():
+            conversation = self._conversation_for_message(db, row)
+            if conversation:
+                db.execute('UPDATE messages SET conversation_id=? WHERE id=?', (conversation, row['id']))
+
+    def _conversation_access(self, db, project, user, conversation_id):
+        self.require_member(db, project, user)
+        if conversation_id == self.group_conversation(project):
+            return 'group', None
+        parts = conversation_id.split(':') if isinstance(conversation_id, str) else []
+        if len(parts) != 3:
+            raise PermissionError('无权访问此会话')
+        kind, first, second = parts
+        if kind == 'human_agent' and first == user:
+            if db.execute('SELECT 1 FROM agents WHERE id=? AND project_id=?', (second, project)).fetchone():
+                return kind, second
+        elif kind == 'human_human' and user in {first, second} and first < second:
+            partner = second if first == user else first
+            if db.execute('SELECT 1 FROM project_users WHERE user_id=? AND project_id=?', (partner, project)).fetchone():
+                return kind, partner
+        elif kind == 'agent_agent' and first < second:
+            found = db.execute('SELECT COUNT(*) FROM agents WHERE project_id=? AND id IN (?,?)', (project, first, second)).fetchone()[0]
+            if found == 2:
+                return kind, None
+        raise PermissionError('无权访问此会话')
 
     def bootstrap_required(self):
         with self.connect() as db:
@@ -261,9 +320,18 @@ class Store:
             self.log(db,user,'configure_agent',{'agent':agent['id'],'model':data['model'],'effort':data['effort']})
         return {'updated':agent['id']}
 
-    def message(self,user,project,body,recipient=None,mention_agent_id=None):
+    def message(self,user,project,body,recipient=None,mention_agent_id=None,conversation_id=None):
         with self.connect() as db:
             self.require_member(db,project,user)
+            if conversation_id is not None:
+                kind, partner = self._conversation_access(db, project, user, conversation_id)
+                if kind == 'agent_agent':
+                    raise PermissionError('人类不能以 Agent 身份发送内部私聊')
+                if recipient is not None and recipient != partner:
+                    raise ValueError('会话与收件人不一致')
+                recipient = partner
+            if recipient == user:
+                raise ValueError('不能给自己发送私聊')
             return self._message(db,project,user,'human',body,recipient,mention_agent_id=mention_agent_id)
 
     def _message(self,db,project,sender,kind,body,recipient=None,causal_task=None,mention_agent_id=None):
@@ -279,9 +347,10 @@ class Store:
                 raise ValueError('Agent 标识无效')
             if not db.execute('SELECT 1 FROM agents WHERE id=? AND project_id=? AND enabled=1 AND configuring=0',(mention_agent_id,project)).fetchone():
                 raise ValueError('要呼叫的 Agent 不在项目中或尚未启用')
-        cursor=db.execute('INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task,mention_agent_id) VALUES(?,?,?,?,?,?,?,?)',
-                          (project,sender,kind,recipient,body.strip(),time.time(),causal_task,mention_agent_id))
-        return {'id':cursor.lastrowid}
+        conversation=self._conversation_for_message(db, {'project_id':project,'sender_id':sender,'sender_type':kind,'recipient_id':recipient})
+        cursor=db.execute('INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task,mention_agent_id,conversation_id) VALUES(?,?,?,?,?,?,?,?,?)',
+                          (project,sender,kind,recipient,body.strip(),time.time(),causal_task,mention_agent_id,conversation))
+        return {'id':cursor.lastrowid,'conversation_id':conversation}
 
     def draft_message(self, db, project, sender, body, recipient, task_id):
         if not isinstance(body, str) or len(body) > 16000:
@@ -291,7 +360,8 @@ class Store:
         if not body.strip():
             return row['id'] if row else None
         if row:
-            db.execute('UPDATE messages SET body=?,recipient_id=? WHERE id=?', (body.strip(), recipient, row['id']))
+            conversation=self._conversation_for_message(db, {'project_id':project,'sender_id':sender,'sender_type':'agent','recipient_id':recipient})
+            db.execute('UPDATE messages SET body=?,recipient_id=?,conversation_id=? WHERE id=?', (body.strip(), recipient, conversation, row['id']))
             return row['id']
         return self._message(db, project, sender, 'agent', body, recipient, key)['id']
 
@@ -305,7 +375,9 @@ class Store:
         if not body:
             db.execute('DELETE FROM messages WHERE id=?', (row['id'],))
         else:
-            db.execute('UPDATE messages SET body=?,recipient_id=?,causal_task=? WHERE id=?', (body, recipient, task_id, row['id']))
+            message=db.execute('SELECT * FROM messages WHERE id=?',(row['id'],)).fetchone()
+            conversation=self._conversation_for_message(db, {'project_id':message['project_id'],'sender_id':message['sender_id'],'sender_type':'agent','recipient_id':recipient})
+            db.execute('UPDATE messages SET body=?,recipient_id=?,conversation_id=?,causal_task=? WHERE id=?', (body, recipient, conversation, task_id, row['id']))
         return True
 
     def visible_messages(self, agent, after=0, cutoff=None):
@@ -345,8 +417,9 @@ class Store:
                    (task,project['id'],agent['id'],data['title'],json.dumps(data,ensure_ascii=False),'queued',time.time(),cutoff))
         private = bool(data.get('private_turn'))
         recipient = data.get('reply_to') if private else None
-        db.execute('INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task) VALUES(?,?,?,?,?,?,?)',
-                   (project['id'], agent['id'], 'agent', recipient, '（正在回复…）', time.time(), 'draft:' + task))
+        conversation=self._conversation_for_message(db, {'project_id':project['id'],'sender_id':agent['id'],'sender_type':'agent','recipient_id':recipient})
+        db.execute('INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task,conversation_id) VALUES(?,?,?,?,?,?,?,?)',
+                   (project['id'], agent['id'], 'agent', recipient, '（正在回复…）', time.time(), 'draft:' + task,conversation))
         self.log(db,actor,'task',{'task':task,'agent':agent['id']})
         return {'id':task,'state':'queued'}
 
@@ -362,6 +435,62 @@ class Store:
             people=[dict(x) for x in db.execute('SELECT DISTINCT u.id,u.username FROM users u JOIN project_users a ON u.id=a.user_id JOIN project_users b ON a.project_id=b.project_id WHERE b.user_id=?',(user,))]
             return {'projects':projects,'nodes':nodes,'users':people}
 
+    def mark_conversation_read(self,user,project,conversation_id):
+        with self.connect() as db:
+            self._conversation_access(db,project,user,conversation_id)
+            latest=db.execute('SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=? AND conversation_id=?',(project,conversation_id)).fetchone()[0]
+            db.execute('INSERT INTO conversation_reads(project_id,user_id,conversation_id,last_message) VALUES(?,?,?,?) ON CONFLICT(project_id,user_id,conversation_id) DO UPDATE SET last_message=MAX(last_message,excluded.last_message)',
+                       (project,user,conversation_id,latest))
+            return {'conversation_id':conversation_id,'last_message':latest}
+
+    def _human_visible_messages(self,db,project,user):
+        group=self.group_conversation(project)
+        # Query visibility before LIMIT, otherwise busy private conversations can
+        # push this user's messages out of the window.
+        return db.execute("""SELECT * FROM messages WHERE project_id=? AND
+            (conversation_id=? OR conversation_id LIKE ? OR conversation_id LIKE ?
+             OR conversation_id LIKE ? OR conversation_id LIKE 'agent_agent:%')
+            ORDER BY id DESC LIMIT 500""",
+            (project,group,'human_agent:'+user+':%', 'human_human:'+user+':%', 'human_human:%:'+user)).fetchall()[::-1]
+
+    def _conversation_list(self,db,project,user,messages,members,people):
+        names={r['id']:r['name'] for r in members}
+        names.update({r['id']:r['username'] for r in people})
+        found={self.group_conversation(project)}
+        found.update(m['conversation_id'] for m in messages if m['conversation_id'])
+        # Include existing direct conversations even when their latest message
+        # fell outside the 500-message window.
+        for row in db.execute("""SELECT DISTINCT conversation_id FROM messages WHERE project_id=? AND
+            (conversation_id LIKE ? OR conversation_id LIKE ? OR conversation_id LIKE ? OR conversation_id LIKE 'agent_agent:%')""",
+            (project,'human_agent:'+user+':%','human_human:'+user+':%','human_human:%:'+user)):
+            if row['conversation_id']: found.add(row['conversation_id'])
+        reads={r['conversation_id']:r['last_message'] for r in db.execute('SELECT conversation_id,last_message FROM conversation_reads WHERE project_id=? AND user_id=?',(project,user))}
+        result=[]
+        for cid in found:
+            try:
+                kind,partner=self._conversation_access(db,project,user,cid)
+            except PermissionError:
+                continue
+            if kind=='group': title='项目大群'; participants=[r['id'] for r in people]+[r['id'] for r in members]
+            elif kind=='agent_agent':
+                participants=cid.split(':')[1:];title=' ↔ '.join(names.get(pid,'Agent') for pid in participants)
+            else:
+                participants=[user,partner];title=names.get(partner,'成员')
+            last=db.execute('SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=? AND conversation_id=?',(project,cid)).fetchone()[0]
+            unread=db.execute("""SELECT COUNT(*) FROM messages WHERE project_id=? AND conversation_id=? AND id>?
+                AND sender_id<>? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%')""",
+                (project,cid,reads.get(cid,0),user)).fetchone()[0]
+            result.append({'id':cid,'kind':kind,'title':title,'unread_count':unread,'participants':participants,'last_message':last})
+        return sorted(result,key=lambda c:(c['kind']!='group',-c['last_message'],c['title']))
+
+    def task_visible_to_human(self,db,task,user):
+        try: contract=json.loads(task['contract'] or '{}')
+        except (ValueError,TypeError): return False
+        if not contract.get('private_turn'): return True
+        recipient=contract.get('reply_to')
+        if recipient==user: return True
+        return bool(db.execute('SELECT 1 FROM agents WHERE id=? AND project_id=?',(recipient,task['project_id'])).fetchone())
+
     def project_view(self,user,project):
         with self.connect() as db:
             p=self.require_member(db,project,user)
@@ -371,9 +500,12 @@ class Store:
                 busy=db.execute("SELECT state FROM tasks WHERE agent_id=? AND state IN ('queued','starting','running','unknown')",(row['id'],)).fetchone()
                 item.update(role='admin' if p['admin_agent_id']==row['id'] else 'peer',status='configuration_pending' if row['configuring'] else busy['state'] if busy else ('idle' if row['enabled'] else 'disabled'))
                 members.append(item)
+            people=[dict(x) for x in db.execute('SELECT u.id,u.username FROM users u JOIN project_users p ON u.id=p.user_id WHERE p.project_id=?',(project,))]
             messages=[]
-            for row in db.execute('SELECT * FROM messages WHERE project_id=? ORDER BY id DESC LIMIT 500',(project,)).fetchall()[::-1]:
+            for row in self._human_visible_messages(db,project,user):
                 item=dict(row)
+                try: self._conversation_access(db,project,user,item['conversation_id'])
+                except PermissionError: continue
                 table='users' if item['sender_type']=='human' else 'agents'
                 key='username' if table=='users' else 'name'
                 sender=db.execute(f'SELECT {key} FROM {table} WHERE id=?',(item['sender_id'],)).fetchone() if item['sender_type']!='system' else None
@@ -383,7 +515,12 @@ class Store:
                 item.update(sender_name=sender[0] if sender else '系统',recipient_name=recipient[0] if recipient else None,
                             mention_agent_name=mention[0] if mention else None,channel='direct' if item['recipient_id'] else 'group')
                 messages.append(item)
-            tasks=[dict(x) for x in db.execute('SELECT * FROM tasks WHERE project_id=? ORDER BY created_at DESC LIMIT 100',(project,))]
+            conversations=self._conversation_list(db,project,user,messages,members,people)
+            tasks=[]
+            for row in db.execute('SELECT * FROM tasks WHERE project_id=? ORDER BY created_at DESC LIMIT 100',(project,)):
+                item=dict(row)
+                if not self.task_visible_to_human(db,item,user): continue
+                tasks.append(item)
             for task in tasks:
                 if task['state']=='needs_review' and task['processed']:
                     try:
@@ -391,8 +528,9 @@ class Store:
                     except (ValueError, AttributeError):
                         reply=None
                     task['display_status']='已处理 · 未发言' if isinstance(reply,str) and not reply.strip() else '已回复'
-            executions=[dict(x) for x in db.execute('SELECT * FROM executions WHERE project_id=? ORDER BY created_at DESC LIMIT 100',(project,))]
-            people=[dict(x) for x in db.execute('SELECT u.id,u.username FROM users u JOIN project_users p ON u.id=p.user_id WHERE p.project_id=?',(project,))]
+            executions=[dict(x) for x in db.execute('''SELECT * FROM executions WHERE project_id=? AND
+                (reply_to IS NULL OR reply_to=? OR reply_to IN (SELECT id FROM agents WHERE project_id=?))
+                ORDER BY created_at DESC LIMIT 100''',(project,user,project))]
             p['owner_name']=next((x['username'] for x in people if x['id']==p['owner_id']),p['owner_id'])
             p['admin_agent_name']=next((x['name'] for x in members if x['id']==p['admin_agent_id']),None)
-            return {'project':p,'members':members,'messages':messages,'tasks':tasks,'executions':executions,'users':people,'budget_remaining':p['budget_remaining']}
+            return {'project':p,'members':members,'messages':messages,'conversations':conversations,'tasks':tasks,'executions':executions,'users':people,'budget_remaining':p['budget_remaining']}

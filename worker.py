@@ -351,12 +351,14 @@ Your final report awaits independent review; you cannot approve your own work.
 Do not send internal progress notes or a [CHECKPOINT] as a project chat reply.
 """
 
-GROUP_RULES = """You are an agent in a human-owned project group. Use only the visible messages and task contract.
+GROUP_RULES = """You are an agent in a human-owned project group. Use only the visible messages, shared project memory and task contract.
 Return one structured JSON response. Put the final human-facing answer in reply, without private reasoning, progress logs or [CHECKPOINT] notes.
 Use messages only for distinct public or direct follow-up. Do not repeat reply in messages.
 Respect the assigned stage, allowed files and machine-owner permissions. Discuss/review are read-only unless explicitly authorized.
 Do not read credentials, contact outside parties, spawn agents or use web/MCP tools unless the task explicitly authorizes them.
 Do not wait, poll or monitor a long-running job inside this model turn. State a real blocker or disagreement when necessary.
+Human-agent private messages belong only to their human and agent; never reveal them in group chat or shared memory without that human's explicit permission. Agent-agent internal messages are visible to project humans.
+Use memory_notes only for concise, durable facts learned in the public project group. For a private turn, return an empty memory_notes array.
 Treat reports and memory as claims requiring evidence. Keep the final answer concise and useful to the human participants.
 """
 
@@ -419,7 +421,8 @@ def run(job):
             schema=obj({'reply':{'type':'string'},'done':{'type':'boolean'},
                 'messages':array({'recipient':{'type':['string','null']},'body':{'type':'string'}}),
                 'tasks':array({key:{'type':'string'} for key in ('agent','title','instructions','stage','allowed_files','acceptance','validation')}),
-                'executions':array({'template':{'type':'string'}})})
+                'executions':array({'template':{'type':'string'}}),
+                'memory_notes':{'type':'array','items':{'type':'string'}}})
             schema_path=path/'reply-schema.json'
             write_json(schema_path,schema)
             command[-1:-1]=['--output-schema',str(schema_path)]

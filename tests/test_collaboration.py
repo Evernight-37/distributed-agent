@@ -66,15 +66,17 @@ class CollaborationTests(unittest.TestCase):
         self.store.configure_agent(self.owner["id"], {"agent": agent, "model": "gpt-new", "effort": "high", "timeout": 45, "enabled": True}, self.backend)
         self.assertEqual(self.backend.configured[-1], ("backend-a", "gpt-new", "high", 45))
 
-    def test_private_message_is_agent_filtered_but_human_auditable(self):
+    def test_private_message_is_visible_only_to_human_participant(self):
         first = self.add_agent(self.owner["id"], "backend-a", "一号")
         second = self.add_agent(self.owner["id"], "backend-b", "二号")
         self.store.message(self.owner["id"], self.project, "给一号的秘密", first)
         self.assertEqual([m["body"] for m in self.store.visible_messages(first)], ["给一号的秘密"])
         self.assertEqual(self.store.visible_messages(second), [])
         audit = self.store.project_view(self.other["id"], self.project)
-        self.assertEqual(audit["messages"][0]["body"], "给一号的秘密")
-        self.assertEqual(audit["messages"][0]["channel"], "direct")
+        self.assertEqual(audit["messages"], [])
+        own = self.store.project_view(self.owner["id"], self.project)
+        self.assertEqual(own["messages"][0]["body"], "给一号的秘密")
+        self.assertEqual(own["messages"][0]["channel"], "direct")
 
     def test_one_active_task_and_budget_are_enforced(self):
         agent = self.add_agent(self.owner["id"], "backend-a", "执行者")

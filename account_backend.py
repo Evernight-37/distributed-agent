@@ -28,7 +28,7 @@ class AccountBackend:
             public=data['public_key'];decode(public,32);nonce=secrets.token_urlsafe(32)
             with self.store.connect() as db:
                 db.execute('DELETE FROM account_challenges WHERE expires<?',(time.time(),));db.execute('INSERT INTO account_challenges VALUES(?,?,?)',(nonce,public,time.time()+60))
-            return {'nonce':nonce,'expires_in':60,'features':['mention_agent_id','anchored_reply_draft']}
+            return {'nonce':nonce,'expires_in':60,'features':['mention_agent_id','anchored_reply_draft','conversation_privacy_v2']}
         if action=='request-device':
             public=data['public_key'];decode(public,32);name=self._name(data.get('name','新电脑'));code=secrets.token_urlsafe(24);rid='request-'+secrets.token_hex(16)
             with self.store.connect() as db:
@@ -138,7 +138,12 @@ class AccountBackend:
                     elif not employee['online']:employee['status']='offline'
             return result
         if op=='project':
-            project=p.get('project',p.get('id'));result=self.store.project_view(user,project)
+            project=p.get('project',p.get('id'))
+            if p.get('active_conversation_id'):
+                self.store.mark_conversation_read(user,project,p['active_conversation_id'])
+            result=self.store.project_view(user,project)
+            from project_memory import ProjectMemory
+            result['project_memory']=ProjectMemory(self.store).snapshot(user,project)
             with self.store.connect() as db:
                 if p.get('visit') is True:db.execute('INSERT INTO account_project_visits VALUES(?,?,?) ON CONFLICT(account_id,project_id) DO UPDATE SET visited=excluded.visited',(user,project,time.time()))
                 employees=db.execute('SELECT id,node FROM employees WHERE owner_id IN (SELECT user_id FROM project_users WHERE project_id=?)',(project,)).fetchall()
@@ -155,7 +160,14 @@ class AccountBackend:
         if op=='create-project':return self.store.project_create(user,p['name'])
         if op in {'join','join-project'}:return self.store.join(user,p['invite'])
         if op=='invite':return self.store.invite(user,p['project'])
-        if op=='message':return self.store.message(user,p['project'],p['body'],p.get('recipient_id'),p.get('mention_agent_id'))
+        if op=='message':return self.store.message(user,p['project'],p['body'],p.get('recipient_id'),p.get('mention_agent_id'),p.get('conversation_id'))
+        if op=='conversation-read':return self.store.mark_conversation_read(user,p['project'],p['conversation_id'])
+        if op=='memory-note-add':
+            from project_memory import ProjectMemory
+            return ProjectMemory(self.store).add_note(user,p['project'],p['body'])
+        if op=='memory-note-delete':
+            from project_memory import ProjectMemory
+            return ProjectMemory(self.store).delete_note(user,p['project'],p.get('id',p.get('note_id')))
         if op=='set-admin':
             if p.get('agent'):return self.store.set_admin(user,p['project'],p['agent']) or {'updated':True}
             with self.store.connect() as db:

@@ -24,7 +24,8 @@ def response_schema():
                 'messages': array({'recipient': {'type': ['string', 'null']}, 'body': {'type': 'string'}}),
                 'tasks': array({key: {'type': 'string'} for key in
                                 ('agent', 'title', 'instructions', 'stage', 'allowed_files', 'acceptance', 'validation')}),
-                'executions': array({'template': {'type': 'string'}})})
+                'executions': array({'template': {'type': 'string'}}),
+                'memory_notes': {'type': 'array', 'items': {'type': 'string'}}})
 
 
 def local_env():

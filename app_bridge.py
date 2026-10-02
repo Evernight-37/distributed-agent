@@ -48,10 +48,16 @@ class AppBridge:
     def _rpc(self,operation,payload=None,server=None):
         if not self.identity: raise PermissionError('请先解锁账户')
         server=server or self.profile['server']; challenge=self._post(server,{'action':'challenge','public_key':self.identity['public_key']})
-        if operation=='message' and not {'mention_agent_id','anchored_reply_draft'}.issubset(set(challenge.get('features',[]))):
+        features=set(challenge.get('features',[]))
+        if operation in {'project','message','conversation-read','memory-note-add','memory-note-delete'} and 'conversation_privacy_v2' not in features:
+            raise RuntimeError('协作服务版本过旧，尚不能保护新会话的隐私。请让托管电脑更新应用并重启协作服务。')
+        if operation=='message' and not {'mention_agent_id','anchored_reply_draft'}.issubset(features):
             raise RuntimeError('协作服务版本过旧。请让托管电脑更新应用并重启协作服务后再发送消息。')
         envelope=sign_envelope(self.identity,{'domain':'harness-account-request-v1','nonce':challenge['nonce'],'operation':operation,'payload':payload or {}})
-        return self._post(server,{'action':'rpc','envelope':envelope})
+        result=self._post(server,{'action':'rpc','envelope':envelope})
+        if operation=='project' and isinstance(result,dict):
+            result['capabilities']=sorted(features)
+        return result
     def _save_profile(self,password):
         self.profile['encrypted']=encrypt_identity(self.identity,password)
         path=self.root/'profiles'/(self.profile['id']+'.json');write_json(path,self.profile)
@@ -321,7 +327,7 @@ class AppBridge:
                 self._sync_service_links(force=True)
             self.project_servers[result['project']]=server
             return dict(result,server=server)
-        if action in {'project','invite','message','set-admin'}:
+        if action in {'project','invite','message','set-admin','conversation-read','memory-note-add','memory-note-delete'}:
             project=data.get('project',data.get('id'))
             server=self.project_servers.get(project,self.profile['server'])
             result=self._rpc(action,data,server=server)

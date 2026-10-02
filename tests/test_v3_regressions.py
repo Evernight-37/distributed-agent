@@ -36,8 +36,10 @@ class Regressions(unittest.TestCase):
         visible=self.store.visible_messages(b)
         self.assertEqual(visible,[])
         audit=self.store.project_view(self.other['id'],self.project)['messages']
-        self.assertEqual(audit[-1]['recipient_id'],self.owner['id'])
-        self.assertEqual(audit[-1]['body'],'已完成')
+        self.assertEqual(audit,[])
+        own=self.store.project_view(self.owner['id'],self.project)['messages']
+        self.assertEqual(own[-1]['recipient_id'],self.owner['id'])
+        self.assertEqual(own[-1]['body'],'已完成')
 
     def test_failure_notice_does_not_relaunch_model(self):
         a,_=self.agents()

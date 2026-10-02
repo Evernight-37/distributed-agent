@@ -30,7 +30,14 @@ def action(store, user, data, backend):
     if op == 'configure-agent':
         if isinstance(backend, PullBackend): raise PermissionError('模型与资源设置由机器主人在本地控制台修改')
         return store.configure_agent(who, data, backend)
-    if op == 'message': return store.message(who, data['project'], data['body'], data.get('recipient_id'), data.get('mention_agent_id'))
+    if op == 'message': return store.message(who, data['project'], data['body'], data.get('recipient_id'), data.get('mention_agent_id'), data.get('conversation_id'))
+    if op == 'conversation-read': return store.mark_conversation_read(who, data['project'], data['conversation_id'])
+    if op == 'memory-note-add':
+        from project_memory import ProjectMemory
+        return ProjectMemory(store).add_note(who,data['project'],data['body'])
+    if op == 'memory-note-delete':
+        from project_memory import ProjectMemory
+        return ProjectMemory(store).delete_note(who,data['project'],data.get('id',data.get('note_id')))
     if op == 'task': return store.task(who, data)
     if op == 'pause-project':
         with store.connect() as db:
@@ -45,6 +52,7 @@ def action(store, user, data, backend):
             row = db.execute('SELECT * FROM tasks WHERE id=?', (data['task'],)).fetchone()
             if not row: raise ValueError('未知任务')
             store.require_member(db, row['project_id'], who)
+            if not store.task_visible_to_human(db,row,who): raise PermissionError('无权查看此任务')
             return dict(row)
     if op == 'cancel-task':
         with store.connect() as db:
