@@ -155,5 +155,30 @@ class McpAdapterTests(unittest.TestCase):
         with patch.object(self.bridge,'_codex_mcp',side_effect=codex):
             with self.assertRaisesRegex(RuntimeError,'同名'):self.bridge._enable_mcp()
 
+    def test_upgrade_replaces_only_owned_previous_bundle_entry(self):
+        bundle_name='a'*64;bundle=self.root/'service-runtime'/bundle_name
+        (bundle/'runtime').mkdir(parents=True);(bundle/'client').mkdir()
+        (bundle/'runtime'/'python.exe').write_bytes(b'old runtime')
+        (bundle/'client'/'mcp_adapter.py').write_text('# old adapter',encoding='utf-8')
+        (bundle/'.complete').write_text(bundle_name,encoding='ascii')
+        name=self.bridge._mcp_name();configured={name:{'name':name,'transport':{
+            'type':'stdio','command':str(bundle/'runtime'/'python.exe'),
+            'args':['-X','utf8',str(bundle/'client'/'mcp_adapter.py'),'--grant',str(self.bridge._mcp_grant_path())]}}}
+        calls=[]
+        def codex(*arguments,check=True):
+            calls.append(arguments);action,entry=arguments[:2]
+            if action=='get':
+                value=configured.get(entry);return SimpleNamespace(returncode=0 if value else 1,stdout=__import__('json').dumps(value) if value else '',stderr='')
+            if action=='remove':configured.pop(entry,None)
+            if action=='add':
+                launch=list(arguments[3:]);configured[entry]={'name':entry,'transport':{'type':'stdio','command':launch[0],'args':launch[1:]}}
+            return SimpleNamespace(returncode=0,stdout='',stderr='')
+        with patch.object(self.bridge,'_codex_mcp',side_effect=codex), \
+             patch.object(self.bridge,'_service_runtime_root',return_value=self.root/'service-runtime'):
+            result=self.bridge._enable_mcp()
+        self.assertTrue(result['configured'])
+        self.assertLess(calls.index(('remove',name)),next(i for i,c in enumerate(calls) if c[:2]==('add',name)))
+        self.assertEqual(configured[name]['transport']['command'],self.bridge._mcp_launch()[0])
+
 
 if __name__=='__main__':unittest.main()
