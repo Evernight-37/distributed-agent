@@ -2,8 +2,9 @@ import io
 import json
 import sys
 import unittest
+from pathlib import Path
 
-sys.path.insert(0, r"D:\tools\agent-harness")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mcp_server import run_stdio
 
 
@@ -30,6 +31,8 @@ class McpServerTests(unittest.TestCase):
     def test_initialize(self):
         result = run({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})[0]
         self.assertEqual(result["result"]["serverInfo"]["name"], "agent-harness")
+        self.assertEqual(result["result"]["serverInfo"]["version"],
+                         Path(__file__).resolve().parents[1].joinpath("VERSION").read_text().strip())
         self.assertIn("tools", result["result"]["capabilities"])
 
     def test_tools_list(self):

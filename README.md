@@ -104,6 +104,8 @@
 
 **v7.0.7 Windows 长路径修复：** 原子 JSON 写入改用同目录内的短随机临时文件名。由 Microsoft Store 应用启动 Harness 时，Windows 可能把 LocalAppData 映射到更长的包缓存路径；接收回执不再因临时文件名超过传统 `MAX_PATH` 而让 Agent 永久停在“正在回复”。
 
+**v7.0.8 MCP 版本一致性：** Codex MCP 初始化信息从随包 `VERSION` 读取，不再显示旧的固定版本号；MCP 测试也不再依赖维护者电脑上的固定源码路径。
+
 **v6.1.2 Codex 会话写入修复：** 保活 App Server 已经附着到项目 thread 时，后续轮次直接复用该会话，不再重复调用 `thread/resume` 创建第二个写入者。若旧 App Server 或其他 Codex 客户端仍持有历史 thread，Harness 不会结束不属于自己的进程，而是建立新 thread，并继续携带项目聊天上下文和共享记忆。接收服务退出时会撤回自己拥有的空闲 worker；新服务也不会复用上一代接收端遗留的空闲 worker 代码。
 
 **v6.0.1 保活任务修复：** 项目保活 worker 按自身注册记录领取当前任务，不再因启动期的 PID 状态差异空等后退出。若 worker 仍意外崩溃，会立即把任务标成失败并在本机写入有界错误，而不是数分钟后才显示无结果中断。

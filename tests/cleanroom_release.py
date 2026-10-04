@@ -23,7 +23,7 @@ def main():
     client=package/'client';runtime=package/'runtime'/'python.exe'
     required=(package/'AgentHarness.exe',runtime,client/'app_bridge.py',client/'mcp_adapter.py',package/'VERSION')
     if not all(path.is_file() for path in required):raise RuntimeError('release is incomplete')
-    if (package/'VERSION').read_text(encoding='utf-8').strip()!='7.0.7':raise RuntimeError('wrong release version')
+    if (package/'VERSION').read_text(encoding='utf-8').strip()!='7.0.8':raise RuntimeError('wrong release version')
     sys.path.insert(0,str(client))
     for source in client.glob('*.py'):py_compile.compile(str(source),doraise=True)
 
@@ -42,7 +42,7 @@ def main():
         raise RuntimeError('fresh host database was not created in stable state')
 
     installed=install_bundle(package,local/'AgentHarness'/'service-runtime')
-    if (installed/'client'/'VERSION').read_text(encoding='utf-8').strip()!='7.0.7':
+    if (installed/'client'/'VERSION').read_text(encoding='utf-8').strip()!='7.0.8':
         raise RuntimeError('installed runtime is not this release')
     forbidden=('D:\\files\\distributed-agent','76bae1b6d36fa2193','1f5521c2dfeede28','63e73b1e7906b18d')
     for source in (installed/'client').glob('*.py'):
@@ -64,7 +64,7 @@ def main():
     responses=[json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     tools=next(item for item in responses if item.get('id')==2)['result']['tools']
     if len(tools)!=6:raise RuntimeError('fresh MCP tool catalog is incomplete')
-    print(json.dumps({'version':'7.0.7','compiled_modules':len(list(client.glob('*.py'))),
+    print(json.dumps({'version':'7.0.8','compiled_modules':len(list(client.glob('*.py'))),
                       'mcp_tools':len(tools),'host_data':str(bridge._host_state_root()),
                       'installed_bundle':installed.name},ensure_ascii=False))
 

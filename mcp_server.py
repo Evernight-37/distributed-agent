@@ -8,7 +8,17 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import Any, TextIO
+
+
+def server_version() -> str:
+    """Return the release version shipped beside this MCP server."""
+    try:
+        value = Path(__file__).with_name("VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "unknown"
+    return value or "unknown"
 
 
 class JsonRpcError(Exception):
@@ -54,7 +64,7 @@ def _dispatch(backend: Any, method: str, params: Any) -> Any:
         return {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "agent-harness", "version": "7.0.0"},
+            "serverInfo": {"name": "agent-harness", "version": server_version()},
         }
     if method == "ping":
         return {}
