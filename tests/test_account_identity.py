@@ -2,7 +2,7 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
-from account_identity import generate_identity,sign_envelope,verify_envelope,verify_owner_command,approve_certificate,encrypt_identity,decrypt_identity
+from account_identity import generate_identity,sign_envelope,verify_envelope,verify_owner_command,approve_certificate,approve_delegate,encrypt_identity,decrypt_identity
 from account_backend import AccountBackend
 from collaboration_store import Store
 from broker import PullBackend
@@ -90,6 +90,34 @@ class IdentityTests(unittest.TestCase):
         self.call(self.root,'revoke-device',{'public_key':child['public_key']})
         with self.assertRaises(PermissionError):self.call(child,'dashboard',{})
         with self.assertRaises(PermissionError):self.call(child,'activate-device',{'device_name':'Desktop'},'activate-device')
+    def test_scoped_codex_delegate_can_collaborate_but_not_administer(self):
+        self.register();project=self.call(self.root,'create-project',{'name':'MCP project'})['id']
+        delegate=generate_identity();scopes=['collaboration.message','collaboration.read','collaboration.task']
+        delegate.update(account_id=self.root['account_id'],chain=approve_delegate(self.root,delegate['public_key'],scopes))
+        activated=self.call(delegate,'activate-device',{'device_name':'Codex MCP'},'activate-device')
+        self.assertEqual(activated['account_id'],self.root['account_id'])
+        self.assertEqual(self.call(delegate,'dashboard',{})['projects'][0]['id'],project)
+        sent=self.call(delegate,'message',{'project':project,'body':'Sent from Codex delegate'})
+        self.assertIsInstance(sent['id'],int)
+        view=self.call(delegate,'project',{'project':project})
+        self.assertEqual(view['messages'][-1]['sender_client'],'codex')
+        self.assertFalse(any(device['public_key']==delegate['public_key'] for device in self.call(self.root,'dashboard',{})['devices']))
+        with self.assertRaises(PermissionError):self.call(delegate,'invite',{'project':project})
+        with self.assertRaises(PermissionError):self.call(delegate,'owner-command',{'envelope':{}})
+        with self.assertRaises(PermissionError):self.call(delegate,'revoke-device',{'public_key':self.root['public_key']})
+        with self.assertRaises(PermissionError):self.call(delegate,'memory-note-add',{'project':project,'body':'forged'})
+        with self.assertRaises(PermissionError):self.call(delegate,'set-admin',{'project':project})
+        with self.assertRaises(PermissionError):self.call(delegate,'link-service',{'server':'http://127.0.0.1:1'})
+        self.call(self.root,'revoke-delegate',{'public_key':delegate['public_key']})
+        with self.assertRaises(PermissionError):self.call(delegate,'dashboard',{})
+    def test_delegate_certificate_is_leaf_only_and_tamper_evident(self):
+        delegate=generate_identity();delegate.update(account_id=self.root['account_id'],chain=approve_delegate(self.root,delegate['public_key'],['collaboration.read']))
+        verified=verify_envelope(sign_envelope(delegate,{'probe':True}))
+        self.assertEqual(verified['delegate_scopes'],('collaboration.read',))
+        child=generate_identity();child.update(account_id=self.root['account_id'],chain=delegate['chain']+approve_certificate(delegate,child['public_key'])[-1:])
+        with self.assertRaises(PermissionError):verify_envelope(sign_envelope(child,{'probe':True}))
+        bad=copy.deepcopy(sign_envelope(delegate,{'probe':True}));bad['chain'][-1]['body']['scopes']=['collaboration.task']
+        with self.assertRaises(PermissionError):verify_envelope(bad)
     def approve_child(self,parent):
         child=generate_identity();request=self.api.api({'action':'request-device','public_key':child['public_key'],'name':'Child'})
         self.call(parent,'approve-device',{'request_id':request['request_id'],'chain':approve_certificate(parent,child['public_key'])})

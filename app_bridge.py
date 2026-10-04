@@ -12,9 +12,11 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from common import lock, read_json, validate_local_proxy, write_json
-from desktop_runtime import DesktopRuntime
+from desktop_runtime import DesktopRuntime, assets, python_command
 from pull_worker import validate_server, NoRedirect
-from account_identity import generate_identity, sign_envelope, encrypt_identity, decrypt_identity, approve_certificate
+from account_identity import generate_identity, sign_envelope, encrypt_identity, decrypt_identity, approve_certificate, approve_delegate
+
+MCP_DELEGATE_SCOPES=['collaboration.message','collaboration.read','collaboration.task']
 
 class AppBridge:
     def __init__(self, root=None):
@@ -120,6 +122,7 @@ class AppBridge:
             self.profile.setdefault('attached_services',[]).append(local)
         self._save_public_profile()
         self._enroll(local)
+        if self._mcp_grant_path().is_file():self._sync_mcp_delegate([local])
         return {'enabled':True,'server':local}
     def _hosting_server(self):
         if self.profile and (self.profile['server']=='http://127.0.0.1:8765' or self.profile.get('local_host_enabled')):
@@ -165,6 +168,135 @@ class AppBridge:
     def _save_public_profile(self):
         path=self.root/'profiles'/(self.profile['id']+'.json')
         write_json(path,self.profile);self._secure(path)
+    def _mcp_grant_path(self):
+        if not self.profile:raise PermissionError('请先登录')
+        return self.root/'mcp'/('grant-'+self.profile['id']+'.json')
+    def _mcp_revocation_path(self):
+        if not self.profile:raise PermissionError('请先登录')
+        return self.root/'mcp'/('revoke-'+self.profile['id']+'.json')
+    def _mcp_name(self):
+        if not self.profile:raise PermissionError('请先登录')
+        return 'agent-harness-'+self.profile['id'].lower()
+    def _register_mcp_delegate(self,server,grant,timeout=8):
+        challenge=self._post(server,{'action':'challenge','public_key':grant['identity']['public_key']},timeout)
+        if 'codex_mcp_v1' not in set(challenge.get('features',[])):
+            raise RuntimeError('协作服务版本过旧，尚未支持受限 Codex MCP 身份')
+        body={'domain':'harness-account-request-v1','nonce':challenge['nonce'],'operation':'activate-device',
+              'payload':{'device_name':socket.gethostname()+' · Codex MCP'}}
+        self._post(server,{'action':'activate-device','envelope':sign_envelope(grant['identity'],body)},timeout)
+    def _sync_mcp_delegate(self,servers=None):
+        path=self._mcp_grant_path()
+        grant=read_json(path)
+        if not grant:return {'enabled':False,'warnings':[]}
+        if grant.get('profile_id')!=self.profile['id'] or grant.get('identity',{}).get('account_id')!=self.identity['account_id']:
+            raise PermissionError('Codex MCP 授权不属于当前账户')
+        candidates=list(dict.fromkeys(servers or self._services()))
+        warnings=[];registered=[]
+        for server in candidates:
+            try:self._register_mcp_delegate(server,grant);registered.append(server)
+            except (OSError,RuntimeError,PermissionError,ValueError) as exc:warnings.append({'server':server,'error':str(exc)})
+        grant['servers']=list(dict.fromkeys([*grant.get('servers',[]),*candidates]))
+        write_json(path,grant);self._secure(path)
+        return {'enabled':True,'registered':registered,'warnings':warnings}
+    def _codex_path(self):
+        saved=read_json(self.root/'codex-cli.json',{})
+        selected=saved.get('path') if isinstance(saved,dict) else None
+        if selected and Path(selected).is_file():return selected
+        from worker import cli_status
+        status=cli_status(self._runtime().root)
+        if not status.get('found'):raise RuntimeError('未找到可运行的 Codex CLI，请先在设置中完成检测')
+        return status['path']
+    def _mcp_launch(self):
+        return [python_command(),'-X','utf8',str(assets()/'mcp_adapter.py'),'--grant',str(self._mcp_grant_path())]
+    def _codex_mcp(self,*arguments,check=True):
+        import subprocess
+        result=subprocess.run([self._codex_path(),'mcp',*arguments],capture_output=True,text=True,
+            encoding='utf-8',errors='replace',timeout=20,
+            creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        if check and result.returncode:
+            raise RuntimeError((result.stderr or result.stdout or 'Codex MCP 配置失败').strip()[:1000])
+        return result
+    def _configured_mcp(self):
+        result=self._codex_mcp('get',self._mcp_name(),'--json',check=False)
+        if result.returncode:return None
+        value=json.loads(result.stdout);transport=value.get('transport',{})
+        expected=self._mcp_launch()
+        if (value.get('name')!=self._mcp_name() or transport.get('type')!='stdio'
+                or transport.get('command')!=expected[0] or transport.get('args')!=expected[1:]):
+            raise RuntimeError('Codex 中已有同名但来源不同的 MCP 配置；为避免覆盖，Harness 未修改它')
+        return value
+    def _retry_mcp_revocations(self):
+        path=self._mcp_revocation_path();pending=read_json(path,{})
+        entries=pending.get('entries',[]) if isinstance(pending,dict) else []
+        # Read the short-lived V7 prerelease format as well, so an interrupted
+        # upgrade does not strand its one pending delegate.
+        if not entries and isinstance(pending,dict) and pending.get('public_key'):entries=[pending]
+        retained=[];warnings=[]
+        for entry in entries:
+            if not isinstance(entry,dict) or not entry.get('public_key'):continue
+            failed=[]
+            for server in list(dict.fromkeys(entry.get('servers',[]))):
+                try:self._rpc('revoke-delegate',{'public_key':entry['public_key']},server=server,timeout=5)
+                except (OSError,RuntimeError,PermissionError,ValueError) as exc:
+                    failed.append(server);warnings.append({'server':server,'error':str(exc)})
+            if failed:retained.append({'public_key':entry['public_key'],'servers':failed})
+        if retained:
+            write_json(path,{'entries':retained});self._secure(path)
+        else:path.unlink(missing_ok=True)
+        return warnings
+    def _queue_mcp_revocation(self,public,servers):
+        path=self._mcp_revocation_path();pending=read_json(path,{})
+        entries=pending.get('entries',[]) if isinstance(pending,dict) else []
+        if not entries and isinstance(pending,dict) and pending.get('public_key'):entries=[pending]
+        merged={entry['public_key']:list(dict.fromkeys(entry.get('servers',[]))) for entry in entries
+                if isinstance(entry,dict) and entry.get('public_key')}
+        merged[public]=list(dict.fromkeys([*merged.get(public,[]),*servers]))
+        write_json(path,{'entries':[{'public_key':key,'servers':value} for key,value in merged.items()]});self._secure(path)
+    def _mcp_status(self):
+        path=self._mcp_grant_path();grant=read_json(path)
+        configured=False;warning=None
+        try:
+            configured=self._configured_mcp() is not None
+        except (OSError,RuntimeError,ValueError) as exc:warning=str(exc)
+        pending=read_json(self._mcp_revocation_path(),{}) if self.identity else {}
+        entries=pending.get('entries',[]) if isinstance(pending,dict) else []
+        if not entries and isinstance(pending,dict) and pending.get('public_key'):entries=[pending]
+        pending_count=sum(len(entry.get('servers',[])) for entry in entries if isinstance(entry,dict))
+        result={'enabled':bool(grant),'configured':configured,'pending_revocations':pending_count}
+        if warning:result['warnings']=[warning]
+        if pending_count:result.setdefault('warnings',[]).append('有离线协作服务尚未完成授权撤销；下次登录会自动重试')
+        return result
+    def _enable_mcp(self):
+        self._retry_mcp_revocations()
+        configured=self._configured_mcp()
+        path=self._mcp_grant_path();grant=read_json(path);created=False
+        if not grant:
+            created=True
+            delegate=generate_identity();delegate.update(account_id=self.identity['account_id'],
+                chain=approve_delegate(self.identity,delegate['public_key'],MCP_DELEGATE_SCOPES))
+            grant={'version':1,'profile_id':self.profile['id'],'username':self.profile['username'],
+                   'identity':delegate,'scopes':list(MCP_DELEGATE_SCOPES),'servers':self._services(),
+                   'created_at':time.time()}
+            path.parent.mkdir(parents=True,exist_ok=True);write_json(path,grant);self._secure(path)
+        synced=self._sync_mcp_delegate()
+        if not synced['registered']:
+            if created:path.unlink(missing_ok=True)
+            raise RuntimeError('没有协作服务接受 Codex 授权；请先恢复服务连接再重试')
+        # Codex owns config serialization. Only create this profile's unique
+        # entry, and never replace a same-name entry whose command differs.
+        if configured is None:self._codex_mcp('add',self._mcp_name(),'--',*self._mcp_launch())
+        return {**self._mcp_status(),**synced}
+    def _disable_mcp(self):
+        path=self._mcp_grant_path();grant=read_json(path);warnings=[]
+        if grant:
+            public=grant.get('identity',{}).get('public_key')
+            self._queue_mcp_revocation(public,list(dict.fromkeys(grant.get('servers',[]))))
+            warnings=self._retry_mcp_revocations()
+        try:
+            if self._configured_mcp() is not None:self._codex_mcp('remove',self._mcp_name(),check=False)
+        except (OSError,RuntimeError,ValueError) as exc:warnings.append({'server':'Codex','error':str(exc)})
+        path.unlink(missing_ok=True)
+        return {'enabled':False,'configured':False,'pending_revocations':len([w for w in warnings if w.get('server')!='Codex']),'warnings':warnings}
     def _services(self):
         if not self.profile:return []
         services=[self.profile['server']]
@@ -386,6 +518,11 @@ class AppBridge:
                     self._activate_service(server)
                     self._enroll() if server==self.profile['server'] else self._enroll(server)
                 except (OSError,RuntimeError,ValueError):pass
+            try:self._retry_mcp_revocations()
+            except (OSError,RuntimeError,ValueError,PermissionError):pass
+            if self._mcp_grant_path().is_file():
+                try:self._sync_mcp_delegate()
+                except (OSError,RuntimeError,ValueError,PermissionError):pass
             return {'unlocked':True}
         if action=='logout': self.identity=None;self.profile=None;self.activated_services=set();return {}
         if action=='device-request':
@@ -477,6 +614,7 @@ class AppBridge:
                 self.activated_services.add(server)
                 self.profile.setdefault('services',[]).append(server);self._save_public_profile()
                 self._sync_service_links(force=True)
+            if self._mcp_grant_path().is_file():self._sync_mcp_delegate([server])
             self.project_servers[result['project']]=server
             return dict(result,server=server)
         if action in {'project','invite','message','set-admin','conversation-read','memory-note-add','memory-note-delete'}:
@@ -522,7 +660,11 @@ class AppBridge:
             return {'server':self.profile['server'],'services':dashboard['services'],
                     'can_host_locally':not enabled,'local_host_enabled':enabled,
                     'background':self.profile.get('background',True),'autostart':False,'data_root':str(self.root),
-                    'team_service':status,'proxy':self._proxy_settings(),'warm_idle_seconds':self._idle_seconds()}
+                    'team_service':status,'proxy':self._proxy_settings(),'warm_idle_seconds':self._idle_seconds(),
+                    'codex_mcp':self._mcp_status()}
+        if action=='codex-mcp-status':return self._mcp_status()
+        if action=='codex-mcp-enable':return self._enable_mcp()
+        if action=='codex-mcp-disable':return self._disable_mcp()
         if action=='codex-cli-status':
             if not self.profile or not self.identity:raise PermissionError('请先登录')
             from worker import cli_status,codex_login_status

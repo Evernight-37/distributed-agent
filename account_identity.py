@@ -28,6 +28,24 @@ def certify_device(identity,child_public_key):
     decode(child_public_key,32)
     body={'domain':'harness-device-certificate-v1','account_id':identity['account_id'],'parent':identity['public_key'],'child':child_public_key}
     return {'body':body,'signature':sign_envelope(identity,body)['signature']}
+
+def certify_delegate(identity,child_public_key,scopes):
+    """Create a leaf-only, capability-scoped delegation certificate.
+
+    Delegates are intended for unattended local integrations such as the
+    Codex MCP adapter.  They are deliberately distinct from device
+    certificates: a delegate can authenticate account requests but must never
+    inherit machine-owner or account-administration authority.
+    """
+    decode(child_public_key,32)
+    if not isinstance(scopes,(list,tuple,set)) or not scopes:
+        raise ValueError('Delegate scopes are required')
+    checked=sorted(set(scopes))
+    if len(checked)>16 or any(not isinstance(scope,str) or not 1<=len(scope)<=80 for scope in checked):
+        raise ValueError('Invalid delegate scopes')
+    body={'domain':'harness-delegate-certificate-v1','account_id':identity['account_id'],
+          'parent':identity['public_key'],'child':child_public_key,'scopes':checked}
+    return {'body':body,'signature':sign_envelope(identity,body)['signature']}
 def verify_envelope(envelope,expected_account=None):
     if not isinstance(envelope,dict) or not isinstance(envelope.get('body'),dict): raise PermissionError('Invalid signed envelope')
     public=envelope.get('public_key');decode(public,32);chain=envelope.get('chain',[])
@@ -35,16 +53,27 @@ def verify_envelope(envelope,expected_account=None):
     root=chain[0]['body']['parent'] if chain else public
     account=account_id(root);parent=root;seen={root}
     if expected_account is not None and account!=expected_account: raise PermissionError('Wrong account root')
+    scopes=None
     try:
-        for cert in chain:
+        for index,cert in enumerate(chain):
             body=cert['body']
-            if set(body)!={'domain','account_id','parent','child'} or body['domain']!='harness-device-certificate-v1' or body['account_id']!=account or body['parent']!=parent or body['child'] in seen: raise PermissionError('Invalid device certificate')
+            device=(set(body)=={'domain','account_id','parent','child'} and body.get('domain')=='harness-device-certificate-v1')
+            delegate=(set(body)=={'domain','account_id','parent','child','scopes'} and body.get('domain')=='harness-delegate-certificate-v1')
+            if not device and not delegate: raise PermissionError('Invalid device certificate')
+            if body['account_id']!=account or body['parent']!=parent or body['child'] in seen: raise PermissionError('Invalid device certificate')
+            if delegate:
+                if index!=len(chain)-1: raise PermissionError('Delegate certificate must be the leaf')
+                values=body.get('scopes')
+                if not isinstance(values,list) or not values or len(values)>16 or values!=sorted(set(values)) or any(not isinstance(value,str) or not 1<=len(value)<=80 for value in values):
+                    raise PermissionError('Invalid delegate scopes')
+                scopes=tuple(values)
             Ed25519PublicKey.from_public_bytes(decode(parent,32)).verify(decode(cert['signature'],64),canonical(body));parent=body['child'];decode(parent,32);seen.add(parent)
         if parent!=public: raise PermissionError('Unrooted device identity')
         Ed25519PublicKey.from_public_bytes(decode(public,32)).verify(decode(envelope['signature'],64),canonical(envelope['body']))
     except PermissionError: raise
     except Exception: raise PermissionError('Signature verification failed') from None
-    return {'account_id':account,'public_key':public,'root_public_key':root,'body':envelope['body'],'chain_keys':list(seen)}
+    return {'account_id':account,'public_key':public,'root_public_key':root,'body':envelope['body'],
+            'chain_keys':list(seen),'delegate_scopes':scopes}
 def verify_owner_command(envelope,expected_account):
     verified=verify_envelope(envelope,expected_account);body=verified['body']
     if body.get('domain')!='harness-owner-command-v1' or body.get('account_id')!=expected_account or not isinstance(body.get('id'),str) or not isinstance(body.get('target'),str): raise PermissionError('Invalid owner command domain')
@@ -69,5 +98,7 @@ def load_profile(path,password): return decrypt_profile(json.loads(Path(path).re
 def approve_certificate(identity,child_public_key,device_id=None):
     """Return the complete child delegation chain; device_id is UI metadata only."""
     return list(identity.get('chain',[]))+[certify_device(identity,child_public_key)]
+def approve_delegate(identity,child_public_key,scopes):
+    return list(identity.get('chain',[]))+[certify_delegate(identity,child_public_key,scopes)]
 def encrypt_identity(identity,password): return encrypt_profile(identity,password)
 def decrypt_identity(blob,password): return decrypt_profile(blob,password)

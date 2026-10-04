@@ -52,6 +52,8 @@ class ReleaseMetadataTests(unittest.TestCase):
             self.assertTrue(guide.startswith('Agent Harness 9.8.7\n'))
             self.assertIn(r'%LOCALAPPDATA%\AgentHarness\app-v6', guide)
             self.assertIn('只有本机协作服务的项目数据', guide)
+            self.assertIn('在 Codex 中使用协作', guide)
+            self.assertIn('受限身份', guide)
 
     def test_invalid_version_source_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

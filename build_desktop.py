@@ -16,7 +16,7 @@ SHA256 = 'd297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15'
 CLIENT_FILES = ('common.py', 'pull_worker.py', 'local_panel.py', 'desktop_service.py', 'desktop_runtime.py', 'service_install.py', 'host_control.py', 'app_lifecycle.py',
                 'worker.py', 'jobrunner.py', 'warm_worker.py', 'appserver_client.py', 'panel.py', 'broker.py', 'collaboration_store.py', 'coordinator.py', 'project_memory.py', 'controller.py',
                 'account_identity.py', 'account_backend.py', 'owner_backend.py', 'owner_worker.py',
-                'app_bridge.py', 'production_app.py', 'team_service.py', 'VERSION')
+                'app_bridge.py', 'production_app.py', 'team_service.py', 'mcp_server.py', 'mcp_adapter.py', 'VERSION')
 CRYPTOGRAPHY_VERSION = '46.0.3'
 
 
@@ -41,7 +41,7 @@ def write_release_metadata(destination, source=SOURCE):
 
 
 def getting_started_text(version):
-    return f'Agent Harness {version}\n双击 AgentHarness.exe。\n6.0 首次启用时不会迁移 app-v5 的账户或本机缓存；同一 Windows 用户后续升级会继续使用 %LOCALAPPDATA%\\AgentHarness\\app-v6 中的身份和接收设置。\n首次使用点击“创建账户”；自己的另一台电脑点击“关联我的另一台电脑”，由已登录设备批准。\n控制台管理所有关联机器上的员工。凭服务地址和项目邀请代码加入其他团队，不用重新创建身份。\n进入项目后派遣自己的员工，群主设置管理员与邀请成员。\n设置页管理设备、后台接收和服务连接。\n首次运行 agent 前，每台机器需要已有可用的 Codex 登录。\n账户身份保存在当前 Windows 用户目录；项目文件不会自动同步。\n只有本机协作服务的项目数据保存在应用目录旁的 data 文件夹，请升级时完整保留该文件夹。\n请保留整个目录，不要只复制 exe。\n'
+    return f'Agent Harness {version}\n双击 AgentHarness.exe。\n6.0 首次启用时不会迁移 app-v5 的账户或本机缓存；同一 Windows 用户后续升级会继续使用 %LOCALAPPDATA%\\AgentHarness\\app-v6 中的身份和接收设置。\n首次使用点击“创建账户”；自己的另一台电脑点击“关联我的另一台电脑”，由已登录设备批准。\n控制台管理所有关联机器上的员工。凭服务地址和项目邀请代码加入其他团队，不用重新创建身份。\n进入项目后派遣自己的员工，群主设置管理员与邀请成员。\n设置页管理设备、后台接收和服务连接。\n在“设置 → 在 Codex 中使用协作”点“连接到 Codex”后，可以在普通 Codex 对话里查看 Harness 项目、发消息和给自己的员工派异步任务。\nCodex 使用单独的受限身份，不能邀请成员、管理别人的机器或批准命令；断开不会删除项目。\n首次运行 agent 或连接 Codex 前，每台机器需要已有可用的 Codex 登录。\n账户身份保存在当前 Windows 用户目录；项目文件不会自动同步。\n只有本机协作服务的项目数据保存在应用目录旁的 data 文件夹，请升级时完整保留该文件夹。\n请保留整个目录，不要只复制 exe。\n'
 
 
 def main(output_root=None):

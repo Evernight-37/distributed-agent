@@ -16,6 +16,7 @@ class AccountBackend:
         with store.connect() as db:
             db.executescript('''
             CREATE TABLE IF NOT EXISTS account_devices(public_key TEXT PRIMARY KEY,account_id TEXT NOT NULL,name TEXT NOT NULL,chain TEXT NOT NULL,revoked INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS account_delegates(public_key TEXT PRIMARY KEY,account_id TEXT NOT NULL,name TEXT NOT NULL,scopes TEXT NOT NULL,chain TEXT NOT NULL,revoked INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS account_challenges(nonce TEXT PRIMARY KEY,public_key TEXT NOT NULL,expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS account_requests(id TEXT PRIMARY KEY,code_hash TEXT UNIQUE NOT NULL,public_key TEXT NOT NULL,name TEXT NOT NULL,expires REAL NOT NULL,account_id TEXT,chain TEXT,claimed INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS account_project_visits(account_id TEXT NOT NULL,project_id TEXT NOT NULL,visited REAL NOT NULL,PRIMARY KEY(account_id,project_id));
@@ -29,7 +30,7 @@ class AccountBackend:
             with self.store.connect() as db:
                 db.execute('DELETE FROM account_challenges WHERE expires<?',(time.time(),));db.execute('INSERT INTO account_challenges VALUES(?,?,?)',(nonce,public,time.time()+60))
             return {'nonce':nonce,'expires_in':60,'service_id':self.store.service_id(),
-                    'features':['mention_agent_id','anchored_reply_draft','conversation_privacy_v2','service_host_owner_v1']}
+                    'features':['mention_agent_id','anchored_reply_draft','conversation_privacy_v2','service_host_owner_v1','codex_mcp_v1']}
         if action=='request-device':
             public=data['public_key'];decode(public,32);name=self._name(data.get('name','新电脑'));code=secrets.token_urlsafe(24);rid='request-'+secrets.token_hex(16)
             with self.store.connect() as db:
@@ -53,6 +54,7 @@ class AccountBackend:
             db.execute('DELETE FROM account_challenges WHERE nonce=?',(body['nonce'],))
         # Consume even rejected authenticated operations to prevent replay after state changes.
         if action=='register':
+            if verified.get('delegate_scopes') is not None:raise PermissionError('A delegate cannot register an account')
             if body.get('operation')!='register':raise PermissionError('Wrong registration proof')
             name=self._name(body['payload'].get('name'));device_name=self._name(body['payload'].get('device_name','我的电脑'))
             with self.store.connect() as db:
@@ -70,6 +72,7 @@ class AccountBackend:
                 self._register_chain(db,verified,data['envelope'].get('chain',[]),device_name)
             return {'account_id':user,'node':device_node(public)}
         if action=='accept-project-invite':
+            if verified.get('delegate_scopes') is not None:raise PermissionError('A delegate cannot accept project invitations')
             if body.get('operation')!='accept-project-invite':raise PermissionError('Wrong invite proof')
             payload=body['payload'];name=self._name(payload.get('name'));device_name=self._name(payload.get('device_name','我的电脑'))
             token=payload.get('invite')
@@ -86,22 +89,43 @@ class AccountBackend:
                 self.store.log(db,user,'accept_project_invite',{'project':invitation['project_id']})
                 return {'project':invitation['project_id'],'account_id':user,'node':device_node(public)}
         with self.store.connect() as db:
-            for key in verified['chain_keys']:
+            delegate_scopes=verified.get('delegate_scopes')
+            device_keys=set(verified['chain_keys'])-{public} if delegate_scopes is not None else set(verified['chain_keys'])
+            for key in device_keys:
                 device=db.execute('SELECT * FROM account_devices WHERE public_key=? AND account_id=?',(key,user)).fetchone()
                 if not device or device['revoked']:raise PermissionError('Device is not authorized')
-        return self._operation(user,public,body['operation'],body['payload'])
+            if delegate_scopes is not None:
+                delegate=db.execute('SELECT * FROM account_delegates WHERE public_key=? AND account_id=?',(public,user)).fetchone()
+                if not delegate or delegate['revoked'] or tuple(json.loads(delegate['scopes']))!=tuple(delegate_scopes):
+                    raise PermissionError('Delegate is not authorized')
+                required={'service-links':'collaboration.read','dashboard':'collaboration.read','project':'collaboration.read',
+                          'message':'collaboration.message','conversation-read':'collaboration.read',
+                          'task':'collaboration.task','task-status':'collaboration.read'}.get(body['operation'])
+                if not required or required not in delegate_scopes:
+                    raise PermissionError('Delegate scope does not allow this operation')
+        return self._operation(user,public,body['operation'],body['payload'],delegate_scopes)
     def _name(self,name):
         if not isinstance(name,str) or not 1<=len(name.strip())<=120:raise ValueError('Name must contain 1–120 characters')
         return name.strip()
     def _register_chain(self,db,verified,chain,device_name):
         user,public=verified['account_id'],verified['public_key']
-        keys=[verified['root_public_key']]+[cert['body']['child'] for cert in chain]
+        delegate_scopes=verified.get('delegate_scopes')
+        device_chain=chain[:-1] if delegate_scopes is not None else chain
+        keys=[verified['root_public_key']]+[cert['body']['child'] for cert in device_chain]
         for index,key in enumerate(keys):
             row=db.execute('SELECT account_id,revoked FROM account_devices WHERE public_key=?',(key,)).fetchone()
             if row and (row['account_id']!=user or row['revoked']):raise PermissionError('设备授权已撤销或属于其他账户')
-            if not row:db.execute('INSERT INTO account_devices VALUES(?,?,?,?,0)',(key,user,device_name if key==public else '关联设备',json.dumps(chain[:index])))
+            if not row:db.execute('INSERT INTO account_devices VALUES(?,?,?,?,0)',(key,user,device_name if key==public else '关联设备',json.dumps(device_chain[:index])))
             self._node(db,key,user)
-    def _operation(self,user,public,op,p):
+        if delegate_scopes is not None:
+            row=db.execute('SELECT account_id,revoked,scopes FROM account_delegates WHERE public_key=?',(public,)).fetchone()
+            encoded=json.dumps(list(delegate_scopes),ensure_ascii=False)
+            if row and (row['account_id']!=user or row['revoked'] or row['scopes']!=encoded):
+                raise PermissionError('Codex delegation was revoked or changed')
+            if not row:
+                db.execute('INSERT INTO account_delegates VALUES(?,?,?,?,?,0)',
+                           (public,user,device_name,encoded,json.dumps(chain)))
+    def _operation(self,user,public,op,p,delegate_scopes=None):
         if op=='service-links':
             with self.store.connect() as db:
                 return {'servers':[row['server'] for row in db.execute('SELECT server FROM account_services WHERE account_id=? ORDER BY joined_at',(user,))]}
@@ -164,8 +188,18 @@ class AccountBackend:
         if op=='create-project':return self.store.project_create(user,p['name'])
         if op in {'join','join-project'}:return self.store.join(user,p['invite'])
         if op=='invite':return self.store.invite(user,p['project'])
-        if op=='message':return self.store.message(user,p['project'],p['body'],p.get('recipient_id'),p.get('mention_agent_id'),p.get('conversation_id'),p.get('client_message_id'))
+        if op=='message':return self.store.message(user,p['project'],p['body'],p.get('recipient_id'),p.get('mention_agent_id'),p.get('conversation_id'),p.get('client_message_id'),'codex' if delegate_scopes is not None else None)
         if op=='conversation-read':return self.store.mark_conversation_read(user,p['project'],p['conversation_id'])
+        if op=='task':
+            if delegate_scopes is not None:p={**p,'requested_via':'codex'}
+            return self.store.task(user,p)
+        if op=='task-status':
+            with self.store.connect() as db:
+                row=db.execute('SELECT * FROM tasks WHERE id=?',(p.get('task'),)).fetchone()
+                if not row:raise ValueError('未知任务')
+                self.store.require_member(db,row['project_id'],user)
+                if not self.store.task_visible_to_human(db,row,user):raise PermissionError('无权查看此任务')
+                return dict(row)
         if op=='memory-note-add':
             from project_memory import ProjectMemory
             return ProjectMemory(self.store).add_note(user,p['project'],p['body'])
@@ -233,6 +267,13 @@ class AccountBackend:
                     envelope=json.loads(command['envelope']);keys=[envelope.get('public_key')]+[cert['body']['parent'] for cert in envelope.get('chain',[])]
                     if command['envelope'] and (revoked_keys.intersection(keys) or envelope['body']['target'] in revoked_nodes):
                         db.execute("UPDATE owner_commands SET state='failed',result=? WHERE id=?",(canonical({'error':'Device revoked'}).decode(),command['id']))
+            return {'revoked':True}
+        if op=='revoke-delegate':
+            target=p.get('public_key')
+            with self.store.connect() as db:
+                row=db.execute('SELECT * FROM account_delegates WHERE public_key=? AND account_id=?',(target,user)).fetchone()
+                if not row:return {'revoked':True,'already_absent':True}
+                db.execute('UPDATE account_delegates SET revoked=1 WHERE public_key=?',(target,))
             return {'revoked':True}
         raise ValueError('Unsupported signed account operation')
     def _username(self,db,user):
