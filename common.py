@@ -3,6 +3,7 @@ import contextlib
 import json
 import os
 import re
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -24,9 +25,17 @@ def read_json(path, default=None):
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    # Keep the temporary basename short.  Windows may expose LocalAppData
+    # through a much longer packaged-app redirection path; appending a UUID to
+    # an already long receipt filename can cross MAX_PATH even when the final
+    # JSON path itself is valid.  mkstemp also reserves the name atomically.
+    fd, temporary = tempfile.mkstemp(prefix=".ah-", suffix=".tmp", dir=path.parent)
+    tmp = Path(temporary)
     try:
-        tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+        stream = os.fdopen(fd, "w", encoding="utf-8")
+        fd = None
+        with stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
         for attempt in range(20):
             try:
                 os.replace(tmp, path)
@@ -36,6 +45,8 @@ def write_json(path, value):
                     raise
                 time.sleep(.05)
     finally:
+        if fd is not None:
+            os.close(fd)
         tmp.unlink(missing_ok=True)
 
 

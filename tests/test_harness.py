@@ -44,6 +44,17 @@ class CommonTests(unittest.TestCase):
             self.assertEqual(read_json(path), value)
             self.assertIn("实验完成", path.read_text(encoding="utf-8"))
 
+    def test_json_atomic_temp_name_does_not_extend_long_target_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / ("d" * max(8, 170 - len(str(base))))
+            parent.mkdir()
+            path = parent / (("r" * 64) + ".json")
+            self.assertGreater(len(str(path)), 230)
+            write_json(path, {"status": "received"})
+            self.assertEqual(read_json(path), {"status": "received"})
+            self.assertEqual(list(parent.glob(".ah-*.tmp")), [])
+
     def test_events_ignores_malformed_and_non_event_lines(self):
         text = '{"type":"thread.started"}\nnot json\n{"x": 1}\n{"type":"item.completed"}\n'
         self.assertEqual(events(text), [{"type": "thread.started"}, {"type": "item.completed"}])
