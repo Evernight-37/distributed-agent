@@ -3,7 +3,9 @@ import json
 import hashlib
 import os
 import secrets
+import shutil
 import socket
+import sqlite3
 import sys
 import time
 import threading
@@ -67,8 +69,60 @@ class AppBridge:
     def _host_state_root(self):
         saved=(self.profile or {}).get('local_host_state')
         if saved:return Path(saved).resolve()
-        if getattr(sys,'frozen',False):return Path(sys.executable).resolve().parent/'data'
-        return Path(os.environ.get('LOCALAPPDATA',Path.home()))/'AgentHarness'/'shared-data'
+        return self.root/'host-data'
+    def _host_service_id(self,state):
+        database=Path(state)/'collaboration.sqlite3'
+        if not database.is_file():return None
+        connection=sqlite3.connect(database.as_uri()+'?mode=ro',uri=True)
+        try:
+            row=connection.execute('SELECT service_id FROM service_metadata WHERE id=1').fetchone()
+            return row[0] if row else None
+        finally:connection.close()
+    def _migrate_saved_host_state(self):
+        """Move version-adjacent host data to one package-independent location."""
+        if not self.profile:return None
+        saved=self.profile.get('local_host_state')
+        target=(self.root/'host-data').resolve()
+        if not saved:
+            return target
+        source=Path(saved).resolve()
+        if source==target:return target
+        source_id=self._host_service_id(source)
+        if not source_id:
+            # Preserve an explicit custom/missing location so the normal host
+            # verification reports the problem without creating a new service.
+            return source
+        target_id=self._host_service_id(target)
+        if target.exists():
+            if target_id!=source_id:
+                raise RuntimeError('稳定数据目录已存在其他协作服务，未迁移或覆盖任何项目数据')
+        else:
+            active=self._active_host_state()
+            if active==source:
+                from app_lifecycle import HostRuntime
+                HostRuntime(source).stop_and_wait()
+            staging=target.with_name(target.name+'.migrate-'+uuid.uuid4().hex)
+            staging.mkdir(parents=True)
+            try:
+                source_db=sqlite3.connect((source/'collaboration.sqlite3').as_uri()+'?mode=ro',uri=True)
+                destination_db=sqlite3.connect(staging/'collaboration.sqlite3')
+                try:source_db.backup(destination_db)
+                finally:destination_db.close();source_db.close()
+                transient={'collaboration.sqlite3','desktop-host.json','desktop-host-start.lock',
+                           'coordinator.lock','panel.stdout.log','panel.stderr.log'}
+                for item in source.iterdir():
+                    if item.name in transient:continue
+                    if item.is_symlink():raise RuntimeError('旧协作服务数据目录包含链接，无法安全迁移')
+                    destination=staging/item.name
+                    if item.is_dir():shutil.copytree(item,destination)
+                    else:shutil.copy2(item,destination)
+                staging.rename(target)
+            finally:
+                if staging.exists():shutil.rmtree(staging)
+            self._secure_tree(target)
+        self.profile['local_host_state']=str(target)
+        self._save_public_profile()
+        return target
     def _active_host_state(self):
         if os.name!='nt':return None
         import subprocess
@@ -382,6 +436,18 @@ class AppBridge:
             proc=subprocess.run(['icacls.exe',str(path),'/inheritance:r','/grant:r','*'+sid+':F','*S-1-5-18:F'],capture_output=True,timeout=15,creationflags=no_window)
             if proc.returncode: raise RuntimeError('无法限制本地账户文件权限')
         else: path.chmod(0o600)
+    def _secure_tree(self,path):
+        """Apply explicit owner/SYSTEM access to migrated directories and files."""
+        path=Path(path)
+        if os.name=='nt':
+            # Secure descendants first. Removing inheritance from the parent
+            # before children have explicit rules can make copied files unreadable.
+            for item in sorted(path.rglob('*'),key=lambda value:len(value.parts),reverse=True):
+                self._secure(item)
+            self._secure(path)
+        else:
+            for item in path.rglob('*'):item.chmod(0o700 if item.is_dir() else 0o600)
+            path.chmod(0o700)
     def _runtime(self,server=None):
         if not self.profile: raise PermissionError('请先登录')
         server=server or self.profile['server']
@@ -543,6 +609,7 @@ class AppBridge:
             if not profile: raise ValueError('本地账户不存在')
             identity=decrypt_identity(profile['encrypted'],data.get('password',''))
             self.identity=identity;self.profile=profile
+            self._migrate_saved_host_state()
             if profile['server']=='http://127.0.0.1:8765':
                 try:self._server(profile['server'])
                 except (OSError,RuntimeError,ValueError):

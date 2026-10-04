@@ -51,7 +51,8 @@ class ReleaseMetadataTests(unittest.TestCase):
             guide = getting_started_text(application_version(source))
             self.assertTrue(guide.startswith('Agent Harness 9.8.7\n'))
             self.assertIn(r'%LOCALAPPDATA%\AgentHarness\app-v6', guide)
-            self.assertIn('只有本机协作服务的项目数据', guide)
+            self.assertIn('host-data 团队数据库', guide)
+            self.assertIn('升级或移动应用目录不会改变', guide)
             self.assertIn('在 Codex 中使用协作', guide)
             self.assertIn('受限身份', guide)
 

@@ -9,6 +9,7 @@ from account_identity import approve_certificate, generate_identity, sign_envelo
 from broker import PullBackend
 from collaboration_store import Store
 from app_bridge import AppBridge
+from common import read_json, write_json
 
 
 class ServiceHostingTests(unittest.TestCase):
@@ -111,12 +112,28 @@ class ServiceHostingTests(unittest.TestCase):
         self.assertEqual(result['id'],'project-local')
         self.assertEqual(rpc.call_args.kwargs['server'],'http://127.0.0.1:8765')
 
-    def test_frozen_app_uses_data_beside_executable(self):
+    def test_app_uses_package_independent_host_data(self):
         bridge=AppBridge(Path(self.temp.name)/'desktop')
         executable=Path(self.temp.name)/'AgentHarness'/'AgentHarness.exe'
         with patch('app_bridge.sys.frozen',True,create=True), \
              patch('app_bridge.sys.executable',str(executable)):
-            self.assertEqual(bridge._host_state_root(),executable.parent/'data')
+            self.assertEqual(bridge._host_state_root(),bridge.root/'host-data')
+
+    def test_saved_version_data_is_backed_up_to_stable_host_directory(self):
+        root=Path(self.temp.name)/'desktop';bridge=AppBridge(root)
+        source=Path(self.temp.name)/'AgentHarness-v6.0.0'/'data'
+        store=Store(source);(source/'team-service.json').write_text('{"url":"https://team.example"}',encoding='utf-8')
+        bridge.profile={'id':'profile','local_host_state':str(source)}
+        profile_path=bridge.root/'profiles'/'profile.json';write_json(profile_path,bridge.profile)
+        with patch.object(bridge,'_active_host_state',return_value=None),patch.object(bridge,'_secure_tree') as secure:
+            migrated=bridge._migrate_saved_host_state()
+        self.assertEqual(migrated,bridge.root/'host-data')
+        self.assertEqual(Store(migrated).service_id(),store.service_id())
+        self.assertTrue((migrated/'team-service.json').is_file())
+        self.assertFalse((migrated/'desktop-host.json').exists())
+        self.assertEqual(read_json(profile_path)['local_host_state'],str(migrated))
+        self.assertTrue((source/'collaboration.sqlite3').is_file(),'source remains as rollback copy')
+        secure.assert_called_once_with(migrated)
 
     def test_saved_legacy_host_data_is_reused_after_restart(self):
         bridge=AppBridge(Path(self.temp.name)/'desktop')
