@@ -22,10 +22,42 @@ class ProductionFlow(unittest.TestCase):
             bridge=AppBridge(Path(td))
             profile={'id':'saved-local','username':'本机用户','server':'http://127.0.0.1:8765',
                      'encrypted':encrypt_identity(generate_identity(),'password')}
-            with patch.object(bridge,'_profiles',return_value=[profile]), patch.object(DesktopRuntime,'start_workbench',return_value='http://127.0.0.1:8765') as start, patch.object(bridge,'_rpc',return_value={}), patch.object(bridge,'_enroll'):
+            with patch.object(bridge,'_profiles',return_value=[profile]), patch.object(bridge,'_active_host_state',return_value=None), patch.object(DesktopRuntime,'start_workbench',return_value='http://127.0.0.1:8765') as start, patch.object(bridge,'_rpc',return_value={}), patch.object(bridge,'_enroll'):
                 result=bridge.invoke('login',{'profile':'saved-local','password':'password'})
             self.assertTrue(result['ok'],result)
             start.assert_called_once_with(open_browser=False,state_root=bridge._host_state_root())
+
+    def test_local_login_uses_saved_host_state_before_starting_service(self):
+        from account_identity import generate_identity, encrypt_identity
+        from desktop_runtime import DesktopRuntime
+        with tempfile.TemporaryDirectory() as td:
+            bridge=AppBridge(Path(td)/'app');saved=Path(td)/'old-install'/'data'
+            profile={'id':'saved-local','username':'本机用户','server':'http://127.0.0.1:8765',
+                     'local_host_state':str(saved),'encrypted':encrypt_identity(generate_identity(),'password')}
+            with patch.object(bridge,'_profiles',return_value=[profile]), \
+                 patch.object(bridge,'_active_host_state',return_value=None), \
+                 patch.object(DesktopRuntime,'start_workbench',return_value='http://127.0.0.1:8765') as start, \
+                 patch.object(bridge,'_rpc',return_value={}),patch.object(bridge,'_enroll'):
+                result=bridge.invoke('login',{'profile':'saved-local','password':'password'})
+            self.assertTrue(result['ok'],result)
+            start.assert_called_once_with(open_browser=False,state_root=saved.resolve())
+
+    def test_local_login_replaces_only_verified_wrong_managed_host(self):
+        from account_identity import generate_identity, encrypt_identity
+        from desktop_runtime import DesktopRuntime
+        from app_lifecycle import HostRuntime
+        with tempfile.TemporaryDirectory() as td:
+            bridge=AppBridge(Path(td)/'app');saved=Path(td)/'old'/'data';wrong=Path(td)/'new'/'data'
+            profile={'id':'saved-local','username':'本机用户','server':'http://127.0.0.1:8765',
+                     'local_host_state':str(saved),'encrypted':encrypt_identity(generate_identity(),'password')}
+            with patch.object(bridge,'_profiles',return_value=[profile]), \
+                 patch.object(bridge,'_active_host_state',return_value=wrong.resolve()), \
+                 patch.object(HostRuntime,'stop_and_wait') as stop, \
+                 patch.object(DesktopRuntime,'start_workbench',return_value='http://127.0.0.1:8765') as start, \
+                 patch.object(bridge,'_rpc',return_value={}),patch.object(bridge,'_enroll'):
+                result=bridge.invoke('login',{'profile':'saved-local','password':'password'})
+            self.assertTrue(result['ok'],result);stop.assert_called_once()
+            start.assert_called_once_with(open_browser=False,state_root=saved.resolve())
 
     def test_two_devices_and_owner_controls(self):
         with tempfile.TemporaryDirectory() as td:

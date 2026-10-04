@@ -48,12 +48,21 @@ class AppBridge:
         server=(server or 'http://127.0.0.1:8765').rstrip('/')
         validate_server(server)
         if server=='http://127.0.0.1:8765':
+            desired=self._host_state_root()
+            active=self._active_host_state()
+            if active and active!=desired:
+                # A portable upgrade may have started its adjacent empty data
+                # directory before the user selected an existing profile.
+                # Stop only a verified Harness-managed host, then reopen the
+                # saved project database for that profile.
+                from app_lifecycle import HostRuntime
+                HostRuntime(active).stop_and_wait()
             if getattr(sys,'frozen',False) and not (self.profile or {}).get('local_host_state'):
-                state=self._host_state_root()
+                state=desired
                 if state.is_symlink():raise ValueError('应用 data 目录不能是链接')
                 state.mkdir(parents=True,exist_ok=True)
                 self._secure(state)
-            DesktopRuntime(self.root/'host').start_workbench(open_browser=False,state_root=self._host_state_root())
+            DesktopRuntime(self.root/'host').start_workbench(open_browser=False,state_root=desired)
         return server
     def _host_state_root(self):
         saved=(self.profile or {}).get('local_host_state')
@@ -501,10 +510,11 @@ class AppBridge:
             profile=next((p for p in self._profiles() if p['id']==data['profile']),None)
             if not profile: raise ValueError('本地账户不存在')
             identity=decrypt_identity(profile['encrypted'],data.get('password',''))
+            self.identity=identity;self.profile=profile
             if profile['server']=='http://127.0.0.1:8765':
                 try:self._server(profile['server'])
-                except (OSError,RuntimeError,ValueError):pass
-            self.identity=identity;self.profile=profile
+                except (OSError,RuntimeError,ValueError):
+                    self.identity=None;self.profile=None;raise
             self.activated_services={self.profile['server']}
             if getattr(sys,'frozen',False) and self.profile['server']=='http://127.0.0.1:8765' and not self.profile.get('local_host_state'):
                 try:
