@@ -86,7 +86,7 @@
 
 设备撤销目前在执行操作的协作服务内生效，不会自动撤销其他服务中同一设备的权限。每个服务的负责人应分别处理遗失设备；跨服务统一撤销尚未提供。
 
-6.0.0 是清洁重置版。本机账户数据在 `%LOCALAPPDATA%\AgentHarness\app-v6`，不会自动迁移或读取旧版 `app-v5` 的 profiles、receivers、Codex 或代理缓存；历史账户需要重新创建。后台执行状态按设备分开。首次运行模型前，每台机器需要已有可用 Codex 登录。新界面不读取或传输 Codex、SSH 或 GitHub 凭据。
+6.0.0 曾使用 `%LOCALAPPDATA%\AgentHarness\app-v6` 作为清洁重置命名空间。V7.0.6 会把其中的有效状态迁移到 `%LOCALAPPDATA%\AgentHarness\data`，仍不会读取更早的 `app-v5`。后台执行状态按设备分开。首次运行模型前，每台机器需要已有可用 Codex 登录。新界面不读取或传输 Codex、SSH 或 GitHub 凭据。
 
 发布包根目录中的 `VERSION` 和 `app-manifest.json` 是当前应用版本的机器可读标记；`开始使用.txt` 的版本标题也从源码根目录的 `VERSION` 生成。后台 service-runtime 按内容哈希并存安装旧版本，应用不会自动删除旧 runtime；确认没有旧进程依赖后再由维护者清理。
 
@@ -99,6 +99,8 @@
 **v7.0.4 独立安装修复：** 本机团队数据库固定保存在 `%LOCALAPPDATA%\\AgentHarness\\app-v6\\host-data`，不再依赖某个版本的解压目录。登录旧账户时，应用会先停止经验证的旧本机服务，通过 SQLite 在线备份复制数据库，保留旧目录作为回退副本，再把账户指向稳定目录。
 
 **v7.0.5 数据迁移权限修复：** 迁移后的目录、数据库和持久配置逐项设置当前 Windows 用户与 SYSTEM 的显式权限，避免目录取消继承后子文件不可读。迁移验证会比较服务身份及关键业务表记录数，旧数据库仍保留为回退副本。
+
+**v7.0.6 无版本数据目录：** 账户、接收端、MCP 授权和团队数据库统一迁移到 `%LOCALAPPDATA%\\AgentHarness\\data`，团队数据库位于 `team-service`。迁移前拒绝活动任务，停止经验证的旧后台服务，原子切换目录并保留 `app-v6` 回退副本；Codex MCP 仅在核验旧 Harness 运行包与同账户授权后迁移路径。
 
 **v6.1.2 Codex 会话写入修复：** 保活 App Server 已经附着到项目 thread 时，后续轮次直接复用该会话，不再重复调用 `thread/resume` 创建第二个写入者。若旧 App Server 或其他 Codex 客户端仍持有历史 thread，Harness 不会结束不属于自己的进程，而是建立新 thread，并继续携带项目聊天上下文和共享记忆。接收服务退出时会撤回自己拥有的空闲 worker；新服务也不会复用上一代接收端遗留的空闲 worker 代码。
 

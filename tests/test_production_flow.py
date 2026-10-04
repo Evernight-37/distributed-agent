@@ -9,11 +9,46 @@ from pull_worker import enroll,Connector
 from common import read_json,write_json
 
 class ProductionFlow(unittest.TestCase):
-    def test_default_local_state_uses_clean_app_v6_namespace(self):
+    def test_default_local_state_uses_unversioned_data_namespace(self):
         with tempfile.TemporaryDirectory() as td, patch.dict('os.environ', {'LOCALAPPDATA': td}):
             bridge=AppBridge()
-            self.assertEqual(bridge.root, (Path(td)/'AgentHarness'/'app-v6').resolve())
+            self.assertEqual(bridge.root, (Path(td)/'AgentHarness'/'data').resolve())
             self.assertFalse((Path(td)/'AgentHarness'/'app-v5').exists())
+
+    def test_versioned_state_is_copied_to_neutral_data_namespace(self):
+        from app_lifecycle import Lifecycle
+        with tempfile.TemporaryDirectory() as td, patch.dict('os.environ', {'LOCALAPPDATA': td}):
+            base=Path(td)/'AgentHarness';old=base/'app-v6';host=old/'host-data'
+            service=Store(host);profile_id='a'*32
+            write_json(old/'profiles'/(profile_id+'.json'),{
+                'id':profile_id,'local_host_state':str(host),'server':'http://127.0.0.1:8765'})
+            receiver=old/'receivers'/'device-test';receiver.mkdir(parents=True)
+            write_json(receiver/'pull-config.json',{'root':str(receiver),'server':'http://127.0.0.1:8765'})
+            write_json(receiver/'desktop-service.json',{'transient':True})
+            write_json(receiver/'projects'/'project-test'/'ready.json',{'root':str(receiver),'pid':42})
+            (receiver/'service-runtime'/'old').mkdir(parents=True)
+            with patch.object(Lifecycle,'active_jobs',return_value=False),patch.object(Lifecycle,'stop',return_value={'stopped':True}):
+                bridge=AppBridge()
+            target=base/'data'
+            self.assertEqual(bridge.root,target.resolve())
+            self.assertEqual(Store(target/'team-service').service_id(),service.service_id())
+            self.assertEqual(read_json(target/'profiles'/(profile_id+'.json'))['local_host_state'],str((target/'team-service').resolve()))
+            self.assertEqual(read_json(target/'receivers'/'device-test'/'pull-config.json')['root'],str((target/'receivers'/'device-test').resolve()))
+            self.assertFalse((target/'receivers'/'device-test'/'desktop-service.json').exists())
+            self.assertFalse((target/'receivers'/'device-test'/'service-runtime').exists())
+            self.assertFalse((target/'receivers'/'device-test'/'projects'/'project-test'/'ready.json').exists())
+            self.assertTrue((old/'host-data'/'collaboration.sqlite3').is_file())
+
+    def test_versioned_state_migration_waits_for_active_agent_work(self):
+        from app_lifecycle import Lifecycle
+        with tempfile.TemporaryDirectory() as td, patch.dict('os.environ', {'LOCALAPPDATA': td}):
+            base=Path(td)/'AgentHarness';old=base/'app-v6'
+            old.mkdir(parents=True)
+            with patch.object(Lifecycle,'active_jobs',return_value=True), patch.object(Lifecycle,'stop') as stop:
+                with self.assertRaisesRegex(RuntimeError,'正在执行'):
+                    AppBridge()
+            stop.assert_not_called()
+            self.assertFalse((base/'data').exists())
 
     def test_local_login_restarts_local_service_after_complete_exit(self):
         from account_identity import generate_identity, encrypt_identity

@@ -117,7 +117,7 @@ class ServiceHostingTests(unittest.TestCase):
         executable=Path(self.temp.name)/'AgentHarness'/'AgentHarness.exe'
         with patch('app_bridge.sys.frozen',True,create=True), \
              patch('app_bridge.sys.executable',str(executable)):
-            self.assertEqual(bridge._host_state_root(),bridge.root/'host-data')
+            self.assertEqual(bridge._host_state_root(),bridge.root/'team-service')
 
     def test_saved_version_data_is_backed_up_to_stable_host_directory(self):
         root=Path(self.temp.name)/'desktop';bridge=AppBridge(root)
@@ -127,7 +127,7 @@ class ServiceHostingTests(unittest.TestCase):
         profile_path=bridge.root/'profiles'/'profile.json';write_json(profile_path,bridge.profile)
         with patch.object(bridge,'_active_host_state',return_value=None),patch.object(bridge,'_secure_tree') as secure:
             migrated=bridge._migrate_saved_host_state()
-        self.assertEqual(migrated,bridge.root/'host-data')
+        self.assertEqual(migrated,bridge.root/'team-service')
         self.assertEqual(Store(migrated).service_id(),store.service_id())
         self.assertTrue((migrated/'team-service.json').is_file())
         self.assertFalse((migrated/'desktop-host.json').exists())

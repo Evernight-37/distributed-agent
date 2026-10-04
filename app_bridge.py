@@ -22,7 +22,9 @@ MCP_DELEGATE_SCOPES=['collaboration.message','collaboration.read','collaboration
 
 class AppBridge:
     def __init__(self, root=None):
-        self.root=Path(root or Path(os.environ.get('LOCALAPPDATA',Path.home()))/'AgentHarness'/'app-v6').resolve()
+        base=Path(os.environ.get('LOCALAPPDATA',Path.home()))/'AgentHarness'
+        self.root=Path(root or base/'data').resolve()
+        if root is None:self._migrate_versioned_app_root((base/'app-v6').resolve())
         self.root.mkdir(parents=True,exist_ok=True)
         self.identity=None;self.profile=None;self.window=None;self.pending=None;self.inspected={}
         self.project_servers={};self.employee_servers={};self.command_servers={};self.job_servers={}
@@ -30,6 +32,68 @@ class AppBridge:
         self.activated_services=set()
         self.guard=threading.RLock()
         self.allow_window_close=False
+    def _migrate_versioned_app_root(self,source):
+        """Atomically copy the last versioned state namespace to neutral data/."""
+        source=Path(source).resolve();target=self.root
+        if target.exists() or not source.is_dir():return False
+        from app_lifecycle import Lifecycle
+        lifecycle=Lifecycle(source,host_root=source/'host-data')
+        if lifecycle.active_jobs():
+            raise RuntimeError('旧版仍有正在执行的 Agent 任务；任务结束后重新打开应用完成数据迁移')
+        lifecycle.stop()
+        staging=target.with_name(target.name+'.migrate-'+uuid.uuid4().hex)
+        transient_files={'desktop-service.json','desktop-host.json','connector-status.json',
+            'desktop-service.stdout.log','desktop-service.stderr.log','panel.stdout.log','panel.stderr.log',
+            'active.json','warm.json','launch.json','ready.json','startup-error.json'}
+        transient_suffixes={'.lock'}
+        def ignored(directory,names):
+            directory=Path(directory)
+            omitted=[]
+            for name in names:
+                item=directory/name
+                if name in transient_files or item.suffix in transient_suffixes or name in {'__pycache__','service-runtime'}:
+                    omitted.append(name)
+            return omitted
+        try:
+            staging.mkdir(parents=True)
+            for item in source.iterdir():
+                if item.name=='host-data' or item.name in transient_files or item.suffix in transient_suffixes:continue
+                destination=staging/item.name
+                if item.is_symlink():raise RuntimeError('旧状态目录包含链接，无法安全迁移')
+                if item.is_dir():shutil.copytree(item,destination,ignore=ignored)
+                else:shutil.copy2(item,destination)
+            old_host=source/'host-data'
+            if old_host.is_dir() and self._host_service_id(old_host):
+                team=staging/'team-service';team.mkdir()
+                source_db=sqlite3.connect((old_host/'collaboration.sqlite3').resolve().as_uri()+'?mode=ro',uri=True)
+                destination_db=sqlite3.connect(team/'collaboration.sqlite3')
+                try:source_db.backup(destination_db)
+                finally:destination_db.close();source_db.close()
+                for item in old_host.iterdir():
+                    if item.name in {'collaboration.sqlite3',*transient_files} or item.suffix in transient_suffixes:continue
+                    if item.is_symlink():raise RuntimeError('旧团队数据目录包含链接，无法安全迁移')
+                    destination=team/item.name
+                    if item.is_dir():shutil.copytree(item,destination,ignore=ignored)
+                    else:shutil.copy2(item,destination)
+            for profile_path in (staging/'profiles').glob('*.json'):
+                profile=read_json(profile_path,{}) or {}
+                saved=profile.get('local_host_state')
+                if saved and Path(saved).resolve()==(source/'host-data').resolve():
+                    profile['local_host_state']=str((target/'team-service').resolve())
+                    write_json(profile_path,profile)
+            for config_path in (staging/'receivers').glob('device-*/pull-config.json'):
+                config=read_json(config_path,{}) or {}
+                relative=config_path.parent.relative_to(staging)
+                config['root']=str(target/relative)
+                write_json(config_path,config)
+            # Permission hardening is part of the transaction.  A failure must
+            # leave no target directory that a later launch could mistake for
+            # a completed migration.
+            self._secure_tree(staging)
+            staging.rename(target)
+            return True
+        finally:
+            if staging.exists():shutil.rmtree(staging)
     def _profiles(self):
         return [read_json(p) for p in (self.root/'profiles').glob('*.json')]
     def _post(self,server,data,timeout=15):
@@ -69,7 +133,7 @@ class AppBridge:
     def _host_state_root(self):
         saved=(self.profile or {}).get('local_host_state')
         if saved:return Path(saved).resolve()
-        return self.root/'host-data'
+        return self.root/'team-service'
     def _host_service_id(self,state):
         database=Path(state)/'collaboration.sqlite3'
         if not database.is_file():return None
@@ -82,7 +146,7 @@ class AppBridge:
         """Move version-adjacent host data to one package-independent location."""
         if not self.profile:return None
         saved=self.profile.get('local_host_state')
-        target=(self.root/'host-data').resolve()
+        target=(self.root/'team-service').resolve()
         if not saved:
             return target
         source=Path(saved).resolve()
@@ -234,6 +298,9 @@ class AppBridge:
     def _mcp_grant_path(self):
         if not self.profile:raise PermissionError('请先登录')
         return self.root/'mcp'/('grant-'+self.profile['id']+'.json')
+    def _legacy_mcp_grant_path(self):
+        if not self.profile:raise PermissionError('请先登录')
+        return self.root.parent/'app-v6'/'mcp'/('grant-'+self.profile['id']+'.json')
     def _mcp_revocation_path(self):
         if not self.profile:raise PermissionError('请先登录')
         return self.root/'mcp'/('revoke-'+self.profile['id']+'.json')
@@ -280,7 +347,7 @@ class AppBridge:
         if (value.get('name')!=self._mcp_name() or transport.get('type')!='stdio'
                 or not isinstance(args,list) or len(args)!=5
                 or args[:2]!=['-X','utf8'] or args[3]!='--grant'
-                or Path(args[4]).resolve()!=self._mcp_grant_path().resolve()):
+                or Path(args[4]).resolve() not in {self._mcp_grant_path().resolve(),self._legacy_mcp_grant_path().resolve()}):
             return False
         command=Path(transport.get('command','')).resolve();adapter=Path(args[2]).resolve()
         if (command.name.casefold()!='python.exe' or command.parent.name.casefold()!='runtime'
