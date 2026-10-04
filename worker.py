@@ -563,7 +563,12 @@ def rpc(request, managed_runtime=None):
                 state.update(status="failed", error=str(exc), finished_at=now())
                 write_json(path / "state.json", state)
                 raise
-            if not (config['managed_turn'] and project.get('local_control') and read_json(directory / 'active.json', {}).get('job') == job):
+            # A completed warm turn deliberately leaves active.json as JSON
+            # null.  read_json's default only applies when the file is absent,
+            # so normalize that valid idle value before checking whether the
+            # fresh launch already committed its ownership record.
+            committed_active = read_json(directory / 'active.json', {}) or {}
+            if not (config['managed_turn'] and project.get('local_control') and committed_active.get('job') == job):
                 active_record = {"job": job, "pid": pid, "stamp": stamp}
                 if config['managed_turn'] and project.get('local_control') and generation:
                     active_record['generation'] = generation

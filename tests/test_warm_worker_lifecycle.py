@@ -148,6 +148,44 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             finally:
                 self.stop_child(runtime, warm['generation'])
 
+    def test_second_turn_reuses_idle_warm_worker_and_commits_new_owner(self):
+        """JSON null in active.json is the normal state between warm turns."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = self.runtime_root(folder)
+            worker.set_root(root)
+            directory = root / 'projects' / 'project'
+            project = {'name': 'project', 'remote_path': str(root), 'model': 'test-model',
+                       'effort': 'low', 'timeout': 30, 'local_control': True}
+            write_json(directory / 'project.json', project)
+            write_json(directory / 'memory.json', {'revision': 0, 'entries': []})
+            write_json(directory / 'channels' / 'group.json', {'thread_id': 'existing-thread'})
+            write_json(directory / 'active.json', None)
+
+            generation = uuid.uuid4().hex
+            pid = os.getpid()
+            stamp = worker.process_stamp(pid)
+            write_json(directory / 'warm.json', {
+                'pid': pid, 'stamp': stamp, 'token': uuid.uuid4().hex,
+                'generation': generation})
+
+            class ExistingWarmRuntime:
+                def owns(self, candidate_generation, candidate_pid):
+                    return candidate_generation == generation and candidate_pid == pid
+
+            result = worker.rpc({
+                'action': 'start', 'project': 'project', 'job': 'second-turn',
+                'prompt': json.dumps({'stage': 'discuss'}), 'session_channel': 'group'},
+                ExistingWarmRuntime())
+
+            active = read_json(directory / 'active.json')
+            self.assertEqual(result['status'], 'starting')
+            self.assertEqual(active, {
+                'job': 'second-turn', 'pid': pid, 'stamp': stamp,
+                'generation': generation})
+            fetched = worker.rpc({'action': 'fetch', 'job': 'second-turn'})
+            self.assertEqual(fetched['status'], 'starting')
+            self.assertNotEqual(fetched['status'], 'interrupted')
+
     def test_external_script_imports_worker_from_receiver_root(self):
         with tempfile.TemporaryDirectory() as state, tempfile.TemporaryDirectory() as external:
             root = self.runtime_root(state); token = uuid.uuid4().hex; generation = uuid.uuid4().hex
