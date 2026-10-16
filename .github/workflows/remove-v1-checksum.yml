@@ -1,0 +1,34 @@
+name: Remove optional v1 checksum asset
+
+on:
+  push:
+    tags:
+      - "remove-v1-checksum"
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Keep only the portable ZIP as a custom release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $asset = "AgentHarness-v1.0.0-windows-x64.zip.sha256.txt"
+          $names = (gh release view v1.0.0 --json assets | ConvertFrom-Json).assets.name
+          if ($names -contains $asset) {
+            gh release delete-asset v1.0.0 $asset --yes
+          }
+          $remaining = (gh release view v1.0.0 --json assets | ConvertFrom-Json).assets.name
+          if ($remaining -notcontains "AgentHarness-v1.0.0-windows-x64.zip" -or $remaining -contains $asset) {
+            throw "Release asset cleanup verification failed"
+          }
+          git tag v1-checksum-removed $env:GITHUB_SHA
+          git push origin v1-checksum-removed
+          git push origin :refs/tags/remove-v1-checksum
