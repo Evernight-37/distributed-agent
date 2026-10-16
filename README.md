@@ -39,7 +39,7 @@ node tests/test_ui_v3.js
 构建 Windows x64 便携包：
 
 ```powershell
-python -m pip install pyinstaller==6.22.3
+python -m pip install -r requirements-build.txt
 python build_desktop.py
 ```
 
