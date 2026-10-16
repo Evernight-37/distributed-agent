@@ -363,6 +363,12 @@
       .bubble {
         max-width: 680px;
       }
+      .bubble,
+      .bubble p {
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
+      }
       .bubble .name {
         font-weight: 600;
         font-size: 12px;
@@ -2157,6 +2163,17 @@
         });
       }
       function renderProject() {
+        const currentMessages = document.querySelector(".messages"),
+          selection = window.getSelection?.();
+        if (
+          currentMessages &&
+          selection?.rangeCount &&
+          !selection.isCollapsed &&
+          currentMessages.contains(selection.anchorNode)
+        ) {
+          S.dirty = true;
+          return;
+        }
         nav("project");
         const v = S.view,
           p = v.project,
@@ -3526,27 +3543,6 @@
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden) refresh(true);
       });
-    </script>
-    <script>
-      const _renderProject = renderProject;
-      renderProject = function () {
-        const box = document.querySelector(".messages"),
-          s = window.getSelection?.();
-        if (
-          box &&
-          s?.rangeCount &&
-          !s.isCollapsed &&
-          box.contains(s.anchorNode)
-        ) {
-          S.dirty = true;
-          return;
-        }
-        return _renderProject();
-      };
-      const chatStyle = document.createElement("style");
-      chatStyle.textContent =
-        ".bubble,.bubble p{user-select:text;-webkit-user-select:text;cursor:text}";
-      document.head.append(chatStyle);
     </script>
   </body>
 </html>

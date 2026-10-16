@@ -93,6 +93,11 @@ with tempfile.TemporaryDirectory() as td:
             )
             wait("document.querySelector('.bubble p')?.textContent==='<script>原样文本</script>'")
             report["message_safe_text"] = True
+            report["selection_preserved"] = bool(
+                window.evaluate_js(
+                    "(()=>{const p=document.querySelector('.bubble p'),box=document.querySelector('.messages'),r=document.createRange(),s=window.getSelection();r.selectNodeContents(p);s.removeAllRanges();s.addRange(r);S.dirty=false;renderProject();const ok=document.querySelector('.messages')===box&&S.dirty;s.removeAllRanges();return ok})()"
+                )
+            )
             window.evaluate_js("document.querySelector('#settingsNav').click()")
             wait("document.querySelector('#teamServiceCard')?.textContent.includes('协作服务')")
             report["service_settings"] = True
