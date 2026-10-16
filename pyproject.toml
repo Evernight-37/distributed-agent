@@ -4,6 +4,5 @@ line-length = 120
 extend-exclude = ["build", "dist", "release"]
 
 [tool.ruff.lint]
-# Keep the initial gate focused on defects. Formatting can be adopted later
-# without obscuring functional changes in the first release.
+# Keep linting focused on defects; formatting is enforced separately.
 select = ["E9", "F"]

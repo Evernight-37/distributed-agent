@@ -4,7 +4,7 @@
   "description": "Developer tooling for the Agent Harness web interface",
   "scripts": {
     "format:check": "prettier --check \"assets/web/**/*.html\" \"tests/*.js\"",
-    "test": "node tests/test_web_syntax.js && node tests/test_ui_v3.js"
+    "test": "node tests/test_web_syntax.js && node tests/test_ui.js"
   },
   "repository": {
     "type": "git",

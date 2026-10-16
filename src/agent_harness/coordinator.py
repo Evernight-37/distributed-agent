@@ -229,7 +229,7 @@ Return only visible context; you cannot request other agents' private conversati
                 with self.store.connect() as db:
                     db.execute("UPDATE tasks SET state='running',job=? WHERE id=?", (result["job"], task["id"]))
             except Exception as exc:
-                # V2 submission already records remote uncertainty. Never blindly resubmit.
+                # Submission is idempotent and records remote uncertainty; do not blindly resubmit.
                 text = str(exc)
                 uncertain = "not confirmed" in text.lower()
                 job = None

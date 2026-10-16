@@ -352,46 +352,6 @@ class AppBridge:
             str(self._mcp_grant_path()),
         ]
 
-    def _service_runtime_root(self):
-        return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "AgentHarness" / "service-runtime"
-
-    def _owned_previous_mcp(self, value):
-        """Recognize this profile's immutable Harness entry from an older app bundle."""
-        transport = value.get("transport", {}) if isinstance(value, dict) else {}
-        args = transport.get("args")
-        if (
-            value.get("name") != self._mcp_name()
-            or transport.get("type") != "stdio"
-            or not isinstance(args, list)
-            or len(args) != 5
-            or args[:2] != ["-X", "utf8"]
-            or args[3] != "--grant"
-            or Path(args[4]).resolve() != self._mcp_grant_path().resolve()
-        ):
-            return False
-        command = Path(transport.get("command", "")).resolve()
-        adapter = Path(args[2]).resolve()
-        if (
-            command.name.casefold() != "python.exe"
-            or command.parent.name.casefold() != "runtime"
-            or adapter.name != "mcp_adapter.py"
-            or adapter.parent.name.casefold() != "client"
-            or command.parent.parent != adapter.parent.parent
-        ):
-            return False
-        bundle = command.parent.parent
-        try:
-            owned_root = bundle.parent == self._service_runtime_root().resolve()
-        except OSError:
-            return False
-        marker = bundle / ".complete"
-        if not owned_root or len(bundle.name) != 64 or any(c not in "0123456789abcdef" for c in bundle.name):
-            return False
-        try:
-            return marker.is_file() and marker.read_text(encoding="ascii").strip() == bundle.name
-        except (OSError, UnicodeError):
-            return False
-
     def _codex_mcp(self, *arguments, check=True):
         import subprocess
 
@@ -421,9 +381,6 @@ class AppBridge:
             or transport.get("command") != expected[0]
             or transport.get("args") != expected[1:]
         ):
-            if self._owned_previous_mcp(value):
-                value["_harness_upgrade_required"] = True
-                return value
             raise RuntimeError("Codex 中已有同名但来源不同的 MCP 配置；为避免覆盖，Harness 未修改它")
         return value
 
@@ -431,10 +388,6 @@ class AppBridge:
         path = self._mcp_revocation_path()
         pending = read_json(path, {})
         entries = pending.get("entries", []) if isinstance(pending, dict) else []
-        # Read the short-lived V7 prerelease format as well, so an interrupted
-        # upgrade does not strand its one pending delegate.
-        if not entries and isinstance(pending, dict) and pending.get("public_key"):
-            entries = [pending]
         retained = []
         warnings = []
         for entry in entries:
@@ -460,8 +413,6 @@ class AppBridge:
         path = self._mcp_revocation_path()
         pending = read_json(path, {})
         entries = pending.get("entries", []) if isinstance(pending, dict) else []
-        if not entries and isinstance(pending, dict) and pending.get("public_key"):
-            entries = [pending]
         merged = {
             entry["public_key"]: list(dict.fromkeys(entry.get("servers", [])))
             for entry in entries
@@ -478,13 +429,11 @@ class AppBridge:
         warning = None
         try:
             entry = self._configured_mcp()
-            configured = entry is not None and not entry.get("_harness_upgrade_required")
+            configured = entry is not None
         except (OSError, RuntimeError, ValueError) as exc:
             warning = str(exc)
         pending = read_json(self._mcp_revocation_path(), {}) if self.identity else {}
         entries = pending.get("entries", []) if isinstance(pending, dict) else []
-        if not entries and isinstance(pending, dict) and pending.get("public_key"):
-            entries = [pending]
         pending_count = sum(len(entry.get("servers", [])) for entry in entries if isinstance(entry, dict))
         result = {"enabled": bool(grant), "configured": configured, "pending_revocations": pending_count}
         if warning:
@@ -496,11 +445,6 @@ class AppBridge:
     def _enable_mcp(self):
         self._retry_mcp_revocations()
         configured = self._configured_mcp()
-        if configured and configured.get("_harness_upgrade_required"):
-            # The name, grant and immutable install marker prove this is our
-            # previous bundle.  Replace only that narrowly recognized entry.
-            self._codex_mcp("remove", self._mcp_name())
-            configured = None
         path = self._mcp_grant_path()
         grant = read_json(path)
         created = False
