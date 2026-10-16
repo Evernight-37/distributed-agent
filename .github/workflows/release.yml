@@ -50,7 +50,7 @@ jobs:
           $notes = @'
           完整 Windows x64 便携版。解压后双击 AgentHarness.exe，并保留整个文件夹。
 
-          v7.1.0 精简了源码与教程，移除旧界面、旧启动脚本和实验性设计稿；同时修复后台运行时在较长 Windows 用户数据路径下安装或导入失败的问题。应用数据继续保存在 %LOCALAPPDATA%\AgentHarness\data。
+          这是 Agent Harness 的首个正式发行版。源码与教程已经整理，旧界面、旧启动脚本和实验性设计稿已移除；后台运行时也支持较长的 Windows 用户数据路径。应用数据保存在 %LOCALAPPDATA%\AgentHarness\data。
 
           Windows 可执行文件尚未代码签名，首次启动可能出现 SmartScreen 提示。
           '@
