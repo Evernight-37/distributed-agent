@@ -57,7 +57,7 @@ jobs:
           $name = "AgentHarness-$env:GITHUB_REF_NAME-windows-x64.zip"
           Compress-Archive -LiteralPath release/AgentHarness -DestinationPath $name -CompressionLevel Optimal
 
-      - name: Create GitHub release
+      - name: Publish GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,4 +70,10 @@ jobs:
 
           Windows 可执行文件尚未代码签名，首次启动可能出现 SmartScreen 提示。
           '@
-          gh release create $env:GITHUB_REF_NAME $name --verify-tag --title "Agent Harness $env:GITHUB_REF_NAME" --notes $notes
+          gh release view $env:GITHUB_REF_NAME *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:GITHUB_REF_NAME $name --clobber
+            gh release edit $env:GITHUB_REF_NAME --title "Agent Harness $env:GITHUB_REF_NAME" --notes $notes
+          } else {
+            gh release create $env:GITHUB_REF_NAME $name --verify-tag --title "Agent Harness $env:GITHUB_REF_NAME" --notes $notes
+          }
