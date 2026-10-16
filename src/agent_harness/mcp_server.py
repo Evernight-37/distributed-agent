@@ -14,11 +14,16 @@ from typing import Any, TextIO
 
 def server_version() -> str:
     """Return the release version shipped beside this MCP server."""
-    try:
-        value = Path(__file__).with_name("VERSION").read_text(encoding="utf-8").strip()
-    except OSError:
-        return "unknown"
-    return value or "unknown"
+    source = Path(__file__).resolve()
+    candidates = (source.with_name("VERSION"), source.parents[2] / "VERSION")
+    for candidate in candidates:
+        try:
+            value = candidate.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if value:
+            return value
+    return "unknown"
 
 
 class JsonRpcError(Exception):

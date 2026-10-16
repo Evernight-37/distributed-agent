@@ -1,6 +1,6 @@
 import json,sys,tempfile,time,threading
 from pathlib import Path
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'/'agent_harness'))
 from http.server import ThreadingHTTPServer
 from panel import handler_for
 from app_bridge import AppBridge
@@ -11,7 +11,7 @@ with tempfile.TemporaryDirectory() as td:
  bridge=AppBridge(root/'app')
  class API:
   def invoke(self,action,data=None):return bridge.invoke(action,data)
- window=webview.create_window('Production isolated GUI validation',url=str(Path(__file__).resolve().parents[1]/'web'/'app.html'),js_api=API(),width=1220,height=820)
+ window=webview.create_window('Production isolated GUI validation',url=str(Path(__file__).resolve().parents[1]/'assets'/'web'/'app.html'),js_api=API(),width=1220,height=820)
  bridge.window=window;report={}
  def wait(expression):
   deadline=time.monotonic()+20

@@ -14,7 +14,7 @@ def verify(envelope, expected_account):
     if envelope.get('signed_by')!=expected_account: raise PermissionError('bad signature')
 
 def load(name):
-    spec=importlib.util.spec_from_file_location(name,Path(__file__).resolve().parents[1]/(name+'.py'))
+    spec=importlib.util.spec_from_file_location(name,Path(__file__).resolve().parents[1]/'src'/'agent_harness'/(name+'.py'))
     module=importlib.util.module_from_spec(spec)
     with patch.dict(sys.modules,{'account_identity':types.SimpleNamespace(verify_owner_command=verify)}): spec.loader.exec_module(module)
     return module

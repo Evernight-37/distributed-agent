@@ -13,7 +13,11 @@ from pathlib import Path, PureWindowsPath
 from common import identifier, lock, read_json, write_json
 
 SOURCE = Path(__file__).resolve().parent
-DEFAULT_STATE = Path(os.environ.get("AGENT_HARNESS_STATE", str(SOURCE.parent / "agent-harness-data")))
+SOURCE_LAYOUT = SOURCE.name == 'agent_harness' and SOURCE.parent.name == 'src'
+PROJECT_ROOT = SOURCE.parents[1] if SOURCE_LAYOUT else SOURCE.parent
+ASSET_ROOT = SOURCE if (SOURCE / 'web').is_dir() else PROJECT_ROOT / 'assets'
+DEFAULT_STATE_ROOT = PROJECT_ROOT.parent if SOURCE_LAYOUT else SOURCE.parent
+DEFAULT_STATE = Path(os.environ.get("AGENT_HARNESS_STATE", str(DEFAULT_STATE_ROOT / "agent-harness-data")))
 TERMINAL = {"needs_review", "failed", "cancelled", "timed_out", "interrupted"}
 
 

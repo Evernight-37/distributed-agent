@@ -91,7 +91,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
     def runtime_root(self, folder):
         root = Path(folder)
         for name in ('common.py', 'worker.py', 'warm_worker.py', 'appserver_client.py', 'jobrunner.py'):
-            shutil.copyfile(Path(__file__).parents[1] / name, root / name)
+            shutil.copyfile(Path(__file__).parents[1] / 'src' / 'agent_harness' / name, root / name)
         (root / 'projects' / 'project').mkdir(parents=True)
         write_json(root / 'executor.json', {'warm_idle_seconds': 300})
         return root
@@ -192,7 +192,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             self.launch_record(root, token, generation)
             script = Path(external) / 'warm_worker.py'
             for name in ('common.py', 'worker.py', 'warm_worker.py', 'appserver_client.py', 'jobrunner.py'):
-                shutil.copyfile(Path(__file__).parents[1] / name, Path(external) / name)
+                shutil.copyfile(Path(__file__).parents[1] / 'src' / 'agent_harness' / name, Path(external) / name)
             output = (root / 'projects' / 'project' / 'external.log').open('wb')
             child = subprocess.Popen([sys.executable, '-X', 'utf8', str(script), '--root', str(root),
                 '--project', 'project', '--token', token, '--generation', generation], stdout=output, stderr=output)

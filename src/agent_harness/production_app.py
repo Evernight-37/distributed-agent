@@ -5,7 +5,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from desktop_runtime import assets
+from desktop_runtime import web_assets
 from app_bridge import AppBridge
 
 
@@ -42,7 +42,7 @@ def main():
     bridge=AppBridge(args.data)
     class API:
         def invoke(self,action,data=None): return bridge.invoke(action,data)
-    window=webview.create_window('Agent Harness · 协作工作台',url=str(assets()/'web'/'app.html'),js_api=API(),width=1220,height=820,min_size=(800,600))
+    window=webview.create_window('Agent Harness · 协作工作台',url=str(web_assets()/'app.html'),js_api=API(),width=1220,height=820,min_size=(800,600))
     bridge.window=window
     def closing():
         if bridge.allow_window_close or args.smoke_report: return True

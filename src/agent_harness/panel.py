@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from collaboration_store import Store, digest
 from coordinator import Coordinator
-from controller import DEFAULT_STATE, SOURCE
+from controller import ASSET_ROOT, DEFAULT_STATE
 from broker import PullBackend
 from common import lock,read_json
 
@@ -157,8 +157,8 @@ def handler_for(root, backend=None, public_origin=None):
             try:
                 path = urlsplit(self.path)
                 token, csrf, user = self.session()
-                if path.path == '/': return self.send(200, (SOURCE/'web'/'index.html').read_bytes(), 'text/html; charset=utf-8')
-                if path.path == '/guide': return self.send(200, (SOURCE/'web'/'guide.html').read_bytes(), 'text/html; charset=utf-8')
+                if path.path == '/': return self.send(200, (ASSET_ROOT/'web'/'index.html').read_bytes(), 'text/html; charset=utf-8')
+                if path.path == '/guide': return self.send(200, (ASSET_ROOT/'web'/'guide.html').read_bytes(), 'text/html; charset=utf-8')
                 if path.path == '/api/session': return self.send(200, {'csrf': csrf, 'user': user, 'bootstrap_required': store.bootstrap_required()})
                 if not user: return self.send(401, {'error': '请先登录'})
                 if path.path == '/api/snapshot':

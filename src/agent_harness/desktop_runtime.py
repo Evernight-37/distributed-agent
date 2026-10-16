@@ -41,6 +41,11 @@ def assets():
     return Path(__file__).resolve().parent
 
 
+def web_assets():
+    root = assets()
+    return root / 'web' if (root / 'web').is_dir() else root.parents[1] / 'assets' / 'web'
+
+
 def python_command():
     if getattr(sys, 'frozen', False):
         from service_install import installed_bundle

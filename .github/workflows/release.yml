@@ -25,11 +25,11 @@ jobs:
 
       - name: Verify source
         run: |
-          python -m unittest discover -s tests -q
+          python -m unittest discover -s tests -t . -q
           node tests/test_ui_v3.js
 
       - name: Build portable app
-        run: python build_desktop.py --output-root release
+        run: python scripts/build_desktop.py --output-root release
 
       - name: Verify clean installation
         run: python tests/cleanroom_release.py release/AgentHarness build/cleanroom
@@ -39,8 +39,6 @@ jobs:
         run: |
           $name = "AgentHarness-$env:GITHUB_REF_NAME-windows-x64.zip"
           Compress-Archive -LiteralPath release/AgentHarness -DestinationPath $name -CompressionLevel Optimal
-          $hash = (Get-FileHash -LiteralPath $name -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $name" | Set-Content -LiteralPath "$name.sha256.txt" -Encoding ascii
 
       - name: Create GitHub release
         shell: pwsh
@@ -55,4 +53,4 @@ jobs:
 
           Windows 可执行文件尚未代码签名，首次启动可能出现 SmartScreen 提示。
           '@
-          gh release create $env:GITHUB_REF_NAME $name "$name.sha256.txt" --verify-tag --title "Agent Harness $env:GITHUB_REF_NAME" --notes $notes
+          gh release create $env:GITHUB_REF_NAME $name --verify-tag --title "Agent Harness $env:GITHUB_REF_NAME" --notes $notes

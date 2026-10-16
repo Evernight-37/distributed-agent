@@ -8,7 +8,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+SOURCE = ROOT / 'src' / 'agent_harness'
+sys.path.insert(0, str(SOURCE))
 
 from common import events, identifier, outcome, read_json, write_json  # noqa: E402
 import worker  # noqa: E402
@@ -182,7 +183,7 @@ class WorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in ("common.py", "worker.py"):
-                (root / name).write_bytes((ROOT / name).read_bytes())
+                (root / name).write_bytes((SOURCE / name).read_bytes())
             remote = root / "remote"
             remote.mkdir()
             payload = {"action": "register", "project": self._project("utf8", remote),
@@ -290,12 +291,12 @@ class WorkerTests(unittest.TestCase):
             root = Path(directory)
             payload = {name: base64.b64encode(b"VALUE = 1\n").decode() for name in ("common.py", "worker.py")}
             holder_code = "import sys;sys.path.insert(0,sys.argv[1]);from common import lock\nwith lock(sys.argv[2]):\n print('locked',flush=True)\n sys.stdin.readline()\n"
-            holder = subprocess.Popen([sys.executable, "-u", "-c", holder_code, str(ROOT), str(root / "registry.lock")],
+            holder = subprocess.Popen([sys.executable, "-u", "-c", holder_code, str(SOURCE), str(root / "registry.lock")],
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
                 self.assertEqual(holder.stdout.readline().strip(), "locked")
                 with ThreadPoolExecutor(max_workers=1) as pool:
-                    pending = pool.submit(subprocess.run, [sys.executable, str(ROOT / "installer.py"), str(root)],
+                    pending = pool.submit(subprocess.run, [sys.executable, str(SOURCE / "installer.py"), str(root)],
                                           input=json.dumps(payload), capture_output=True, text=True, timeout=10)
                     import time
                     time.sleep(.25)

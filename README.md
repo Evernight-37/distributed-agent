@@ -32,7 +32,7 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 运行测试：
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
 node tests/test_ui_v3.js
 ```
 
@@ -40,7 +40,7 @@ node tests/test_ui_v3.js
 
 ```powershell
 python -m pip install -r requirements-build.txt
-python build_desktop.py
+python scripts/build_desktop.py
 ```
 
 构建结果位于 `dist/AgentHarness`。构建脚本下载并校验 Python.org 的嵌入式 Python 3.14.7，为后台接收端安装固定版本的 `cryptography`，然后生成完整便携目录。发布前还应运行：
@@ -50,3 +50,15 @@ python tests/cleanroom_release.py dist/AgentHarness build/cleanroom
 ```
 
 运行数据、令牌、密钥、日志、构建缓存和发布包均由 `.gitignore` 排除。Windows 可执行文件当前没有代码签名。
+
+## 源码目录
+
+```text
+assets/web/          WebView 与浏览器界面
+docs/                用户文档与架构说明
+scripts/             构建、打包等维护脚本
+src/agent_harness/   Python 应用与协作运行时源码
+tests/               Python、JavaScript 与发布包测试
+```
+
+各目录的职责和主要模块见 [源码结构说明](docs/ARCHITECTURE.md)。根目录只保留项目说明、版本、依赖和仓库配置。

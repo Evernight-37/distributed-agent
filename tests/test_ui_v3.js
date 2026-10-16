@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
-const html = fs.readFileSync(path.join(__dirname,'../web/index.html'),'utf8');
+const html = fs.readFileSync(path.join(__dirname,'../assets/web/index.html'),'utf8');
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 class Element {
