@@ -1,0 +1,31 @@
+name: Remove mistaken v7 release
+
+on:
+  push:
+    tags:
+      - "cleanup-v7.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remove release if it exists and publish completion marker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release view v7.1.0 *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete v7.1.0 --yes
+            if ($LASTEXITCODE -ne 0) { throw "Failed to delete mistaken v7.1.0 release" }
+          }
+          git tag cleanup-complete-v7.1.0 $env:GITHUB_SHA
+          git push origin cleanup-complete-v7.1.0
+          git push origin :refs/tags/cleanup-v7.1.0
