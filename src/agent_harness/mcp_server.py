@@ -8,22 +8,9 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 from typing import Any, TextIO
 
-
-def server_version() -> str:
-    """Return the release version shipped beside this MCP server."""
-    source = Path(__file__).resolve()
-    candidates = (source.with_name("VERSION"), source.parents[2] / "VERSION")
-    for candidate in candidates:
-        try:
-            value = candidate.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-        if value:
-            return value
-    return "unknown"
+from release_info import version as server_version
 
 
 class JsonRpcError(Exception):
@@ -125,4 +112,3 @@ def run_stdio(backend: Any, stdin: TextIO | None = None, stdout: TextIO | None =
         except Exception as exc:
             sink.write(_error(request_id, -32603, "Internal error", str(exc)) + "\n")
         sink.flush()
-

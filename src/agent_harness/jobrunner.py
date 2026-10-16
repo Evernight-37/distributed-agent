@@ -3,6 +3,7 @@
 Jobs are selected from administrator-approved templates.  The runner never
 accepts an arbitrary command from an RPC caller and does not involve Codex.
 """
+
 import base64
 import ctypes
 import json
@@ -40,6 +41,7 @@ def _stamp(pid):
         except OSError:
             return None
     from ctypes import wintypes
+
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.OpenProcess.restype = wintypes.HANDLE
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -73,7 +75,11 @@ def _validate_templates(project, templates):
         if not isinstance(value, dict) or set(value) != {"argv"}:
             raise ValueError("Template must contain only argv")
         argv = value["argv"]
-        if not isinstance(argv, list) or not 1 <= len(argv) <= 64 or any(not isinstance(x, str) or len(x) > 8192 for x in argv):
+        if (
+            not isinstance(argv, list)
+            or not 1 <= len(argv) <= 64
+            or any(not isinstance(x, str) or len(x) > 8192 for x in argv)
+        ):
             raise ValueError("argv must contain 1-64 bounded strings")
         exe = Path(argv[0])
         if not exe.is_absolute() or not exe.is_file():
@@ -86,15 +92,34 @@ def _launch(root, execution):
     if os.name != "nt":
         out = (execution / "supervisor.log").open("ab")
         try:
-            child = subprocess.Popen([sys.executable, "-X", "utf8", str(Path(__file__).resolve()), "run", str(root), execution.name],
-                                     stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True, close_fds=True)
+            child = subprocess.Popen(
+                [sys.executable, "-X", "utf8", str(Path(__file__).resolve()), "run", str(root), execution.name],
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=out,
+                start_new_session=True,
+                close_fds=True,
+            )
         finally:
             out.close()
         return child.pid
-    command = subprocess.list2cmdline([sys.executable, "-X", "utf8", str(Path(__file__).resolve()), "run", str(root), execution.name])
-    script = "$ErrorActionPreference='Stop';$s=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0};$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='" + command.replace("'", "''") + "';ProcessStartupInformation=$s};$r|ConvertTo-Json -Compress"
+    command = subprocess.list2cmdline(
+        [sys.executable, "-X", "utf8", str(Path(__file__).resolve()), "run", str(root), execution.name]
+    )
+    script = (
+        "$ErrorActionPreference='Stop';$s=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0};$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='"
+        + command.replace("'", "''")
+        + "';ProcessStartupInformation=$s};$r|ConvertTo-Json -Compress"
+    )
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-    result = subprocess.run(["powershell.exe", "-NoProfile", "-EncodedCommand", encoded], capture_output=True, encoding='utf-8',errors='replace',timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-EncodedCommand", encoded],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
     try:
         data = json.loads(result.stdout)
     except ValueError:
@@ -142,22 +167,31 @@ def _run(root, execution_id):
     state = read_json(path / "state.json", {"execution": execution_id})
     proc = None
     try:
-        with (path/'stdout.log').open('ab') as output, (path/'stderr.log').open('ab') as error:
-            proc = subprocess.Popen(request["argv"], cwd=request["cwd"], stdin=subprocess.DEVNULL,
-                                    stdout=output, stderr=error,
-                                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-                                    start_new_session=os.name != "nt")
-        with lock(Path(root)/'registry.lock'):
-            state=read_json(path/'state.json',state)
+        with (path / "stdout.log").open("ab") as output, (path / "stderr.log").open("ab") as error:
+            proc = subprocess.Popen(
+                request["argv"],
+                cwd=request["cwd"],
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=error,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                start_new_session=os.name != "nt",
+            )
+        with lock(Path(root) / "registry.lock"):
+            state = read_json(path / "state.json", state)
             state.update(status="running", pid=proc.pid, stamp=_stamp(proc.pid), started_at=now())
             write_json(path / "state.json", state)
         deadline = time.monotonic() + request["timeout"]
         while proc.poll() is None:
             if (path / "cancel.json").exists():
-                _kill(proc.pid); state["status"] = "cancelled"; break
+                _kill(proc.pid)
+                state["status"] = "cancelled"
+                break
             if time.monotonic() >= deadline:
-                _kill(proc.pid); state["status"] = "timed_out"; break
-            time.sleep(.2)
+                _kill(proc.pid)
+                state["status"] = "timed_out"
+                break
+            time.sleep(0.2)
         code = proc.wait(timeout=30)
         state["exit_code"] = code
         if state.get("status") == "running":
@@ -178,10 +212,12 @@ def _run(root, execution_id):
 
 
 def rpc(root, request):
-    root = Path(root); action = request.get("action")
+    root = Path(root)
+    action = request.get("action")
     if action == "execution_templates":
         project = read_json(_project(root, request["project"]) / "project.json")
-        if not project: raise ValueError("Unknown project")
+        if not project:
+            raise ValueError("Unknown project")
         checked = _validate_templates(project, request["templates"])
         with lock(root / "registry.lock"):
             active = [read_json(p / "state.json", {}) for p in (root / "executions").glob("*/")]
@@ -191,44 +227,68 @@ def rpc(root, request):
         return {"project": project["name"], "templates": checked}
     if action == "execution_start":
         project = read_json(_project(root, request["project"]) / "project.json")
-        if not project: raise ValueError("Unknown project")
+        if not project:
+            raise ValueError("Unknown project")
         execution_id = identifier(request["execution"])
         path = _execution(root, execution_id)
         with lock(root / "registry.lock"):
-            if path.exists(): raise ValueError("Execution already exists")
+            if path.exists():
+                raise ValueError("Execution already exists")
             templates = read_json(_project(root, project["name"]) / "execution_templates.json", {})
             template = templates.get(request.get("template"))
-            if not template: raise ValueError("Unknown execution template")
-            request_data = {"execution": execution_id, "project": project["name"], "argv": template["argv"],
-                            "cwd": str(Path(project["remote_path"]).resolve()), "timeout": project.get("timeout", 1800)}
+            if not template:
+                raise ValueError("Unknown execution template")
+            request_data = {
+                "execution": execution_id,
+                "project": project["name"],
+                "argv": template["argv"],
+                "cwd": str(Path(project["remote_path"]).resolve()),
+                "timeout": project.get("timeout", 1800),
+            }
             path.mkdir(parents=True)
             write_json(path / "request.json", request_data)
-            write_json(path / "state.json", {"execution": execution_id, "project": project["name"], "status": "starting", "created_at": now()})
-            try: pid = _launch(root, path)
+            write_json(
+                path / "state.json",
+                {"execution": execution_id, "project": project["name"], "status": "starting", "created_at": now()},
+            )
+            try:
+                pid = _launch(root, path)
             except Exception as exc:
-                write_json(path / "state.json", {"execution": execution_id, "project": project["name"], "status": "failed", "error": str(exc), "finished_at": now()})
+                write_json(
+                    path / "state.json",
+                    {
+                        "execution": execution_id,
+                        "project": project["name"],
+                        "status": "failed",
+                        "error": str(exc),
+                        "finished_at": now(),
+                    },
+                )
                 raise
             state = read_json(path / "state.json")
-            stamp=_stamp(pid)
-            state['supervisor_pid']=pid
-            state['supervisor_stamp']=stamp
+            stamp = _stamp(pid)
+            state["supervisor_pid"] = pid
+            state["supervisor_stamp"] = stamp
             if stamp is None:
-                state.update(status='failed',error='Supervisor did not survive launch',finished_at=now())
-                write_json(path/'state.json',state)
-                raise RuntimeError(state['error'])
+                state.update(status="failed", error="Supervisor did not survive launch", finished_at=now())
+                write_json(path / "state.json", state)
+                raise RuntimeError(state["error"])
             write_json(path / "state.json", state)
         return {"execution": execution_id, "status": "starting"}
     if action in {"execution_status", "execution_cancel"}:
-        execution_id = identifier(request["execution"]); path = _execution(root, execution_id)
-        with lock(root/'registry.lock'):
+        execution_id = identifier(request["execution"])
+        path = _execution(root, execution_id)
+        with lock(root / "registry.lock"):
             state = read_json(path / "state.json")
-            if not state: raise ValueError("Unknown execution")
+            if not state:
+                raise ValueError("Unknown execution")
             if action == "execution_cancel" and state.get("status") not in TERMINAL:
                 cancel = {"requested_at": now()}
                 write_json(path / "cancel.json", cancel)
                 state["cancel_requested_at"] = cancel["requested_at"]
             state = _reconcile(root, state)
-        state["stdout_tail"] = tail(path / "stdout.log"); state["stderr_tail"] = tail(path / "stderr.log")
+        state["stdout_tail"] = tail(path / "stdout.log")
+        state["stderr_tail"] = tail(path / "stderr.log")
         return state
     raise ValueError("Unknown execution action")
 

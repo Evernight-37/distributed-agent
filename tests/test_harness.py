@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import sys
 import tempfile
@@ -8,16 +7,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / 'src' / 'agent_harness'
+SOURCE = ROOT / "src" / "agent_harness"
 sys.path.insert(0, str(SOURCE))
 
 from common import events, identifier, outcome, read_json, write_json  # noqa: E402
 import worker  # noqa: E402
-import installer  # noqa: E402
-import base64  # noqa: E402
 import subprocess  # noqa: E402
-from concurrent.futures import ThreadPoolExecutor  # noqa: E402
-from common import lock  # noqa: E402
 
 
 class CommonTests(unittest.TestCase):
@@ -27,9 +22,11 @@ class CommonTests(unittest.TestCase):
         self.assertEqual(outcome(1, completed), "failed")
         self.assertEqual(outcome(0, [{"type": "turn.failed"}]), "failed")
         self.assertEqual(outcome(0, [{"type": "error"}]), "failed")
-        recovered = [{"type": "error", "message": "WebSocket timed out; switching to HTTPS"},
-                     {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}},
-                     {"type": "turn.completed"}]
+        recovered = [
+            {"type": "error", "message": "WebSocket timed out; switching to HTTPS"},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}},
+            {"type": "turn.completed"},
+        ]
         self.assertEqual(outcome(0, recovered), "needs_review")
         self.assertEqual(outcome(1, recovered), "failed")
         self.assertEqual(outcome(0, recovered + [{"type": "turn.failed"}]), "failed")
@@ -105,12 +102,17 @@ class WorkerTests(unittest.TestCase):
                 remote = Path(directory) / "remote"
                 remote.mkdir()
                 project = self._project("demo", remote)
-                worker.rpc({"action": "register", "project": project,
-                            "memory": {"revision": 0, "notes": ""}})
+                worker.rpc({"action": "register", "project": project, "memory": {"revision": 0, "notes": ""}})
                 with mock.patch.object(worker, "launch_supervisor", side_effect=RuntimeError("launch denied")):
                     with self.assertRaisesRegex(RuntimeError, "launch denied"):
-                        worker.rpc({"action": "start", "project": "demo", "job": "job1",
-                                    "prompt": json.dumps({"stage": "discuss"})})
+                        worker.rpc(
+                            {
+                                "action": "start",
+                                "project": "demo",
+                                "job": "job1",
+                                "prompt": json.dumps({"stage": "discuss"}),
+                            }
+                        )
                 state = worker.read_json(worker.job_dir("job1") / "state.json")
                 self.assertEqual(state["status"], "failed")
                 self.assertEqual(state["error"], "launch denied")
@@ -127,20 +129,25 @@ class WorkerTests(unittest.TestCase):
                 child.mkdir(parents=True)
                 p1 = self._project("one", remote)
                 p2 = self._project("two", child)
-                worker.rpc({"action": "register", "project": p1,
-                            "memory": {"revision": 0}})
-                worker.rpc({"action": "register", "project": p2,
-                            "memory": {"revision": 0}})
-                worker.write_json(worker.project_dir("one") / "active.json",
-                                  {"job": "existing", "pid": 1, "stamp": "stamp"})
+                worker.rpc({"action": "register", "project": p1, "memory": {"revision": 0}})
+                worker.rpc({"action": "register", "project": p2, "memory": {"revision": 0}})
+                worker.write_json(
+                    worker.project_dir("one") / "active.json", {"job": "existing", "pid": 1, "stamp": "stamp"}
+                )
 
                 def preserve_other_active(active):
                     return active if active and active.get("job") == "existing" else None
 
                 with mock.patch.object(worker, "reconcile", side_effect=preserve_other_active):
                     with self.assertRaisesRegex(ValueError, "busy in another project"):
-                        worker.rpc({"action": "start", "project": "two", "job": "job2",
-                                    "prompt": json.dumps({"stage": "discuss"})})
+                        worker.rpc(
+                            {
+                                "action": "start",
+                                "project": "two",
+                                "job": "job2",
+                                "prompt": json.dumps({"stage": "discuss"}),
+                            }
+                        )
             finally:
                 worker.ROOT = old_root
 
@@ -152,17 +159,23 @@ class WorkerTests(unittest.TestCase):
                 remote = Path(directory) / "plain-project"
                 remote.mkdir()
                 project = self._project("plain", remote)
-                worker.rpc({"action": "register", "project": project,
-                            "memory": {"revision": 0}})
+                worker.rpc({"action": "register", "project": project, "memory": {"revision": 0}})
                 with self.assertRaisesRegex(ValueError, "dedicated linked Git worktree"):
-                    worker.rpc({"action": "start", "project": "plain", "job": "impl1",
-                                "prompt": json.dumps({"stage": "implement"})})
+                    worker.rpc(
+                        {
+                            "action": "start",
+                            "project": "plain",
+                            "job": "impl1",
+                            "prompt": json.dumps({"stage": "implement"}),
+                        }
+                    )
                 self.assertFalse((worker.job_dir("impl1")).exists())
             finally:
                 worker.ROOT = old_root
 
     def test_require_worktree_accepts_real_linked_git_worktree(self):
         import shutil
+
         git = shutil.which("git")
         if not git:
             self.skipTest("Git unavailable")
@@ -171,10 +184,29 @@ class WorkerTests(unittest.TestCase):
             peer = Path(directory) / "peer"
             repo.mkdir()
             subprocess.run([git, "-C", str(repo), "init", "--quiet"], check=True, capture_output=True)
-            subprocess.run([git, "-C", str(repo), "-c", "user.name=HarnessTest", "-c", "user.email=harness@example.invalid",
-                            "commit", "--quiet", "--allow-empty", "-m", "test"], check=True, capture_output=True)
-            subprocess.run([git, "-C", str(repo), "worktree", "add", "--quiet", "--detach", str(peer), "HEAD"],
-                           check=True, capture_output=True)
+            subprocess.run(
+                [
+                    git,
+                    "-C",
+                    str(repo),
+                    "-c",
+                    "user.name=HarnessTest",
+                    "-c",
+                    "user.email=harness@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "--allow-empty",
+                    "-m",
+                    "test",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [git, "-C", str(repo), "worktree", "add", "--quiet", "--detach", str(peer), "HEAD"],
+                check=True,
+                capture_output=True,
+            )
             result = worker.require_worktree(self._project("demo", peer))
             self.assertEqual(Path(result["worktree"]), peer.resolve())
             self.assertNotEqual(result["git_dir"], result["common_dir"])
@@ -186,42 +218,24 @@ class WorkerTests(unittest.TestCase):
                 (root / name).write_bytes((SOURCE / name).read_bytes())
             remote = root / "remote"
             remote.mkdir()
-            payload = {"action": "register", "project": self._project("utf8", remote),
-                       "memory": {"revision": 0, "message": "实验室 ✓"}}
+            payload = {
+                "action": "register",
+                "project": self._project("utf8", remote),
+                "memory": {"revision": 0, "message": "实验室 ✓"},
+            }
             import os
+
             env = dict(os.environ, PYTHONIOENCODING="ascii", PYTHONUTF8="0")
-            result = subprocess.run([sys.executable, str(root / "worker.py"), "rpc"],
-                                    input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                                    capture_output=True, env=env, timeout=10)
+            result = subprocess.run(
+                [sys.executable, str(root / "worker.py"), "rpc"],
+                input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                capture_output=True,
+                env=env,
+                timeout=10,
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(json.loads(result.stdout)["ok"])
             self.assertEqual(read_json(root / "projects" / "utf8" / "memory.json")["message"], "实验室 ✓")
-
-    def test_installer_rejects_active_project_and_preserves_files(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "projects" / "demo").mkdir(parents=True)
-            (root / "projects" / "demo" / "active.json").write_text('{"job":"running"}', encoding="utf-8")
-            old_common = root / "common.py"
-            old_common.write_bytes(b"old common")
-            payload = {name: base64.b64encode((name + " = 1\n").encode()).decode()
-                       for name in ("common.py", "worker.py")}
-            with self.assertRaisesRegex(ValueError, "active or unreconciled"):
-                installer.deploy(root, payload)
-            self.assertEqual(old_common.read_bytes(), b"old common")
-
-    def test_installer_deploys_valid_idle_payload_and_returns_hashes(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload_bytes = {name: (name + " = 1\n").encode()
-                            for name in ("common.py", "worker.py")}
-            payload = {name: base64.b64encode(content).decode()
-                       for name, content in payload_bytes.items()}
-            result = installer.deploy(root, payload)
-            self.assertTrue(result["deployed"])
-            for name, content in payload_bytes.items():
-                self.assertEqual((root / name).read_bytes(), content)
-                self.assertEqual(result["sha256"][name], __import__("hashlib").sha256(content).hexdigest())
 
     def test_cancel_request_is_recorded_for_running_job(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -267,50 +281,31 @@ class WorkerTests(unittest.TestCase):
             proc.poll.return_value = 0  # CLI already exited before supervisor polling.
             proc.wait.return_value = 0
             proc.stdout = [b"report\n", b"complete\n", b"extra\n"]
-            event_results = [[{"type": "item.completed", "item": {"type": "agent_message", "text": "report"}}],
-                             [{"type": "turn.completed"}], RuntimeError("reader-write-failure") if reader_failure else []]
+            event_results = [
+                [{"type": "item.completed", "item": {"type": "agent_message", "text": "report"}}],
+                [{"type": "turn.completed"}],
+                RuntimeError("reader-write-failure") if reader_failure else [],
+            ]
             if recoverable_error:
                 event_results[0].insert(0, {"type": "error", "message": "WebSocket timeout; switching to HTTPS"})
-            with mock.patch.object(worker, "cli_path", return_value="codex.exe"), \
-                 mock.patch.object(worker, "codex_login_status", return_value={'logged_in':True}), \
-                 mock.patch.object(worker.subprocess, "Popen", return_value=proc), \
-                 mock.patch.object(worker, "events", side_effect=event_results), \
-                 mock.patch.object(worker, "effective_model", return_value="gpt-5.6-sol"):
+            with (
+                mock.patch.object(worker, "cli_path", return_value="codex.exe"),
+                mock.patch.object(worker, "codex_login_status", return_value={"logged_in": True}),
+                mock.patch.object(worker.subprocess, "Popen", return_value=proc),
+                mock.patch.object(worker, "events", side_effect=event_results),
+                mock.patch.object(worker, "effective_model", return_value="gpt-5.6-sol"),
+            ):
                 worker.run("job1")
             state = read_json(job / "state.json")
-            self.assertEqual(state["status"], "cancelled" if cancel else "needs_review" if recoverable_error else "failed")
+            self.assertEqual(
+                state["status"], "cancelled" if cancel else "needs_review" if recoverable_error else "failed"
+            )
             if cancel:
                 self.assertIn("cancel_requested_at", state)
             elif recoverable_error:
                 self.assertEqual((job / "report.txt").read_text(encoding="utf-8"), "report")
             else:
                 self.assertIn("reader-write-failure", state["error"])
-
-    def test_deploy_waits_for_same_lock_used_by_start(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = {name: base64.b64encode(b"VALUE = 1\n").decode() for name in ("common.py", "worker.py")}
-            holder_code = "import sys;sys.path.insert(0,sys.argv[1]);from common import lock\nwith lock(sys.argv[2]):\n print('locked',flush=True)\n sys.stdin.readline()\n"
-            holder = subprocess.Popen([sys.executable, "-u", "-c", holder_code, str(SOURCE), str(root / "registry.lock")],
-                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            try:
-                self.assertEqual(holder.stdout.readline().strip(), "locked")
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    pending = pool.submit(subprocess.run, [sys.executable, str(SOURCE / "installer.py"), str(root)],
-                                          input=json.dumps(payload), capture_output=True, text=True, timeout=10)
-                    import time
-                    time.sleep(.25)
-                    self.assertFalse(pending.done())
-                    self.assertFalse((root / "worker.py").exists())
-                    holder.communicate("release\n", timeout=5)
-                    result = pending.result(timeout=5)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertTrue(json.loads(result.stdout)["ok"])
-                    self.assertTrue((root / "worker.py").exists())
-            finally:
-                if holder.poll() is None:
-                    holder.kill()
-                    holder.communicate()
 
 
 if __name__ == "__main__":

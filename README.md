@@ -32,8 +32,13 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 运行测试：
 
 ```powershell
+python -m pip install -r requirements-dev.txt
+npm ci
+ruff check src scripts tests
+ruff format --check src scripts tests
 python -m unittest discover -s tests -t . -v
-node tests/test_ui_v3.js
+npm run format:check
+npm test
 ```
 
 构建 Windows x64 便携包：
@@ -48,6 +53,8 @@ python scripts/build_desktop.py
 ```powershell
 python tests/cleanroom_release.py dist/AgentHarness build/cleanroom
 ```
+
+若要同时运行便携包接收端集成测试，请把 `AGENT_HARNESS_TEST_BUNDLE` 指向已构建的 `AgentHarness` 目录，再运行 `python -m unittest tests.test_desktop.PackagedReceiverTests -v`。
 
 运行数据、令牌、密钥、日志、构建缓存和发布包均由 `.gitignore` 排除。Windows 可执行文件当前没有代码签名。
 

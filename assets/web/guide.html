@@ -1,39 +1,302 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Agent Harness · 新手教程</title>
-<style>
-:root{--ink:#182033;--muted:#667085;--line:#dce3ec;--bg:#f6f8fb;--card:#fff;--blue:#2563eb;--soft:#eff6ff;--warn:#fff7ed}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 system-ui,"Microsoft YaHei",sans-serif}.wrap{max-width:900px;margin:auto;padding:36px 20px 72px}h1{font-size:30px;margin:0 0 8px}h2{font-size:21px;margin:32px 0 12px}h3{font-size:16px;margin:0 0 7px}p{margin:7px 0 11px}.lead,.muted{color:var(--muted)}.lead{font-size:17px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:19px;margin:13px 0}.notice{background:var(--soft);border-color:#bfdbfe}.warn{background:var(--warn);border-color:#fed7aa}.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.step{background:#fff;border:1px solid var(--line);border-radius:12px;padding:15px}.num{display:inline-grid;place-items:center;width:27px;height:27px;border-radius:50%;background:var(--blue);color:#fff;font-weight:700}.path{font-weight:650;color:#1d4ed8}code{font-family:ui-monospace,Consolas,monospace;background:#eef2f7;border-radius:5px;padding:2px 5px}.top{float:right;color:var(--blue);text-decoration:none}ul{padding-left:21px}li{margin:5px 0}@media(max-width:720px){.steps{grid-template-columns:1fr}.top{float:none;display:block;margin-bottom:12px}}@media print{body{background:#fff}.wrap{padding:0}.card,.step{break-inside:avoid}.top{display:none}}
-</style>
-</head>
-<body><main class="wrap">
-<a class="top" href="/">← 返回应用</a>
-<h1>Agent Harness 新手教程</h1>
-<p class="lead">所有日常操作都在 Windows 应用里完成，不需要安装 Python，也不需要输入终端命令。</p>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Agent Harness · 新手教程</title>
+    <style>
+      :root {
+        --ink: #182033;
+        --muted: #667085;
+        --line: #dce3ec;
+        --bg: #f6f8fb;
+        --card: #fff;
+        --blue: #2563eb;
+        --soft: #eff6ff;
+        --warn: #fff7ed;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          15px/1.65 system-ui,
+          "Microsoft YaHei",
+          sans-serif;
+      }
+      .wrap {
+        max-width: 900px;
+        margin: auto;
+        padding: 36px 20px 72px;
+      }
+      h1 {
+        font-size: 30px;
+        margin: 0 0 8px;
+      }
+      h2 {
+        font-size: 21px;
+        margin: 32px 0 12px;
+      }
+      h3 {
+        font-size: 16px;
+        margin: 0 0 7px;
+      }
+      p {
+        margin: 7px 0 11px;
+      }
+      .lead,
+      .muted {
+        color: var(--muted);
+      }
+      .lead {
+        font-size: 17px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 19px;
+        margin: 13px 0;
+      }
+      .notice {
+        background: var(--soft);
+        border-color: #bfdbfe;
+      }
+      .warn {
+        background: var(--warn);
+        border-color: #fed7aa;
+      }
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+      }
+      .step {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 15px;
+      }
+      .num {
+        display: inline-grid;
+        place-items: center;
+        width: 27px;
+        height: 27px;
+        border-radius: 50%;
+        background: var(--blue);
+        color: #fff;
+        font-weight: 700;
+      }
+      .path {
+        font-weight: 650;
+        color: #1d4ed8;
+      }
+      code {
+        font-family: ui-monospace, Consolas, monospace;
+        background: #eef2f7;
+        border-radius: 5px;
+        padding: 2px 5px;
+      }
+      .top {
+        float: right;
+        color: var(--blue);
+        text-decoration: none;
+      }
+      ul {
+        padding-left: 21px;
+      }
+      li {
+        margin: 5px 0;
+      }
+      @media (max-width: 720px) {
+        .steps {
+          grid-template-columns: 1fr;
+        }
+        .top {
+          float: none;
+          display: block;
+          margin-bottom: 12px;
+        }
+      }
+      @media print {
+        body {
+          background: #fff;
+        }
+        .wrap {
+          padding: 0;
+        }
+        .card,
+        .step {
+          break-inside: avoid;
+        }
+        .top {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <a class="top" href="/">← 返回应用</a>
+      <h1>Agent Harness 新手教程</h1>
+      <p class="lead">
+        所有日常操作都在 Windows 应用里完成，不需要安装
+        Python，也不需要输入终端命令。
+      </p>
 
-<section class="card notice"><h3>Harness 账户和 Codex 登录是两件事</h3><p>Harness 账户用于关联自己的电脑、员工和项目；本地密码只解锁这台电脑上的身份。每台执行 Agent 的电脑仍需登录自己的 Codex。请勿在 Harness 中填写 OpenAI、GitHub 或 Tailscale 密码。</p></section>
+      <section class="card notice">
+        <h3>Harness 账户和 Codex 登录是两件事</h3>
+        <p>
+          Harness
+          账户用于关联自己的电脑、员工和项目；本地密码只解锁这台电脑上的身份。每台执行
+          Agent 的电脑仍需登录自己的 Codex。请勿在 Harness 中填写 OpenAI、GitHub
+          或 Tailscale 密码。
+        </p>
+      </section>
 
-<h2>第一次使用</h2>
-<div class="steps">
-<div class="step"><span class="num">1</span><h3>创建账户</h3><p>打开应用，选择“创建账户”。已有账户的新电脑选择“关联我的另一台电脑”。</p></div>
-<div class="step"><span class="num">2</span><h3>添加 Agent</h3><p>在控制台的“我的 Agents”中选择自己名下的机器，创建员工并设置模型与目录。</p></div>
-<div class="step"><span class="num">3</span><h3>进入项目</h3><p>创建项目，或用团队服务地址和项目邀请码加入同事的项目。</p></div>
-<div class="step"><span class="num">4</span><h3>开始协作</h3><p>派遣自己的员工。群主选择管理员 Agent，并在群聊或私聊中发送消息。</p></div>
-</div>
+      <h2>第一次使用</h2>
+      <div class="steps">
+        <div class="step">
+          <span class="num">1</span>
+          <h3>创建账户</h3>
+          <p>
+            打开应用，选择“创建账户”。已有账户的新电脑选择“关联我的另一台电脑”。
+          </p>
+        </div>
+        <div class="step">
+          <span class="num">2</span>
+          <h3>添加 Agent</h3>
+          <p>
+            在控制台的“我的
+            Agents”中选择自己名下的机器，创建员工并设置模型与目录。
+          </p>
+        </div>
+        <div class="step">
+          <span class="num">3</span>
+          <h3>进入项目</h3>
+          <p>创建项目，或用团队服务地址和项目邀请码加入同事的项目。</p>
+        </div>
+        <div class="step">
+          <span class="num">4</span>
+          <h3>开始协作</h3>
+          <p>
+            派遣自己的员工。群主选择管理员 Agent，并在群聊或私聊中发送消息。
+          </p>
+        </div>
+      </div>
 
-<section class="card"><h3>把第二台电脑关联到同一账户</h3><ol><li>在新电脑打开应用，点 <span class="path">关联我的另一台电脑</span>。</li><li>填写已有账户所用协作服务的可达 HTTPS 地址和新机器名称，获取关联码。</li><li>回到已登录电脑，打开 <span class="path">账户 → 身份与关联设备</span>，输入关联码并核对指纹。</li><li>批准后回新电脑完成关联。两台电脑会看到相同的账户、员工和项目。</li></ol><p class="muted"><code>127.0.0.1</code> 只代表当前电脑。跨电脑时应使用应用创建并验证过的团队 HTTPS 地址。</p></section>
+      <section class="card">
+        <h3>把第二台电脑关联到同一账户</h3>
+        <ol>
+          <li>
+            在新电脑打开应用，点 <span class="path">关联我的另一台电脑</span>。
+          </li>
+          <li>
+            填写已有账户所用协作服务的可达 HTTPS 地址和新机器名称，获取关联码。
+          </li>
+          <li>
+            回到已登录电脑，打开
+            <span class="path">账户 → 身份与关联设备</span
+            >，输入关联码并核对指纹。
+          </li>
+          <li>
+            批准后回新电脑完成关联。两台电脑会看到相同的账户、员工和项目。
+          </li>
+        </ol>
+        <p class="muted">
+          <code>127.0.0.1</code>
+          只代表当前电脑。跨电脑时应使用应用创建并验证过的团队 HTTPS 地址。
+        </p>
+      </section>
 
-<section class="card"><h3>添加和配置 Agent</h3><p>打开 <span class="path">控制台 → 我的 Agents → 添加员工</span>，选择自己账户下的机器。员工设置由目标机器确认，包括项目目录、Codex CLI、模型、思考强度、超时和允许的工作阶段。</p><p>目标机器离线时请求会显示等待确认。项目文件、Codex 登录和设备私钥不会复制到其他电脑。</p></section>
+      <section class="card">
+        <h3>添加和配置 Agent</h3>
+        <p>
+          打开
+          <span class="path">控制台 → 我的 Agents → 添加员工</span
+          >，选择自己账户下的机器。员工设置由目标机器确认，包括项目目录、Codex
+          CLI、模型、思考强度、超时和允许的工作阶段。
+        </p>
+        <p>
+          目标机器离线时请求会显示等待确认。项目文件、Codex
+          登录和设备私钥不会复制到其他电脑。
+        </p>
+      </section>
 
-<section class="card"><h3>创建项目或邀请同事</h3><p>新建项目时，只能选择自己名下的机器托管协作服务。进入项目后，群主可以设置管理员 Agent、生成项目邀请码并邀请成员。</p><p>同事先创建自己的 Harness 账户，再在控制台点 <span class="path">凭邀请加入项目</span>，填写团队服务地址和项目邀请码。他无需为每个团队重新创建账户，也不应使用你的设备关联码。</p></section>
+      <section class="card">
+        <h3>创建项目或邀请同事</h3>
+        <p>
+          新建项目时，只能选择自己名下的机器托管协作服务。进入项目后，群主可以设置管理员
+          Agent、生成项目邀请码并邀请成员。
+        </p>
+        <p>
+          同事先创建自己的 Harness 账户，再在控制台点
+          <span class="path">凭邀请加入项目</span
+          >，填写团队服务地址和项目邀请码。他无需为每个团队重新创建账户，也不应使用你的设备关联码。
+        </p>
+      </section>
 
-<section class="card"><h3>创建团队服务地址</h3><ol><li>托管电脑安装并登录 Tailscale，确保同事的设备已经加入同一网络。</li><li>在 Harness 打开 <span class="path">设置 → 协作服务 → 创建团队入口</span>。</li><li>首次使用时按提示在 Tailscale 页面授权 Serve。</li><li>回到应用点击“检测连接”，成功后复制 HTTPS 地址给同事。</li></ol><p>托管电脑、Tailscale 和本机协作服务需要在线。换普通 Wi-Fi 不会改变 Tailscale 地址；停止团队入口不会删除账户、项目或任务。</p></section>
+      <section class="card">
+        <h3>创建团队服务地址</h3>
+        <ol>
+          <li>
+            托管电脑安装并登录 Tailscale，确保同事的设备已经加入同一网络。
+          </li>
+          <li>
+            在 Harness 打开
+            <span class="path">设置 → 协作服务 → 创建团队入口</span>。
+          </li>
+          <li>首次使用时按提示在 Tailscale 页面授权 Serve。</li>
+          <li>回到应用点击“检测连接”，成功后复制 HTTPS 地址给同事。</li>
+        </ol>
+        <p>
+          托管电脑、Tailscale 和本机协作服务需要在线。换普通 Wi-Fi 不会改变
+          Tailscale 地址；停止团队入口不会删除账户、项目或任务。
+        </p>
+      </section>
 
-<section class="card"><h3>聊天和任务怎么工作</h3><ul><li>未点名的群聊消息由管理员 Agent 处理；选择“呼叫 Agent”时只唤醒指定员工。</li><li>人和 Agent 的私聊仅该人可见；Agent 内部对话对项目成员可见并默认折叠。</li><li>Agent 回复期间的新消息排入下一轮，不会打断当前生成。</li><li>Agent 可以读完后不发言；没有新消息或待办时不会继续调用模型。</li><li>任务报告是待复核的证据，不会自动执行报告中的命令。</li></ul></section>
+      <section class="card">
+        <h3>聊天和任务怎么工作</h3>
+        <ul>
+          <li>
+            未点名的群聊消息由管理员 Agent 处理；选择“呼叫
+            Agent”时只唤醒指定员工。
+          </li>
+          <li>
+            人和 Agent 的私聊仅该人可见；Agent
+            内部对话对项目成员可见并默认折叠。
+          </li>
+          <li>Agent 回复期间的新消息排入下一轮，不会打断当前生成。</li>
+          <li>Agent 可以读完后不发言；没有新消息或待办时不会继续调用模型。</li>
+          <li>任务报告是待复核的证据，不会自动执行报告中的命令。</li>
+        </ul>
+      </section>
 
-<section class="card"><h3>在 Codex 客户端中使用协作</h3><p>打开 <span class="path">设置 → 在 Codex 中使用协作</span>，点击“连接到 Codex”。之后可以在普通 Codex 对话中让 Codex列出 Harness 项目、读取消息、发消息或给自己的员工派异步任务。</p><p>该连接使用受限身份，不能邀请成员、控制别人的机器或批准执行命令。</p></section>
+      <section class="card">
+        <h3>在 Codex 客户端中使用协作</h3>
+        <p>
+          打开 <span class="path">设置 → 在 Codex 中使用协作</span>，点击“连接到
+          Codex”。之后可以在普通 Codex 对话中让 Codex列出 Harness
+          项目、读取消息、发消息或给自己的员工派异步任务。
+        </p>
+        <p>该连接使用受限身份，不能邀请成员、控制别人的机器或批准执行命令。</p>
+      </section>
 
-<section class="card warn"><h3>安全与数据</h3><p>账户、接收端、MCP 授权和团队数据库保存在 <code>%LOCALAPPDATA%\AgentHarness\data</code>。不要提交设备令牌、身份文件、Codex 凭据或运行日志。协作服务的运营者能够读取其数据库中的项目内容，成员应信任托管者。</p><p>关闭窗口可以让后台接收继续运行；“完全退出”会停止应用管理的接收端和服务，但已经启动的独立作业会自行完成。</p></section>
-</main></body></html>
+      <section class="card warn">
+        <h3>安全与数据</h3>
+        <p>
+          账户、接收端、MCP 授权和团队数据库保存在
+          <code>%LOCALAPPDATA%\AgentHarness\data</code
+          >。不要提交设备令牌、身份文件、Codex
+          凭据或运行日志。协作服务的运营者能够读取其数据库中的项目内容，成员应信任托管者。
+        </p>
+        <p>
+          关闭窗口可以让后台接收继续运行；“完全退出”会停止应用管理的接收端和服务，但已经启动的独立作业会自行完成。
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

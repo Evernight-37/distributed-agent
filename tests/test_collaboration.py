@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from broker import PullBackend
 from collaboration_store import Store
 from coordinator import Coordinator
 
@@ -34,6 +35,7 @@ class FakeBackend:
 class CollaborationTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -44,26 +46,39 @@ class CollaborationTests(unittest.TestCase):
         token = self.store.invite(self.owner["id"], self.project)["invite"]
         # Invitations are consumed by signup, which also creates project membership.
         self.other = self.store.signup("peer", "peer-password-12", invite=token)
-        node_dir = self.root / "nodes"
-        node_dir.mkdir()
-        (node_dir / "lab.json").write_text(json.dumps({"host": "fake", "platform": "test"}), encoding="utf-8")
-        self.store.bind_node(self.owner["id"], "lab")
+        PullBackend(self.store).create_pair(self.owner["id"], "lab")
         self.backend = FakeBackend()
         self.backend.projects["backend-a"] = {"node": "lab"}
         self.backend.projects["backend-b"] = {"node": "lab"}
 
     def add_agent(self, user, backend_project, name):
-        return self.store.add_agent(user, {
-            "project": self.project, "name": name, "node": "lab",
-            "backend_project": backend_project, "model": "gpt-test",
-            "effort": "low", "timeout": 30,
-        }, self.backend)["id"]
+        return self.store.add_agent(
+            user,
+            {
+                "project": self.project,
+                "name": name,
+                "node": "lab",
+                "backend_project": backend_project,
+                "model": "gpt-test",
+                "effort": "low",
+                "timeout": 30,
+            },
+            self.backend,
+        )["id"]
 
     def test_invitation_and_owner_only_configuration(self):
         agent = self.add_agent(self.owner["id"], "backend-a", "主控")
         with self.assertRaises(PermissionError):
-            self.store.configure_agent(self.other["id"], {"agent": agent, "model": "bad", "effort": "high", "timeout": 1, "enabled": True}, self.backend)
-        self.store.configure_agent(self.owner["id"], {"agent": agent, "model": "gpt-new", "effort": "high", "timeout": 45, "enabled": True}, self.backend)
+            self.store.configure_agent(
+                self.other["id"],
+                {"agent": agent, "model": "bad", "effort": "high", "timeout": 1, "enabled": True},
+                self.backend,
+            )
+        self.store.configure_agent(
+            self.owner["id"],
+            {"agent": agent, "model": "gpt-new", "effort": "high", "timeout": 45, "enabled": True},
+            self.backend,
+        )
         self.assertEqual(self.backend.configured[-1], ("backend-a", "gpt-new", "high", 45))
 
     def test_private_message_is_visible_only_to_human_participant(self):
@@ -78,9 +93,18 @@ class CollaborationTests(unittest.TestCase):
         self.assertEqual(own["messages"][0]["body"], "给一号的秘密")
         self.assertEqual(own["messages"][0]["channel"], "direct")
 
-    def test_one_active_task_and_budget_are_enforced(self):
+    def test_one_active_task_is_enforced(self):
         agent = self.add_agent(self.owner["id"], "backend-a", "执行者")
-        data = {"project": self.project, "agent": agent, "title": "检查", "instructions": "检查文件", "stage": "discuss", "allowed_files": "只读", "acceptance": "有结论", "validation": "复核"}
+        data = {
+            "project": self.project,
+            "agent": agent,
+            "title": "检查",
+            "instructions": "检查文件",
+            "stage": "discuss",
+            "allowed_files": "只读",
+            "acceptance": "有结论",
+            "validation": "复核",
+        }
         self.store.task(self.owner["id"], data)
         # The database uniqueness guard is the final race-safe enforcement;
         # current API surfaces its IntegrityError rather than normalizing it.
@@ -90,7 +114,19 @@ class CollaborationTests(unittest.TestCase):
     def test_coordinator_dispatches_short_turn_and_processes_reply(self):
         agent = self.add_agent(self.owner["id"], "backend-a", "执行者")
         self.store.set_admin(self.owner["id"], self.project, agent)
-        task = self.store.task(self.owner["id"], {"project": self.project, "agent": agent, "title": "讨论", "instructions": "给出结论", "stage": "discuss", "allowed_files": "只读", "acceptance": "回复", "validation": "检查"})["id"]
+        task = self.store.task(
+            self.owner["id"],
+            {
+                "project": self.project,
+                "agent": agent,
+                "title": "讨论",
+                "instructions": "给出结论",
+                "stage": "discuss",
+                "allowed_files": "只读",
+                "acceptance": "回复",
+                "validation": "检查",
+            },
+        )["id"]
         coordinator = Coordinator(self.store, self.backend)
         coordinator.dispatch()
         self.assertEqual(len(self.backend.submissions), 1)
@@ -107,10 +143,22 @@ class CollaborationTests(unittest.TestCase):
     def test_checkpoint_is_not_posted_before_actual_reply(self):
         agent = self.add_agent(self.owner["id"], "backend-a", "执行者")
         self.store.set_admin(self.owner["id"], self.project, agent)
-        self.store.task(self.owner["id"], {"project": self.project, "agent": agent, "title": "讨论",
-            "instructions": "回复", "stage": "discuss", "allowed_files": "只读", "acceptance": "回复", "validation": "检查"})
-        self.backend.report = json.dumps({"reply": "[CHECKPOINT] 正在整理上下文",
-                                          "messages": [{"recipient": None, "body": "这是最终回复"}]})
+        self.store.task(
+            self.owner["id"],
+            {
+                "project": self.project,
+                "agent": agent,
+                "title": "讨论",
+                "instructions": "回复",
+                "stage": "discuss",
+                "allowed_files": "只读",
+                "acceptance": "回复",
+                "validation": "检查",
+            },
+        )
+        self.backend.report = json.dumps(
+            {"reply": "[CHECKPOINT] 正在整理上下文", "messages": [{"recipient": None, "body": "这是最终回复"}]}
+        )
         coordinator = Coordinator(self.store, self.backend)
         coordinator.dispatch()
         coordinator.collect()

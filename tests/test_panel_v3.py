@@ -79,20 +79,28 @@ class PanelTests(unittest.TestCase):
 
     def test_verified_tailscale_host_and_loopback_are_both_allowed(self):
         # The production hostname must have exactly the Tailscale ts.net shape.
-        public='https://host.tailnet.ts.net'
-        (Path(self.tmp.name)/'team-service.json').write_text(json.dumps({
-            'url':public,'proxy':'http://127.0.0.1:8765','mode':'tailscale-serve','tailnet_only':True
-        }),encoding='utf-8')
-        self.server.shutdown();self.server.server_close();self.thread.join(timeout=2)
-        handler=handler_for(Path(self.tmp.name))
-        self.server=ThreadingHTTPServer(('127.0.0.1',0),handler)
-        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
-        self.host,self.port=self.server.server_address
-        for host,expected in ((f'127.0.0.1:{self.port}',200),('host.tailnet.ts.net',200),('evil.example',403)):
-            conn=http.client.HTTPConnection(self.host,self.port,timeout=5)
-            conn.request('GET','/api/session',headers={'Host':host})
-            response=conn.getresponse();response.read();conn.close()
-            self.assertEqual(response.status,expected)
+        public = "https://host.tailnet.ts.net"
+        (Path(self.tmp.name) / "team-service.json").write_text(
+            json.dumps(
+                {"url": public, "proxy": "http://127.0.0.1:8765", "mode": "tailscale-serve", "tailnet_only": True}
+            ),
+            encoding="utf-8",
+        )
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        handler = handler_for(Path(self.tmp.name))
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.host, self.port = self.server.server_address
+        for host, expected in ((f"127.0.0.1:{self.port}", 200), ("host.tailnet.ts.net", 200), ("evil.example", 403)):
+            conn = http.client.HTTPConnection(self.host, self.port, timeout=5)
+            conn.request("GET", "/api/session", headers={"Host": host})
+            response = conn.getresponse()
+            response.read()
+            conn.close()
+            self.assertEqual(response.status, expected)
 
 
 if __name__ == "__main__":

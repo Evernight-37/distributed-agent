@@ -1,0 +1,16 @@
+{
+  "name": "agent-harness",
+  "private": true,
+  "description": "Developer tooling for the Agent Harness web interface",
+  "scripts": {
+    "format:check": "prettier --check \"assets/web/**/*.html\" \"tests/*.js\"",
+    "test": "node tests/test_web_syntax.js && node tests/test_ui_v3.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Evernight-37/distributed-agent.git"
+  },
+  "devDependencies": {
+    "prettier": "3.9.10"
+  }
+}

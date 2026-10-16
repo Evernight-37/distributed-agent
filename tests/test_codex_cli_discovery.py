@@ -20,8 +20,7 @@ class CodexCliDiscoveryTests(unittest.TestCase):
             env = {"APPDATA": str(root / "roaming"), "LOCALAPPDATA": str(root / "local"), "PATH": ""}
             with patch.dict(os.environ, env), patch("shutil.which", return_value=None):
                 result = cli_status(root / "receiver")
-            self.assertEqual(result, {"found": True, "configured": False,
-                                      "path": str(shim), "version": "0.300.1"})
+            self.assertEqual(result, {"found": True, "configured": False, "path": str(shim), "version": "0.300.1"})
 
     def test_invalid_explicit_path_has_actionable_status(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -34,18 +33,18 @@ class CodexCliDiscoveryTests(unittest.TestCase):
     def test_app_caches_detected_cli_until_explicit_redetect(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            executable = root / 'codex.exe'
-            executable.write_bytes(b'')
+            executable = root / "codex.exe"
+            executable.write_bytes(b"")
             bridge = AppBridge(root)
-            bridge.profile = {'node': 'device-local', 'server': 'http://127.0.0.1:8765'}
-            bridge.identity = {'account_id': 'local'}
-            detected = {'found': True, 'configured': False, 'path': str(executable), 'version': '0.300.1'}
-            with patch('worker.cli_status', return_value=detected) as probe:
-                self.assertTrue(bridge.invoke('codex-cli-status')['result']['found'])
-                self.assertTrue(bridge.invoke('codex-cli-status')['result']['found'])
+            bridge.profile = {"node": "device-local", "server": "http://127.0.0.1:8765"}
+            bridge.identity = {"account_id": "local"}
+            detected = {"found": True, "configured": False, "path": str(executable), "version": "0.300.1"}
+            with patch("worker.cli_status", return_value=detected) as probe:
+                self.assertTrue(bridge.invoke("codex-cli-status")["result"]["found"])
+                self.assertTrue(bridge.invoke("codex-cli-status")["result"]["found"])
                 self.assertEqual(probe.call_count, 1)
-                self.assertEqual(read_json(root / 'codex-cli.json')['path'], str(executable))
-                self.assertTrue(bridge.invoke('codex-cli-redetect')['result']['found'])
+                self.assertEqual(read_json(root / "codex-cli.json")["path"], str(executable))
+                self.assertTrue(bridge.invoke("codex-cli-redetect")["result"]["found"])
                 self.assertEqual(probe.call_count, 2)
 
     @unittest.skipUnless(os.name == "nt", "Windows npm shims are .cmd files")

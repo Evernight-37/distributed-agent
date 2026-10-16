@@ -1,11 +1,11 @@
 """Shared, dependency-free persistence and validation helpers."""
+
 import contextlib
 import json
 import os
 import re
 import tempfile
 import time
-import uuid
 from pathlib import Path
 
 
@@ -43,7 +43,7 @@ def write_json(path, value):
             except PermissionError:
                 if attempt == 19:
                     raise
-                time.sleep(.05)
+                time.sleep(0.05)
     finally:
         if fd is not None:
             os.close(fd)
@@ -73,8 +73,7 @@ def apply_local_proxy(env, setting):
         result.pop(key.lower(), None)
     if setting["enabled"]:
         address = f"http://127.0.0.1:{setting['port']}"
-        result.update(HTTP_PROXY=address, HTTPS_PROXY=address,
-                      NO_PROXY="localhost,127.0.0.1,::1")
+        result.update(HTTP_PROXY=address, HTTPS_PROXY=address, NO_PROXY="localhost,127.0.0.1,::1")
     return result
 
 
@@ -91,6 +90,7 @@ def lock(path):
         stream.seek(0)
         if os.name == "nt":
             import msvcrt
+
             # LK_NBLCK avoids the implicit ten-second timeout of LK_LOCK.
             deadline = time.monotonic() + 30
             while True:
@@ -100,9 +100,10 @@ def lock(path):
                 except OSError:
                     if time.monotonic() >= deadline:
                         raise TimeoutError("State lock busy")
-                    time.sleep(.05)
+                    time.sleep(0.05)
         else:
             import fcntl
+
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
         try:
             yield

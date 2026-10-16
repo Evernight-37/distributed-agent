@@ -12,6 +12,8 @@ import subprocess
 import threading
 import time
 
+from release_info import version as application_version
+
 
 class PublicReplyDecoder:
     """Extract a growing first ``reply`` string from structured JSON deltas.
@@ -32,7 +34,7 @@ class PublicReplyDecoder:
         match = self._prefix.match(self.raw)
         if not match:
             return ""
-        source = self.raw[match.end():]
+        source = self.raw[match.end() :]
         index = 0
         safe_end = 0
         while index < len(source):
@@ -44,7 +46,7 @@ class PublicReplyDecoder:
                     break
                 escaped = source[index + 1]
                 if escaped == "u":
-                    if index + 6 > len(source) or not re.fullmatch(r"[0-9a-fA-F]{4}", source[index + 2:index + 6]):
+                    if index + 6 > len(source) or not re.fullmatch(r"[0-9a-fA-F]{4}", source[index + 2 : index + 6]):
                         break
                     index += 6
                 elif escaped in '"\\/bfnrt':
@@ -59,7 +61,7 @@ class PublicReplyDecoder:
         try:
             value = json.loads('"' + source[:safe_end] + '"')
             # Defer a split Unicode surrogate pair until its second half arrives.
-            return value.encode('utf-16', 'surrogatepass').decode('utf-16', 'ignore')[:16000]
+            return value.encode("utf-16", "surrogatepass").decode("utf-16", "ignore")[:16000]
         except (ValueError, UnicodeError):
             return ""
 
@@ -68,17 +70,32 @@ class AppServer:
     """One private stdio app-server process owned by a local worker manager."""
 
     def __init__(self, command, cwd, env, stderr):
-        self.process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE, stderr=stderr,
-                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        self.process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
         self.inbox = queue.Queue()
         self.pending = []
         self.next_id = 1
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
-        self.call('initialize', {'clientInfo': {'name': 'distributed_agent_harness',
-                                               'title': 'Distributed Agent Harness', 'version': '0.1.0'}}, 20)
-        self.send({'method': 'initialized', 'params': {}})
+        self.call(
+            "initialize",
+            {
+                "clientInfo": {
+                    "name": "distributed_agent_harness",
+                    "title": "Distributed Agent Harness",
+                    "version": application_version(),
+                }
+            },
+            20,
+        )
+        self.send({"method": "initialized", "params": {}})
 
     def _read(self):
         for line in self.process.stdout:
@@ -90,8 +107,8 @@ class AppServer:
 
     def send(self, message):
         if self.process.poll() is not None:
-            raise RuntimeError('Codex app-server exited')
-        self.process.stdin.write((json.dumps(message, ensure_ascii=False) + '\n').encode('utf-8'))
+            raise RuntimeError("Codex app-server exited")
+        self.process.stdin.write((json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8"))
         self.process.stdin.flush()
 
     def event(self, timeout):
@@ -100,30 +117,32 @@ class AppServer:
         try:
             item = self.inbox.get(timeout=timeout)
         except queue.Empty:
-            raise TimeoutError('Codex app-server did not respond') from None
+            raise TimeoutError("Codex app-server did not respond") from None
         if item is None:
-            raise RuntimeError('Codex app-server disconnected')
+            raise RuntimeError("Codex app-server disconnected")
         return item
 
     def call(self, method, params, timeout=30):
         request_id = self.next_id
         self.next_id += 1
-        self.send({'id': request_id, 'method': method, 'params': params})
+        self.send({"id": request_id, "method": method, "params": params})
         deadline = time.monotonic() + timeout
         deferred = []
         try:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError('Codex app-server request timed out: ' + method)
+                    raise TimeoutError("Codex app-server request timed out: " + method)
                 try:
                     item = self.event(min(remaining, 1))
                 except TimeoutError:
                     continue
-                if item.get('id') == request_id:
-                    if 'error' in item:
-                        raise RuntimeError('Codex app-server rejected ' + method + ': ' + str(item['error'].get('message', 'error')))
-                    return item.get('result', {})
+                if item.get("id") == request_id:
+                    if "error" in item:
+                        raise RuntimeError(
+                            "Codex app-server rejected " + method + ": " + str(item["error"].get("message", "error"))
+                        )
+                    return item.get("result", {})
                 deferred.append(item)
         finally:
             self.pending = deferred + self.pending

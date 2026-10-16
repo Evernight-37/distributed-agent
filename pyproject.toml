@@ -1,0 +1,9 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = ["build", "dist", "release"]
+
+[tool.ruff.lint]
+# Keep the initial gate focused on defects. Formatting can be adopted later
+# without obscuring functional changes in the first release.
+select = ["E9", "F"]

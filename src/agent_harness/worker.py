@@ -1,4 +1,5 @@
-"""Detached Windows Codex worker. Only exposes a small JSON-over-SSH RPC surface."""
+"""Detached Codex worker with a small local JSON-RPC surface."""
+
 import ctypes
 import json
 import os
@@ -42,13 +43,14 @@ def process_stamp(pid):
     if os.name != "nt":
         try:
             os.kill(pid, 0)
-            proc = Path('/proc') / str(pid) / 'stat'
+            proc = Path("/proc") / str(pid) / "stat"
             if proc.is_file():
-                return proc.read_text().rsplit(')', 1)[1].split()[19]
-            return subprocess.check_output(['ps', '-p', str(pid), '-o', 'lstart='], text=True).strip() or None
+                return proc.read_text().rsplit(")", 1)[1].split()[19]
+            return subprocess.check_output(["ps", "-p", str(pid), "-o", "lstart="], text=True).strip() or None
         except OSError:
             return None
     from ctypes import wintypes
+
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.OpenProcess.restype = wintypes.HANDLE
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -73,10 +75,17 @@ def process_stamp(pid):
 def codex_version(exe):
     """Probe a candidate without making a model request."""
     import re
+
     try:
-        result = subprocess.run([str(exe), "--version"], capture_output=True, text=True,
-                                encoding="utf-8", errors="replace",
-                                timeout=8, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        result = subprocess.run(
+            [str(exe), "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode:
@@ -98,62 +107,78 @@ def executor_environment(root=None):
     """Build the exact environment used by Codex and its login preflight."""
     root = ROOT if root is None else Path(root)
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
-    executor=read_json(Path(root)/'executor.json',{})
-    network=executor.get('network_env',{})
-    if not isinstance(network,dict) or set(network)-{'HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','WS_PROXY','WSS_PROXY'}:
-        raise ValueError('Unsupported worker network environment')
-    for key,value in network.items():
-        if not isinstance(value,str) or '\n' in value or '\r' in value: raise ValueError('Invalid network environment')
-        env[key]=value
-    if 'proxy' in executor:
-        env=apply_local_proxy(env,executor['proxy'])
+    executor = read_json(Path(root) / "executor.json", {})
+    network = executor.get("network_env", {})
+    if not isinstance(network, dict) or set(network) - {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "WS_PROXY",
+        "WSS_PROXY",
+    }:
+        raise ValueError("Unsupported worker network environment")
+    for key, value in network.items():
+        if not isinstance(value, str) or "\n" in value or "\r" in value:
+            raise ValueError("Invalid network environment")
+        env[key] = value
+    if "proxy" in executor:
+        env = apply_local_proxy(env, executor["proxy"])
     return env
 
 
-def codex_login_status(exe,root=None):
+def codex_login_status(exe, root=None):
     """Check the selected CLI login without reading credentials or making a model call."""
     try:
         root = ROOT if root is None else Path(root)
-        result=subprocess.run([str(exe),'login','status'],capture_output=True,text=True,encoding='utf-8',errors='replace',
-                              env=executor_environment(root),timeout=12,
-                              creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+        result = subprocess.run(
+            [str(exe), "login", "status"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=executor_environment(root),
+            timeout=12,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
     except subprocess.TimeoutExpired:
-        return {'logged_in':False,'login_error':'Codex 登录状态检查超时；请检查本机代理'}
+        return {"logged_in": False, "login_error": "Codex 登录状态检查超时；请检查本机代理"}
     except OSError:
-        return {'logged_in':False,'login_error':'无法检查 Codex 登录状态'}
-    output=(result.stdout+'\n'+result.stderr).casefold()
-    if result.returncode==0 and 'not logged in' not in output:
-        return {'logged_in':True}
-    return {'logged_in':False,'login_error':'Codex CLI 尚未登录；请使用当前 Windows 用户完成登录'}
+        return {"logged_in": False, "login_error": "无法检查 Codex 登录状态"}
+    output = (result.stdout + "\n" + result.stderr).casefold()
+    if result.returncode == 0 and "not logged in" not in output:
+        return {"logged_in": True}
+    return {"logged_in": False, "login_error": "Codex CLI 尚未登录；请使用当前 Windows 用户完成登录"}
 
 
 def cli_status(root=None):
     """Find a working CLI in the worker account, including npm/PATH installs."""
     import shutil
+
     root = ROOT if root is None else Path(root)
     explicit = read_json(root / "executor.json", {}).get("cli_path")
     if explicit:
         if not isinstance(explicit, str) or not Path(explicit).is_absolute() or not Path(explicit).is_file():
-            return {'found': False, 'configured': True, 'error': '设置的 Codex 路径已失效，请重新选择程序'}
+            return {"found": False, "configured": True, "error": "设置的 Codex 路径已失效，请重新选择程序"}
         version = codex_version(explicit)
         if version is None:
-            return {'found': False, 'configured': True, 'error': '所选程序无法运行 Codex CLI，请重新选择'}
-        return {'found': True, 'configured': True, 'path': explicit, 'version': '.'.join(map(str, version))}
+            return {"found": False, "configured": True, "error": "所选程序无法运行 Codex CLI，请重新选择"}
+        return {"found": True, "configured": True, "path": explicit, "version": ".".join(map(str, version))}
     paths = []
-    if os.name == 'nt':
-        local = os.environ.get('LOCALAPPDATA')
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA")
         if local:
-            paths.extend((Path(local) / 'OpenAI' / 'Codex' / 'bin').glob('*/codex.exe'))
-        roaming = os.environ.get('APPDATA')
+            paths.extend((Path(local) / "OpenAI" / "Codex" / "bin").glob("*/codex.exe"))
+        roaming = os.environ.get("APPDATA")
         if roaming:
-            paths.extend(Path(roaming) / 'npm' / name for name in ('codex.cmd', 'codex.exe'))
-    for name in ('codex', 'codex.exe', 'codex.cmd'):
+            paths.extend(Path(roaming) / "npm" / name for name in ("codex.cmd", "codex.exe"))
+    for name in ("codex", "codex.exe", "codex.cmd"):
         found = shutil.which(name)
         if found:
             paths.append(Path(found))
     seen, valid = set(), []
     for candidate in paths:
-        key = str(candidate).casefold() if os.name == 'nt' else str(candidate)
+        key = str(candidate).casefold() if os.name == "nt" else str(candidate)
         if key in seen or not candidate.is_file():
             continue
         seen.add(key)
@@ -161,38 +186,53 @@ def cli_status(root=None):
         if version is not None:
             valid.append((version, str(candidate)))
     if not valid:
-        return {'found': False, 'configured': False, 'error': '未找到可运行的 Codex CLI；请在本机安装 Codex，或在设置中选择程序'}
+        return {
+            "found": False,
+            "configured": False,
+            "error": "未找到可运行的 Codex CLI；请在本机安装 Codex，或在设置中选择程序",
+        }
     version, path = max(valid)
-    return {'found': True, 'configured': False, 'path': path, 'version': '.'.join(map(str, version))}
+    return {"found": True, "configured": False, "path": path, "version": ".".join(map(str, version))}
 
 
 def cli_path(root=None):
     result = cli_status(root)
-    if not result['found']:
-        raise RuntimeError(result['error'])
-    return result['path']
+    if not result["found"]:
+        raise RuntimeError(result["error"])
+    return result["path"]
 
 
 def launch_supervisor(job):
-    """Launch a legacy one-shot worker outside an OpenSSH kill-on-close job."""
-    argv = [sys.executable, '-X', 'utf8', str(ROOT / 'worker.py'), 'run', job]
-    output_path = job_dir(job) / 'supervisor.log'
+    """Launch a standalone one-shot worker independently of its caller."""
+    argv = [sys.executable, "-X", "utf8", str(ROOT / "worker.py"), "run", job]
+    output_path = job_dir(job) / "supervisor.log"
     if os.name != "nt":
         with output_path.open("ab") as output:
-            child = subprocess.Popen(argv,
-                                     stdin=subprocess.DEVNULL, stdout=output, stderr=output,
-                                     start_new_session=True, close_fds=True)
+            child = subprocess.Popen(
+                argv, stdin=subprocess.DEVNULL, stdout=output, stderr=output, start_new_session=True, close_fds=True
+            )
         return child.pid
     import base64
+
     command = subprocess.list2cmdline(argv)
     quoted = "'" + command.replace("'", "''") + "'"
     script = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; "
     script += "$startup=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}; "
-    script += "$result=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=" + quoted + ";ProcessStartupInformation=$startup}; "
+    script += (
+        "$result=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine="
+        + quoted
+        + ";ProcessStartupInformation=$startup}; "
+    )
     script += "$result | Select-Object ReturnValue,ProcessId | ConvertTo-Json -Compress"
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-    result = subprocess.run(["powershell.exe", "-NoProfile", "-EncodedCommand", encoded], capture_output=True,
-                            encoding="utf-8", errors="replace", timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-EncodedCommand", encoded],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
     try:
         response = json.loads(result.stdout)
     except ValueError:
@@ -204,6 +244,7 @@ def launch_supervisor(job):
 
 class ManagedRuntime:
     """Own warm worker handles inside the long-lived desktop receiver."""
+
     def __init__(self, root):
         self.root = set_root(root)
         self._children = {}
@@ -214,22 +255,32 @@ class ManagedRuntime:
 
     def launch(self, project, token, generation):
         directory = project_dir(project)
-        output_path = directory / 'warm-supervisor.log'
+        output_path = directory / "warm-supervisor.log"
         # Code is immutable for the lifetime of this receiver. State lives in
         # self.root and is passed explicitly; never execute a file that an app
         # upgrade may overwrite underneath an active process.
-        argv = [sys.executable, '-X', 'utf8', str(Path(__file__).resolve().parent / 'warm_worker.py'),
-                '--root', str(self.root), '--project', project,
-                '--token', token, '--generation', generation]
+        argv = [
+            sys.executable,
+            "-X",
+            "utf8",
+            str(Path(__file__).resolve().parent / "warm_worker.py"),
+            "--root",
+            str(self.root),
+            "--project",
+            project,
+            "--token",
+            token,
+            "--generation",
+            generation,
+        ]
         flags = 0
-        kwargs = {'cwd': self.root, 'stdin': subprocess.DEVNULL, 'close_fds': True}
-        if os.name == 'nt':
-            flags = (subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS |
-                     subprocess.CREATE_NEW_PROCESS_GROUP)
-            kwargs['creationflags'] = flags
+        kwargs = {"cwd": self.root, "stdin": subprocess.DEVNULL, "close_fds": True}
+        if os.name == "nt":
+            flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            kwargs["creationflags"] = flags
         else:
-            kwargs['start_new_session'] = True
-        output = output_path.open('ab')
+            kwargs["start_new_session"] = True
+        output = output_path.open("ab")
         try:
             child = subprocess.Popen(argv, stdout=output, stderr=output, **kwargs)
         except Exception:
@@ -237,8 +288,12 @@ class ManagedRuntime:
             raise
         with self._guard:
             self._children[generation] = child
-        thread = threading.Thread(target=self._watch, args=(project, generation, child, output),
-                                  name='managed-worker-' + generation[:8], daemon=True)
+        thread = threading.Thread(
+            target=self._watch,
+            args=(project, generation, child, output),
+            name="managed-worker-" + generation[:8],
+            daemon=True,
+        )
         thread.start()
         return child
 
@@ -246,28 +301,31 @@ class ManagedRuntime:
         code = child.wait()
         output.close()
         directory = project_dir(project)
-        startup = read_json(directory / 'startup-error.json', {}) or {}
-        self_exit = read_json(directory / 'worker-self-exit.json', {}) or {}
-        evidence = {'generation': generation, 'pid': child.pid, 'exit_code': code,
-                    'finished_at': now()}
-        if self_exit.get('generation') == generation and self_exit.get('error'):
-            evidence['error'] = self_exit.get('error')
-        elif startup.get('generation') == generation:
-            evidence['error'] = startup.get('error')
-        with lock(ROOT / 'registry.lock'):
-            write_json(directory / 'worker-exit.json', evidence)
-            active = read_json(directory / 'active.json')
-            if active and active.get('generation') == generation:
-                path = job_dir(active['job'])
-                state = read_json(path / 'state.json', {})
-                if state.get('status') not in TERMINAL:
-                    state.update(status='failed', finished_at=now(), exit_code=code,
-                                 error=evidence.get('error') or 'Managed worker exited before completing its active turn')
-                    write_json(path / 'state.json', state)
-                write_json(directory / 'active.json', None)
-            warm = read_json(directory / 'warm.json')
-            if warm and warm.get('generation') == generation:
-                write_json(directory / 'warm.json', None)
+        startup = read_json(directory / "startup-error.json", {}) or {}
+        self_exit = read_json(directory / "worker-self-exit.json", {}) or {}
+        evidence = {"generation": generation, "pid": child.pid, "exit_code": code, "finished_at": now()}
+        if self_exit.get("generation") == generation and self_exit.get("error"):
+            evidence["error"] = self_exit.get("error")
+        elif startup.get("generation") == generation:
+            evidence["error"] = startup.get("error")
+        with lock(ROOT / "registry.lock"):
+            write_json(directory / "worker-exit.json", evidence)
+            active = read_json(directory / "active.json")
+            if active and active.get("generation") == generation:
+                path = job_dir(active["job"])
+                state = read_json(path / "state.json", {})
+                if state.get("status") not in TERMINAL:
+                    state.update(
+                        status="failed",
+                        finished_at=now(),
+                        exit_code=code,
+                        error=evidence.get("error") or "Managed worker exited before completing its active turn",
+                    )
+                    write_json(path / "state.json", state)
+                write_json(directory / "active.json", None)
+            warm = read_json(directory / "warm.json")
+            if warm and warm.get("generation") == generation:
+                write_json(directory / "warm.json", None)
         with self._guard:
             self._children.pop(generation, None)
 
@@ -282,14 +340,14 @@ class ManagedRuntime:
     def retire_idle_workers(self):
         """Revoke idle warm workers owned by this receiver before it exits."""
         retired = []
-        with lock(ROOT / 'registry.lock'):
-            for directory in (ROOT / 'projects').glob('*'):
-                if not directory.is_dir() or read_json(directory / 'active.json'):
+        with lock(ROOT / "registry.lock"):
+            for directory in (ROOT / "projects").glob("*"):
+                if not directory.is_dir() or read_json(directory / "active.json"):
                     continue
-                warm = read_json(directory / 'warm.json') or {}
-                generation, pid = warm.get('generation'), warm.get('pid')
+                warm = read_json(directory / "warm.json") or {}
+                generation, pid = warm.get("generation"), warm.get("pid")
                 if generation and isinstance(pid, int) and self.owns(generation, pid):
-                    write_json(directory / 'warm.json', None)
+                    write_json(directory / "warm.json", None)
                     retired.append(generation)
         # Revocation is observed by the worker loop within 200 ms.  Do not
         # terminate a process by PID here; identity can be recycled and active
@@ -297,11 +355,14 @@ class ManagedRuntime:
         deadline = time.monotonic() + 3
         for generation in retired:
             child = self.child(generation)
-            if not child: continue
+            if not child:
+                continue
             remaining = deadline - time.monotonic()
             if remaining > 0:
-                try: child.wait(timeout=remaining)
-                except subprocess.TimeoutExpired: pass
+                try:
+                    child.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    pass
         return len(retired)
 
 
@@ -320,13 +381,20 @@ def reconcile(active):
     # The worker's own exception is more specific than the guardian's generic
     # exit observation, and both records are generation scoped.
     if generation and self_exit.get("generation") == generation:
-        state.update(status="failed", finished_at=now(),
-                     error=self_exit.get("error") or "Managed worker exited before completing its active turn")
+        state.update(
+            status="failed",
+            finished_at=now(),
+            error=self_exit.get("error") or "Managed worker exited before completing its active turn",
+        )
         write_json(path / "state.json", state)
         return None
     if generation and evidence.get("generation") == generation:
-        state.update(status="failed", finished_at=now(), exit_code=evidence.get("exit_code"),
-                     error=evidence.get("error") or "Managed worker exited before completing its active turn")
+        state.update(
+            status="failed",
+            finished_at=now(),
+            exit_code=evidence.get("exit_code"),
+            error=evidence.get("error") or "Managed worker exited before completing its active turn",
+        )
         write_json(path / "state.json", state)
         return None
     if generation and startup.get("generation") == generation:
@@ -343,11 +411,14 @@ def reconcile(active):
         # Two HTTP fetches in the same UI refresh are not independent process
         # observations. Require a real wall-clock interval before escalation.
         if observations < 1 or not isinstance(unknown_at, (int, float)):
-            return dict(active, unknown_observations=1, unknown_since=now(),
-                        unknown_observed_at=observed_at)
+            return dict(active, unknown_observations=1, unknown_since=now(), unknown_observed_at=observed_at)
         if observed_at - unknown_at < PROCESS_MISSING_CONFIRM_SECONDS:
             return active
-        state.update(status="interrupted", finished_at=now(), error="Worker could not be found in two consecutive reconciliations; resume session explicitly")
+        state.update(
+            status="interrupted",
+            finished_at=now(),
+            error="Worker could not be found in two consecutive reconciliations; resume session explicitly",
+        )
         write_json(path / "state.json", state)
         return None
     active.pop("unknown_observations", None)
@@ -362,6 +433,7 @@ def require_worktree(project):
     if not (path / ".git").is_file():
         raise ValueError("Implementation requires a dedicated linked Git worktree; register that directory first")
     import shutil
+
     git = shutil.which("git")
     if not git:
         fallback = Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "Git" / "cmd" / "git.exe"
@@ -369,11 +441,13 @@ def require_worktree(project):
             git = str(fallback)
     if not git:
         raise ValueError("Git is required to verify worktree isolation")
+
     def value(*args):
         result = subprocess.run([git, "-C", str(path), "rev-parse", *args], capture_output=True, text=True, timeout=15)
         if result.returncode:
             raise ValueError("Git worktree validation failed")
         return result.stdout.strip()
+
     top = Path(value("--show-toplevel")).resolve()
     git_dir = Path(value("--absolute-git-dir")).resolve()
     common = Path(value("--path-format=absolute", "--git-common-dir")).resolve()
@@ -387,23 +461,27 @@ def _await_ready(directory, child, token, generation, timeout=10):
     deadline = time.monotonic() + timeout
     changed = threading.Event()
     while True:
-        ready = read_json(directory / 'ready.json', {}) or {}
-        if (ready.get('token') == token and ready.get('generation') == generation
-                and ready.get('pid') == child.pid and ready.get('stamp')
-                and process_stamp(child.pid) == ready.get('stamp')):
+        ready = read_json(directory / "ready.json", {}) or {}
+        if (
+            ready.get("token") == token
+            and ready.get("generation") == generation
+            and ready.get("pid") == child.pid
+            and ready.get("stamp")
+            and process_stamp(child.pid) == ready.get("stamp")
+        ):
             if child.poll() is not None:
-                raise RuntimeError('Managed worker exited after READY')
+                raise RuntimeError("Managed worker exited after READY")
             return ready
-        startup = read_json(directory / 'startup-error.json', {}) or {}
-        if startup.get('token') == token and startup.get('generation') == generation:
-            raise RuntimeError(startup.get('error') or 'Managed worker startup failed')
+        startup = read_json(directory / "startup-error.json", {}) or {}
+        if startup.get("token") == token and startup.get("generation") == generation:
+            raise RuntimeError(startup.get("error") or "Managed worker startup failed")
         code = child.poll()
         if code is not None:
-            raise RuntimeError('Managed worker exited before READY (exit code %s)' % code)
+            raise RuntimeError("Managed worker exited before READY (exit code %s)" % code)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise RuntimeError('Managed worker did not publish READY before the startup deadline')
-        changed.wait(min(.05, remaining))
+            raise RuntimeError("Managed worker did not publish READY before the startup deadline")
+        changed.wait(min(0.05, remaining))
 
 
 def _cleanup_failed_managed_launch(directory, generation, child=None):
@@ -415,23 +493,29 @@ def _cleanup_failed_managed_launch(directory, generation, child=None):
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait(timeout=5)
-    for name in ('active.json', 'warm.json', 'launch.json', 'ready.json'):
+    for name in ("active.json", "warm.json", "launch.json", "ready.json"):
         path = directory / name
         record = read_json(path, {}) or {}
-        if record.get('generation') == generation:
+        if record.get("generation") == generation:
             write_json(path, None)
 
 
 def rpc(request, managed_runtime=None):
     action = request["action"]
-    if action.startswith('execution_'):
+    if action.startswith("execution_"):
         from jobrunner import rpc as execution_rpc
+
         return execution_rpc(ROOT, request)
     if action == "probe":
         exe = cli_path()
-        return {"hostname": os.environ.get("COMPUTERNAME"), "python": sys.executable,
-                "cli": exe, "version": subprocess.check_output(
-                    [exe, "--version"], text=True, encoding="utf-8", errors="replace").strip()}
+        return {
+            "hostname": os.environ.get("COMPUTERNAME"),
+            "python": sys.executable,
+            "cli": exe,
+            "version": subprocess.check_output(
+                [exe, "--version"], text=True, encoding="utf-8", errors="replace"
+            ).strip(),
+        }
     if action == "mkdir_demo":
         path = ROOT / "demo-project"
         path.mkdir(exist_ok=True)
@@ -442,7 +526,11 @@ def rpc(request, managed_runtime=None):
             project = read_json(directory / "project.json")
             if not project:
                 raise ValueError("Project not registered")
-            return {"project": project, "memory": read_json(directory / "memory.json"), "session": read_json(directory / "session.json")}
+            return {
+                "project": project,
+                "memory": read_json(directory / "memory.json"),
+                "session": read_json(directory / "session.json"),
+            }
     if action == "register":
         data = validate_project(request["project"])
         directory = project_dir(data["name"])
@@ -485,7 +573,11 @@ def rpc(request, managed_runtime=None):
                 data = read_json(other)
                 current_path = Path(project["remote_path"]).resolve()
                 other_path = Path(data["remote_path"]).resolve()
-                if current_path == other_path or current_path in other_path.parents or other_path in current_path.parents:
+                if (
+                    current_path == other_path
+                    or current_path in other_path.parents
+                    or other_path in current_path.parents
+                ):
                     other_active = reconcile(read_json(other.parent / "active.json"))
                     write_json(other.parent / "active.json", other_active)
                     if other_active:
@@ -497,58 +589,81 @@ def rpc(request, managed_runtime=None):
             job = identifier(request["job"])
             path = job_dir(job)
             path.mkdir(parents=True, exist_ok=False)
-            channel=request.get('session_channel')
-            session_file='session.json'
+            channel = request.get("session_channel")
+            session_file = "session.json"
             if channel:
                 identifier(channel)
-                session_file='channels/'+channel+'.json'
-            session = read_json(directory / session_file, {'thread_id':None})
-            config = {"project": project, "job": job, "prompt": request["prompt"],
-                      "memory": {} if channel else read_json(directory / "memory.json"), "thread_id": session["thread_id"],
-                      "session_file":session_file,"managed_turn":bool(channel)}
+                session_file = "channels/" + channel + ".json"
+            session = read_json(directory / session_file, {"thread_id": None})
+            config = {
+                "project": project,
+                "job": job,
+                "prompt": request["prompt"],
+                "memory": {} if channel else read_json(directory / "memory.json"),
+                "thread_id": session["thread_id"],
+                "session_file": session_file,
+                "managed_turn": bool(channel),
+            }
             write_json(path / "request.json", config)
-            write_json(path / "state.json", {"job": job, "project": project["name"], "status": "starting", "created_at": now()})
+            write_json(
+                path / "state.json", {"job": job, "project": project["name"], "status": "starting", "created_at": now()}
+            )
             try:
-                if config['managed_turn'] and project.get('local_control'):
-                    warm_path = directory / 'warm.json'
+                if config["managed_turn"] and project.get("local_control"):
+                    warm_path = directory / "warm.json"
                     warm = read_json(warm_path)
-                    if (warm and warm.get('generation') and warm.get('token')
-                            and isinstance(warm.get('pid'), int)
-                            and process_stamp(warm['pid']) == warm.get('stamp')
-                            and managed_runtime is not None
-                            and managed_runtime.owns(warm.get('generation'), warm['pid'])):
-                        pid, stamp = warm['pid'], warm['stamp']
-                        generation = warm.get('generation')
+                    if (
+                        warm
+                        and warm.get("generation")
+                        and warm.get("token")
+                        and isinstance(warm.get("pid"), int)
+                        and process_stamp(warm["pid"]) == warm.get("stamp")
+                        and managed_runtime is not None
+                        and managed_runtime.owns(warm.get("generation"), warm["pid"])
+                    ):
+                        pid, stamp = warm["pid"], warm["stamp"]
+                        generation = warm.get("generation")
                     else:
                         if managed_runtime is None:
-                            raise RuntimeError('Managed turns require the persistent desktop receiver')
+                            raise RuntimeError("Managed turns require the persistent desktop receiver")
                         # A live warm record from an older receiver generation
                         # must not make the new service keep executing obsolete
                         # code. Revocation lets it close its app-server safely.
-                        if warm and not read_json(directory / 'active.json'):
+                        if warm and not read_json(directory / "active.json"):
                             write_json(warm_path, None)
                         launch_token = uuid.uuid4().hex
                         generation = uuid.uuid4().hex
-                        launch_path = directory / 'launch.json'
+                        launch_path = directory / "launch.json"
                         parent_pid = os.getpid()
                         parent_stamp = process_stamp(parent_pid)
                         if parent_stamp is None:
                             raise RuntimeError("Parent process is not alive")
-                        write_json(directory / 'ready.json', None)
-                        write_json(directory / 'startup-error.json', None)
-                        write_json(directory / 'worker-self-exit.json', None)
-                        write_json(launch_path, {'token': launch_token, 'generation': generation,
-                                                 'project': project['name'], 'root': str(ROOT),
-                                                 'parent_pid': parent_pid, 'parent_stamp': parent_stamp})
+                        write_json(directory / "ready.json", None)
+                        write_json(directory / "startup-error.json", None)
+                        write_json(directory / "worker-self-exit.json", None)
+                        write_json(
+                            launch_path,
+                            {
+                                "token": launch_token,
+                                "generation": generation,
+                                "project": project["name"],
+                                "root": str(ROOT),
+                                "parent_pid": parent_pid,
+                                "parent_stamp": parent_stamp,
+                            },
+                        )
                         child = None
                         try:
-                            child = managed_runtime.launch(project['name'], launch_token, generation)
+                            child = managed_runtime.launch(project["name"], launch_token, generation)
                             ready = _await_ready(directory, child, launch_token, generation)
-                            pid, stamp = ready['pid'], ready['stamp']
-                            write_json(warm_path, {'pid': pid, 'stamp': stamp, 'token': launch_token,
-                                                  'generation': generation})
-                            write_json(directory / 'active.json', {"job": job, "pid": pid, "stamp": stamp,
-                                                                   'generation': generation})
+                            pid, stamp = ready["pid"], ready["stamp"]
+                            write_json(
+                                warm_path, {"pid": pid, "stamp": stamp, "token": launch_token, "generation": generation}
+                            )
+                            write_json(
+                                directory / "active.json",
+                                {"job": job, "pid": pid, "stamp": stamp, "generation": generation},
+                            )
                             write_json(launch_path, None)
                         except Exception:
                             _cleanup_failed_managed_launch(directory, generation, child)
@@ -567,11 +682,11 @@ def rpc(request, managed_runtime=None):
             # null.  read_json's default only applies when the file is absent,
             # so normalize that valid idle value before checking whether the
             # fresh launch already committed its ownership record.
-            committed_active = read_json(directory / 'active.json', {}) or {}
-            if not (config['managed_turn'] and project.get('local_control') and committed_active.get('job') == job):
+            committed_active = read_json(directory / "active.json", {}) or {}
+            if not (config["managed_turn"] and project.get("local_control") and committed_active.get("job") == job):
                 active_record = {"job": job, "pid": pid, "stamp": stamp}
-                if config['managed_turn'] and project.get('local_control') and generation:
-                    active_record['generation'] = generation
+                if config["managed_turn"] and project.get("local_control") and generation:
+                    active_record["generation"] = generation
                 write_json(directory / "active.json", active_record)
             return {"job": job, "status": "starting", "supervisor_pid": pid}
     if action in {"status", "cancel", "fetch"}:
@@ -595,8 +710,11 @@ def rpc(request, managed_runtime=None):
                 # write their terminal state before clearing it, so observing
                 # this combination after acquiring the lock proves the turn
                 # was orphaned by a crash or an older broken launcher.
-                current_state.update(status="interrupted", finished_at=now(),
-                                     error="No active worker owns this non-terminal job; start a new turn explicitly")
+                current_state.update(
+                    status="interrupted",
+                    finished_at=now(),
+                    error="No active worker owns this non-terminal job; start a new turn explicitly",
+                )
                 write_json(path / "state.json", current_state)
             state = read_json(path / "state.json")
             if action == "cancel" and state["status"] not in TERMINAL:
@@ -649,18 +767,34 @@ Treat reports and memory as claims requiring evidence. Keep the final answer con
 
 
 def build_command(exe, project, thread_id):
-    args = [exe, "exec", "--ignore-user-config", "--skip-git-repo-check", "--json",
-            "-m", project["model"], "-c", 'model_reasoning_effort="' + project["effort"] + '"', "-C", project["remote_path"]]
-    if project.get('local_control'):
-        stage = project.get('_stage', 'discuss')
-        args += ['--sandbox', 'workspace-write' if stage == 'implement' else 'read-only',
-                 '-c', 'approval_policy="never"']
-        if stage == 'discuss':
-            args += ['--disable', 'shell_tool', '--disable', 'unified_exec']
+    args = [
+        exe,
+        "exec",
+        "--ignore-user-config",
+        "--skip-git-repo-check",
+        "--json",
+        "-m",
+        project["model"],
+        "-c",
+        'model_reasoning_effort="' + project["effort"] + '"',
+        "-C",
+        project["remote_path"],
+    ]
+    if project.get("local_control"):
+        stage = project.get("_stage", "discuss")
+        args += [
+            "--sandbox",
+            "workspace-write" if stage == "implement" else "read-only",
+            "-c",
+            'approval_policy="never"',
+        ]
+        if stage == "discuss":
+            args += ["--disable", "shell_tool", "--disable", "unified_exec"]
     else:
-        args += ['--approve-for-me']
+        args += ["--approve-for-me"]
     if thread_id:
         import re
+
         if not re.fullmatch(r"[0-9a-fA-F-]{36}", thread_id):
             raise ValueError("Invalid session ID")
         args += ["resume", thread_id]
@@ -677,7 +811,9 @@ def effective_model(thread_id, since=None):
             if event["type"] == "turn_context":
                 if since:
                     timestamp = event.get("timestamp")
-                    if not timestamp or datetime.fromisoformat(timestamp.replace("Z", "+00:00")) < datetime.fromisoformat(since):
+                    if not timestamp or datetime.fromisoformat(
+                        timestamp.replace("Z", "+00:00")
+                    ) < datetime.fromisoformat(since):
                         continue
                 model = event.get("payload", {}).get("model") or model
         if model:
@@ -694,35 +830,92 @@ def run(job):
         config = read_json(path / "request.json")
         directory = project_dir(config["project"]["name"])
         exe = cli_path()
-        login=codex_login_status(exe,ROOT)
-        if not login['logged_in']:
-            raise RuntimeError(login['login_error'])
-        command_project = dict(config['project'])
-        if command_project.get('local_control'):
-            command_project['_stage'] = json.loads(config['prompt']).get('stage', 'discuss')
+        login = codex_login_status(exe, ROOT)
+        if not login["logged_in"]:
+            raise RuntimeError(login["login_error"])
+        command_project = dict(config["project"])
+        if command_project.get("local_control"):
+            command_project["_stage"] = json.loads(config["prompt"]).get("stage", "discuss")
         command = build_command(exe, command_project, config["thread_id"])
-        if config.get('managed_turn'):
-            command[2:2]=['--disable','apps','--disable','plugins','--disable','remote_plugin','--disable','skill_mcp_dependency_install']
+        if config.get("managed_turn"):
+            command[2:2] = [
+                "--disable",
+                "apps",
+                "--disable",
+                "plugins",
+                "--disable",
+                "remote_plugin",
+                "--disable",
+                "skill_mcp_dependency_install",
+            ]
+
             def obj(properties):
-                return {'type':'object','additionalProperties':False,'required':list(properties),'properties':properties}
-            def array(properties): return {'type':'array','items':obj(properties)}
-            schema=obj({'reply':{'type':'string'},'done':{'type':'boolean'},
-                'messages':array({'recipient':{'type':['string','null']},'body':{'type':'string'}}),
-                'tasks':array({key:{'type':'string'} for key in ('agent','title','instructions','stage','allowed_files','acceptance','validation')}),
-                'executions':array({'template':{'type':'string'}}),
-                'memory_notes':{'type':'array','items':{'type':'string'}}})
-            schema_path=path/'reply-schema.json'
-            write_json(schema_path,schema)
-            command[-1:-1]=['--output-schema',str(schema_path)]
-        rules = GROUP_RULES if config.get('managed_turn') else PEER_RULES
-        prompt = rules + "\nPROJECT MEMORY:\n" + json.dumps(config["memory"], ensure_ascii=False) + "\nTASK CONTRACT:\n" + config["prompt"]
+                return {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": list(properties),
+                    "properties": properties,
+                }
+
+            def array(properties):
+                return {"type": "array", "items": obj(properties)}
+
+            schema = obj(
+                {
+                    "reply": {"type": "string"},
+                    "done": {"type": "boolean"},
+                    "messages": array({"recipient": {"type": ["string", "null"]}, "body": {"type": "string"}}),
+                    "tasks": array(
+                        {
+                            key: {"type": "string"}
+                            for key in (
+                                "agent",
+                                "title",
+                                "instructions",
+                                "stage",
+                                "allowed_files",
+                                "acceptance",
+                                "validation",
+                            )
+                        }
+                    ),
+                    "executions": array({"template": {"type": "string"}}),
+                    "memory_notes": {"type": "array", "items": {"type": "string"}},
+                }
+            )
+            schema_path = path / "reply-schema.json"
+            write_json(schema_path, schema)
+            command[-1:-1] = ["--output-schema", str(schema_path)]
+        rules = GROUP_RULES if config.get("managed_turn") else PEER_RULES
+        prompt = (
+            rules
+            + "\nPROJECT MEMORY:\n"
+            + json.dumps(config["memory"], ensure_ascii=False)
+            + "\nTASK CONTRACT:\n"
+            + config["prompt"]
+        )
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
-        env=executor_environment(ROOT)
+        env = executor_environment(ROOT)
         with (path / "prompt.txt").open("rb") as source, (path / "stderr.log").open("wb") as error:
-            proc = subprocess.Popen(command, stdin=source, stdout=subprocess.PIPE, stderr=error,
-                                    cwd=config["project"]["remote_path"], env=env, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0, start_new_session=os.name != "nt")
-            state.update(status="running", started_at=now(), codex_pid=proc.pid, requested_model=config["project"]["model"],
-                         reasoning_effort=config["project"]["effort"], command=command, thread_id=config["thread_id"])
+            proc = subprocess.Popen(
+                command,
+                stdin=source,
+                stdout=subprocess.PIPE,
+                stderr=error,
+                cwd=config["project"]["remote_path"],
+                env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                start_new_session=os.name != "nt",
+            )
+            state.update(
+                status="running",
+                started_at=now(),
+                codex_pid=proc.pid,
+                requested_model=config["project"]["model"],
+                reasoning_effort=config["project"]["effort"],
+                command=command,
+                thread_id=config["thread_id"],
+            )
             write_json(path / "state.json", state)
             seen = []
             reports = []
@@ -739,9 +932,15 @@ def run(job):
                                 thread = event["thread_id"]
                                 state["thread_id"] = thread
                                 with lock(ROOT / "registry.lock"):
-                                    write_json(directory / config.get('session_file','session.json'), {"thread_id": thread, "last_job": job})
+                                    write_json(
+                                        directory / config.get("session_file", "session.json"),
+                                        {"thread_id": thread, "last_job": job},
+                                    )
                                 write_json(path / "state.json", state)
-                            if event["type"] == "item.completed" and event.get("item", {}).get("type") == "agent_message":
+                            if (
+                                event["type"] == "item.completed"
+                                and event.get("item", {}).get("type") == "agent_message"
+                            ):
                                 reports.append(event["item"].get("text", ""))
                                 (path / "report.txt").write_text(reports[-1], encoding="utf-8")
 
@@ -760,16 +959,26 @@ def run(job):
                 timed_out = time.monotonic() >= deadline
                 if cancelled or timed_out or reader_errors:
                     if os.name == "nt":
-                        subprocess.run(["taskkill.exe", "/PID", str(proc.pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+                        subprocess.run(
+                            ["taskkill.exe", "/PID", str(proc.pid), "/T", "/F"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=30,
+                        )
                     else:
                         import signal
+
                         os.killpg(proc.pid, signal.SIGKILL)
                     break
-                time.sleep(.3)
+                time.sleep(0.3)
             code = proc.wait(timeout=30)
             reader.join(timeout=30)
-            state.update(status=outcome(code, seen, cancelled, timed_out), exit_code=code, finished_at=now(),
-                         effective_model=effective_model(state.get("thread_id"), state["started_at"]))
+            state.update(
+                status=outcome(code, seen, cancelled, timed_out),
+                exit_code=code,
+                finished_at=now(),
+                effective_model=effective_model(state.get("thread_id"), state["started_at"]),
+            )
             if reader.is_alive():
                 state.update(status="failed", error="Event reader did not drain")
             if reader_errors:
@@ -785,6 +994,7 @@ def run(job):
                 subprocess.run(["taskkill.exe", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
             else:
                 import signal
+
                 os.killpg(proc.pid, signal.SIGKILL)
         state.update(status="failed", error=str(exc), finished_at=now())
     finally:
