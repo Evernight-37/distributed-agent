@@ -182,8 +182,6 @@ class DesktopRuntime:
         from pull_worker import validate_server
         server = server or self.status()['server']
         validate_server(server)
-        if server.rstrip('/') == 'http://127.0.0.1:18876':
-            raise ValueError('这个地址是 4090 的设备通道。请在 5090 打开工作台，或使用团队提供的 HTTPS 工作台地址')
         webbrowser.open(server)
 
     def start_workbench(self, open_browser=True, state_root=None):

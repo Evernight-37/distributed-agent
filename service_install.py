@@ -3,7 +3,7 @@ import hashlib
 import os
 import shutil
 import sys
-import uuid
+import tempfile
 from pathlib import Path
 from common import lock
 
@@ -29,7 +29,11 @@ def install_bundle(bundle, destination):
     if not (bundle/'runtime/python.exe').is_file() or not (bundle/'client/desktop_service.py').is_file():
         raise RuntimeError('应用安装不完整：缺少后台入口')
     version = digest.hexdigest()
-    target = destination / version
+    # Keep the installed runtime path short. Windows can copy files through a
+    # long staging path yet later fail to import Python modules from that same
+    # path. The full digest remains in .complete and is verified on every use;
+    # a truncated-name collision therefore fails closed instead of reusing code.
+    target = destination / version[:16]
     with lock(destination / 'install.lock'):
         if (target / '.complete').is_file():
             if (target / '.complete').read_text(encoding='ascii') != version:
@@ -40,7 +44,10 @@ def install_bundle(bundle, destination):
                     raise RuntimeError('后台运行文件校验失败：请从完整的新包启动应用')
             return target
         if target.exists(): raise RuntimeError('后台运行目录安装不完整，请保留目录并联系维护者')
-        staging = destination / ('install-' + uuid.uuid4().hex)
+        # The staging name is deliberately short for the same reason as the
+        # final content directory: nested cryptography modules can otherwise
+        # cross the traditional Windows MAX_PATH boundary during installation.
+        staging = Path(tempfile.mkdtemp(prefix='i-', dir=destination))
         try:
             for source, relative in files:
                 output = staging / relative

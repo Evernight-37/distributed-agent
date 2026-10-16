@@ -21,6 +21,8 @@ class ServiceInstallTests(unittest.TestCase):
             (bundle/'runtime/python.exe').write_bytes(b'python')
             (bundle/'client/desktop_service.py').write_bytes(b'v1')
             first = install_bundle(bundle, destination)
+            self.assertEqual(len(first.name), 16)
+            self.assertEqual(len((first/'.complete').read_text(encoding='ascii')), 64)
             self.assertEqual(install_bundle(bundle, destination), first)
             self.assertEqual((first/'client/desktop_service.py').read_bytes(), b'v1')
             (bundle/'client/desktop_service.py').write_bytes(b'v2')

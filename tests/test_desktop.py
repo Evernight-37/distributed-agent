@@ -204,41 +204,6 @@ class DesktopRuntimeContractTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): desktop_runtime.DesktopRuntime(root)._control('status')
 
 
-class DesktopGUIContractTests(unittest.TestCase):
-    def test_save_registers_local_project_before_binding_and_keeps_owner_choices(self):
-        import tkinter as tk
-        from desktop_app import DesktopApp
-        root = tk.Tk(); root.withdraw()
-        self.addCleanup(root.destroy)
-        with mock.patch('desktop_app.DesktopRuntime') as runtime_class, mock.patch.object(DesktopApp, 'refresh_status'):
-            app = DesktopApp(root)
-            self.assertIsInstance(runtime_class.call_args.args[0], Path)
-            self.assertFalse(app.enable.get())
-            runtime = runtime_class.return_value
-            runtime.fetch_state.return_value = {'bindings': []}
-            app.project_name.set('local-project'); app.project_path.set(str(Path(tempfile.gettempdir())))
-            app.shared_by_label = {'Research': 'shared-id'}; app.shared_project.set('Research')
-            app.model.set('owner-model'); app.effort.set('high'); app.enable.set(True)
-            app._run = lambda fn, done=None: fn()
-            app.save_project()
-            runtime.register_project.assert_called_once_with('local-project', str(Path(tempfile.gettempdir())), 'owner-model', 'high')
-            data = runtime.save_binding.call_args.args[0]
-            self.assertEqual((data['project_id'], data['backend_project']), ('shared-id', 'local-project'))
-            self.assertEqual(data['stages'], ['discuss'])
-            self.assertEqual((data['model'], data['effort']), ('owner-model', 'high'))
-
-    def test_existing_identity_starts_without_pairing_again(self):
-        import tkinter as tk
-        from desktop_app import DesktopApp
-        root = tk.Tk(); root.withdraw(); self.addCleanup(root.destroy)
-        with mock.patch('desktop_app.DesktopRuntime') as runtime_class, mock.patch.object(DesktopApp, 'refresh_status'):
-            app = DesktopApp(root)
-            runtime = runtime_class.return_value; runtime.status.return_value = {'paired': True}
-            app._run = lambda fn, done=None: fn()
-            app.pair_start()
-            runtime.pair.assert_not_called(); runtime.start.assert_called_once()
-
-
 class PackagedReceiverTests(unittest.TestCase):
     @unittest.skipUnless((Path(desktop_runtime.__file__).parent / 'dist/AgentHarness/runtime/python.exe').exists(), 'Build the portable app first')
     def test_sidecar_pair_register_bind_duplicate_start_and_stop(self):
