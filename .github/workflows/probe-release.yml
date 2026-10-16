@@ -1,0 +1,31 @@
+name: Probe v1 release workflow
+
+on:
+  push:
+    tags:
+      - "probe-v1.0.0"
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish release workflow state as a temporary tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $runs = gh run list --workflow release.yml --limit 20 --json headBranch,status,conclusion,createdAt | ConvertFrom-Json
+          $run = $runs | Where-Object { $_.headBranch -eq "v1.0.0" } | Sort-Object createdAt -Descending | Select-Object -First 1
+          if (-not $run) { throw "No v1.0.0 release workflow was found" }
+          $conclusion = if ($run.conclusion) { $run.conclusion } else { "pending" }
+          $marker = "release-run-$($run.status)-$conclusion"
+          git tag $marker $env:GITHUB_SHA
+          git push origin $marker
+          git push origin :refs/tags/probe-v1.0.0
