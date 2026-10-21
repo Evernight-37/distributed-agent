@@ -659,6 +659,13 @@
         border: 0;
         color: var(--muted);
       }
+      .auth-guide {
+        display: block;
+        margin-top: 18px;
+        text-align: center;
+        color: var(--brand);
+        text-decoration: none;
+      }
       .association-code {
         padding: 18px;
         background: var(--soft);
@@ -1471,7 +1478,9 @@
             b.append(text, el("span", "auth-arrow", "→"));
             choices.append(b);
           });
-          root.append(choices);
+          const guide = el("a", "auth-guide", "第一次使用？打开新手教程 →");
+          guide.href = "guide.html";
+          root.append(choices, guide);
           return;
         }
         const root = authHeader(

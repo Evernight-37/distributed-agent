@@ -3,6 +3,14 @@ from pathlib import Path
 
 
 class ChatComposerUiTests(unittest.TestCase):
+    def test_login_page_links_to_the_bundled_beginner_guide(self):
+        root = Path(__file__).resolve().parents[1]
+        app = (root / "assets" / "web" / "app.html").read_text(encoding="utf-8")
+        guide = root / "assets" / "web" / "guide.html"
+        self.assertIn('guide.href = "guide.html"', app)
+        self.assertIn("第一次使用？打开新手教程", app)
+        self.assertTrue(guide.is_file())
+
     def test_enter_has_one_guarded_submit_path(self):
         html = (Path(__file__).resolve().parents[1] / "assets" / "web" / "app.html").read_text(encoding="utf-8")
         self.assertRegex(html, r"text\.onkeydown\s*=\s*\(e\)\s*=>")

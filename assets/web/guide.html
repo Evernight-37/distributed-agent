@@ -199,7 +199,17 @@
   </head>
   <body>
     <main class="wrap">
-      <a class="top" href="/">← 返回应用</a>
+      <a
+        class="top"
+        href="app.html"
+        onclick="
+          if (history.length > 1) {
+            history.back();
+            return false;
+          }
+        "
+        >← 返回上一页</a
+      >
       <h1>Agent Harness 新手教程</h1>
       <p class="lead">
         从 Tailscale 组网开始，一步一步完成账户、团队入口、项目邀请和 Agent
