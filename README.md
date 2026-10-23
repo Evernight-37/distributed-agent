@@ -4,6 +4,10 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 
 ## 使用应用
 
+本分支是 **macOS 1.0.1 改进版**；Windows 完整应用请查看 [`windows-improvements`](https://github.com/Evernight-37/distributed-agent/tree/windows-improvements) 分支及其 Actions 产物。两个平台均包含员工删除按钮、默认管理员发送修复和跨成员 Agent 呼叫修复，详见 [1.0.1 升级说明](docs/IMPROVEMENTS-1.0.1.md)。
+
+macOS 用户将 `AgentHarness.app` 拖入“应用程序”后打开。应用自带 Python 后台运行时，数据保存在 `~/Library/Application Support/AgentHarness/data`，升级时保留该目录。每台执行 Agent 的电脑需要可用的 Codex 登录；多人协作还需 Tailscale。构建方法见 [macOS 构建说明](docs/MACOS.md)。
+
 从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases) 下载完整 Windows 压缩包，解压后双击 `AgentHarness.exe`。请保留整个目录；应用自带隔离的后台 Python 运行时，不要求用户安装 Python。系统需要 Edge WebView2，并且每台执行 Agent 的电脑需要已有可用的 Codex 登录。
 
 第一次使用请先阅读 [按钮式新手教程](docs/QUICKSTART.md)。教程从 Tailscale 准备开始，分别列出群主、服务托管者和受邀同事应点击的按钮，并在每一步说明成功标志与常见错误。单机使用可以跳过 Tailscale。多人协作的主流程是：
