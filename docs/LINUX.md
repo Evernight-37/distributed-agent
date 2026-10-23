@@ -48,3 +48,5 @@ tailscale --socket="$HOME/.local/share/AgentHarness/tailscale/tailscaled.sock" u
 4. 群里从“呼叫 Agent”中选择该员工，发送任务。
 
 1.0.2 的文件附件支持成员收发与图片预览；本版本尚不自动把附件作为 Codex 图像或文件输入。
+
+原理与配置参考：[Codex CLI 官方说明](https://developers.openai.com/codex/cli)、[Tailscale userspace networking 官方说明](https://tailscale.com/docs/concepts/userspace-networking)。
