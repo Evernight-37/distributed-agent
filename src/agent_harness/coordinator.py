@@ -146,7 +146,7 @@ Return only visible context; you cannot request other agents' private conversati
                 source = None
                 partner = None
                 for candidate in db.execute(
-                    "SELECT * FROM messages WHERE project_id=? AND sender_id<>? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (sender_type<>'system' OR causal_task='execution-completed') AND (recipient_id=? OR (recipient_id IS NULL AND (mention_agent_id=? OR (mention_agent_id IS NULL AND ?=1)))) AND NOT (sender_type='human' AND recipient_id=? AND sender_id<>?) ORDER BY id",
+                    "SELECT * FROM messages WHERE project_id=? AND sender_id<>? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (sender_type<>'system' OR causal_task='execution-completed') AND (recipient_id=? OR (recipient_id IS NULL AND (mention_agent_id=? OR (mention_agent_id IS NULL AND ?=1)))) AND NOT (sender_type='human' AND recipient_id IS NOT NULL AND recipient_id=? AND sender_id<>?) ORDER BY id",
                     (
                         r["project_id"],
                         r["id"],

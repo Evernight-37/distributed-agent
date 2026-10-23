@@ -2,7 +2,7 @@ import tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch, Mock
 from common import write_json
-from team_service import TeamService, TARGET, run_cli
+from team_service import TeamService, TARGET, run_cli, cli_environment
 
 HOST = "laptop.example.ts.net"
 
@@ -30,6 +30,31 @@ class Runner:
 
 
 class TeamServiceTests(unittest.TestCase):
+    def test_macos_calls_force_cli_mode_without_changing_parent_environment(self):
+        with (
+            patch("team_service.sys.platform", "darwin"),
+            patch.dict("os.environ", {"TAILSCALE_BE_CLI": "0"}),
+            patch("team_service.executable", return_value="/Applications/Tailscale.app/Contents/MacOS/Tailscale"),
+            patch(
+                "team_service.subprocess.run",
+                return_value=Mock(returncode=0, stdout='{"BackendState":"Running"}', stderr=""),
+            ) as run,
+        ):
+            self.assertEqual(run_cli(["status", "--json"])["BackendState"], "Running")
+            self.assertEqual(run.call_args.kwargs["env"]["TAILSCALE_BE_CLI"], "1")
+            self.assertEqual(cli_environment()["TAILSCALE_BE_CLI"], "1")
+            self.assertEqual(__import__("os").environ["TAILSCALE_BE_CLI"], "0")
+
+    def test_unreadable_json_never_counts_as_an_empty_serve_configuration(self):
+        for output in ("", "   ", "The Tailscale GUI failed to start", "[]", "null"):
+            with (
+                self.subTest(output=output),
+                patch("team_service.executable", return_value="tailscale"),
+                patch("team_service.subprocess.run", return_value=Mock(returncode=0, stdout=output, stderr="")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Tailscale"):
+                    run_cli(["serve", "status", "--json"])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)

@@ -97,7 +97,7 @@ class OwnerControl:
             raise ValueError("Invalid command data")
         if action == "browse":
             return self._browse(data.get("path"))
-        if action not in {"create", "configure", "dispatch", "withdraw"}:
+        if action not in {"create", "configure", "dispatch", "withdraw", "delete"}:
             raise ValueError("Unsupported owner action")
         employee = data.get("id")
         if not isinstance(employee, str) or not 1 <= len(employee) <= 120:
@@ -114,7 +114,18 @@ class OwnerControl:
             employees[employee] = current
             self._save(employees)
             return current
-        if not current:
+        if action == "delete":
+            bindings = self._bindings(employee)
+            for binding in bindings:
+                self._idle(binding["backend_project"])
+            for binding in bindings:
+                self.connector.save_binding(dict(binding, enabled=False, assigned=False))
+            if current:
+                current["deleted"] = True
+                current["settings"]["enabled"] = False
+                self._save(employees)
+            return {"id": employee, "deleted": True}
+        if not current or current.get("deleted"):
             raise ValueError("Unknown local employee")
         if action == "configure":
             name = data.get("name", current["name"])

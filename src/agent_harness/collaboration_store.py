@@ -517,7 +517,7 @@ class Store:
             return [
                 dict(x)
                 for x in db.execute(
-                    "SELECT * FROM messages WHERE project_id=? AND id>? AND id<=? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (recipient_id IS NULL OR recipient_id=? OR sender_id=?) AND NOT (sender_type='human' AND recipient_id=? AND sender_id<>?) ORDER BY id",
+                    "SELECT * FROM messages WHERE project_id=? AND id>? AND id<=? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (recipient_id IS NULL OR recipient_id=? OR sender_id=?) AND NOT (sender_type='human' AND recipient_id IS NOT NULL AND recipient_id=? AND sender_id<>?) ORDER BY id",
                     (row["project_id"], after, cutoff or 9223372036854775807, agent, agent, agent, row["owner_id"]),
                 ).fetchall()
             ]

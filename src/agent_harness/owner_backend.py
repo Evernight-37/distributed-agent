@@ -1,10 +1,11 @@
 """Owner-signed device settings queue; ordinary project tasks cannot change devices."""
 
 import json
+import hashlib
 import time
 from account_identity import verify_owner_command
 
-ACTIONS = {"create", "configure", "dispatch", "withdraw", "browse"}
+ACTIONS = {"create", "configure", "dispatch", "withdraw", "browse", "delete"}
 TERMINAL = {"applied", "failed"}
 
 
@@ -23,7 +24,9 @@ class OwnerBackend:
 
     def snapshot(self, user):
         with self.store.connect() as db:
-            rows = db.execute("SELECT * FROM employees WHERE owner_id=? ORDER BY name,id", (user,)).fetchall()
+            rows = db.execute(
+                "SELECT * FROM employees WHERE owner_id=? AND status<>'deleted' ORDER BY name,id", (user,)
+            ).fetchall()
             return {"employees": [dict(r, settings=json.loads(r["settings"])) for r in rows]}
 
     def command(self, user, command_id):
@@ -79,6 +82,15 @@ class OwnerBackend:
                     )
                 elif not old or old["owner_id"] != user or old["node"] != target:
                     raise PermissionError("Employee ownership mismatch")
+                elif old["status"] == "deleted" and action != "delete":
+                    raise ValueError("员工已删除")
+                if action == "delete":
+                    for agent in self._employee_agents(db, employee, user, target):
+                        if db.execute(
+                            "SELECT 1 FROM tasks WHERE agent_id=? AND state IN ('queued','starting','running','unknown')",
+                            (agent["id"],),
+                        ).fetchone():
+                            raise ValueError("员工有未完成任务，请等待任务结束后再删除")
                 if action in {"dispatch", "withdraw"}:
                     self.store.require_member(db, data.get("project_id"), user)
             db.execute(
@@ -86,6 +98,14 @@ class OwnerBackend:
                 (cid, user, target, encoded, "queued", None, time.time()),
             )
             return {"id": cid, "state": "queued"}
+
+    def _employee_agents(self, db, employee, owner, node):
+        return [
+            a
+            for a in db.execute("SELECT * FROM agents WHERE owner_id=? AND node=?", (owner, node))
+            if a["backend_project"]
+            == "e-" + hashlib.sha256((employee + "\0" + a["project_id"]).encode()).hexdigest()[:56]
+        ]
 
     def poll(self, db, device):
         # Revalidate ownership on every poll; no trust in a caller-supplied node alone.
@@ -123,12 +143,17 @@ class OwnerBackend:
         data = body["data"]
         action = body["action"]
         if action != "browse":
-            if state == "applied" and action in {"create", "configure"}:
+            if state == "applied" and action == "delete":
+                for agent in self._employee_agents(db, data["id"], row["owner_id"], row["node"]):
+                    db.execute("UPDATE agents SET enabled=0,configuring=0 WHERE id=?", (agent["id"],))
+                    db.execute("UPDATE projects SET admin_agent_id=NULL WHERE admin_agent_id=?", (agent["id"],))
+                db.execute("UPDATE employees SET status='deleted',revision=revision+1 WHERE id=?", (data["id"],))
+            elif state == "applied" and action in {"create", "configure"}:
                 settings = result.get("settings", {})
                 if not isinstance(settings, dict):
                     raise ValueError("Invalid applied settings")
                 db.execute(
-                    "UPDATE employees SET settings=?,name=?,status=?,revision=revision+1 WHERE id=?",
+                    "UPDATE employees SET settings=?,name=?,status=?,revision=revision+1 WHERE id=? AND status<>'deleted'",
                     (
                         canonical(settings),
                         result.get("name", data.get("name", ""))
@@ -138,6 +163,6 @@ class OwnerBackend:
                     ),
                 )
             elif state == "failed" and action == "create":
-                db.execute("UPDATE employees SET status='failed' WHERE id=?", (data["id"],))
+                db.execute("UPDATE employees SET status='failed' WHERE id=? AND status<>'deleted'", (data["id"],))
         db.execute("UPDATE owner_commands SET state=?,result=? WHERE id=?", (state, encoded, command_id))
         return {"ok": True}

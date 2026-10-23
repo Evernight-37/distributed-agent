@@ -7,6 +7,7 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -20,8 +21,21 @@ AUTH_URL = re.compile(r"https://login\.tailscale\.com/f/serve\?node=[A-Za-z0-9_-
 
 def executable():
     path = shutil.which("tailscale.exe" if os.name == "nt" else "tailscale")
-    fallback = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Tailscale" / "tailscale.exe"
+    fallback = (
+        Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+        if sys.platform == "darwin"
+        else Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Tailscale" / "tailscale.exe"
+    )
     return path or (str(fallback) if fallback.is_file() else None)
+
+
+def cli_environment():
+    env = dict(os.environ)
+    if sys.platform == "darwin":
+        # The macOS binary also hosts the GUI. Finder provides no terminal
+        # environment, so explicitly select CLI mode for status and Serve.
+        env["TAILSCALE_BE_CLI"] = "1"
+    return env
 
 
 def run_cli(args):
@@ -35,11 +49,20 @@ def run_cli(args):
         encoding="utf-8",
         errors="replace",
         timeout=8,
+        env=cli_environment(),
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     if result.returncode:
         raise RuntimeError((result.stderr or result.stdout).strip()[:800] or "Tailscale 操作失败")
-    return json.loads(result.stdout or "{}") if args[-1] == "--json" else {}
+    if args[-1] != "--json":
+        return {}
+    try:
+        value = json.loads(result.stdout)
+    except ValueError:
+        raise RuntimeError("Tailscale 未返回有效的 JSON 状态，请确认已登录并连接网络，然后重新检查。") from None
+    if not isinstance(value, dict):
+        raise RuntimeError("Tailscale 返回的状态格式无效，无法确认现有团队入口配置。")
+    return value
 
 
 def inspect_config(config, hostname):
@@ -202,6 +225,11 @@ class TeamService:
         from pull_worker import validate_server
 
         validate_server(url)
+        if sys.platform == "darwin":
+            proc = subprocess.run(["/usr/bin/pbcopy"], input=url, capture_output=True, text=True, timeout=5)
+            if proc.returncode:
+                raise RuntimeError("复制失败，可直接选中地址复制。")
+            return {"copied": True, "message": "服务地址已复制。"}
         if os.name != "nt":
             raise ValueError("当前复制功能仅支持 Windows。")
         powershell = str(
@@ -251,6 +279,7 @@ def create_background(root, server):
                 raise FileNotFoundError("未安装 Tailscale。")
             process = subprocess.Popen(
                 [binary, "serve", "--bg", "--https=443", TARGET],
+                env=cli_environment(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

@@ -105,6 +105,27 @@ class StreamingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.message(self.owner, self.project, "bad", recipient="admin", mention_agent_id="peer")
 
+    def test_other_project_member_can_call_an_agent_in_the_public_group(self):
+        other = self.store.signup(
+            "other-member", "password", invite=self.store.invite(self.owner, self.project)["invite"]
+        )["id"]
+        self.store.message(other, self.project, "Please answer my public question", mention_agent_id="peer")
+        self.coordinator.wake_messages()
+        with self.store.connect() as db:
+            self.assertEqual([r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")], ["peer"])
+        self.coordinator.dispatch()
+        context = self.backend.submissions[0]
+        self.assertIn("Please answer my public question", [m["body"] for m in context["visible_messages"]])
+
+    def test_other_member_public_message_wakes_the_administrator(self):
+        other = self.store.signup(
+            "other-member", "password", invite=self.store.invite(self.owner, self.project)["invite"]
+        )["id"]
+        self.store.message(other, self.project, "A public question for the administrator")
+        self.coordinator.wake_messages()
+        with self.store.connect() as db:
+            self.assertEqual([r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")], ["admin"])
+
     def test_mentions_and_group_chat_create_independent_turns(self):
         self.store.message(self.owner, self.project, "general update")
         self.store.message(self.owner, self.project, "please answer", mention_agent_id="peer")

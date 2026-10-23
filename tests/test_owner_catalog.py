@@ -60,7 +60,7 @@ class FakeConnector:
 class OwnerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.store = Store(self.root / "store")
         self.backend = backend.OwnerBackend(self.store)
         with self.store.connect() as db:
@@ -175,6 +175,61 @@ class OwnerTests(unittest.TestCase):
         withdrawn = self.control.apply(self.envelope("withdraw", {"id": "e1", "project_id": "p1"}))
         self.assertEqual(withdrawn["state"], "applied")
         self.assertTrue(read_json(self.connector.root / "projects" / backend_name / "active.json"))
+
+    def test_delete_requires_owner_confirmation_and_preserves_work_files(self):
+        create = self.envelope("create", {"id": "e1", "name": "Employee"})
+        self.backend.enqueue("u1", create)
+        self.create()
+        self.configure()
+        dispatched = self.control.apply(self.envelope("dispatch", {"id": "e1", "project_id": "p1"}))
+        with self.store.connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    "delete-test-agent",
+                    "p1",
+                    "Employee",
+                    "u1",
+                    "n1",
+                    dispatched["result"]["backend_project"],
+                    "test-model",
+                    "low",
+                    30,
+                ),
+            )
+            db.execute("UPDATE projects SET admin_agent_id='delete-test-agent' WHERE id='p1'")
+        work = self.workspace / "keep.txt"
+        work.write_text("research")
+        delete = self.envelope("delete", {"id": "e1"})
+        with self.assertRaises(PermissionError):
+            self.backend.enqueue("u2", self.envelope("delete", {"id": "e1"}, target="n2", owner="u2"))
+        self.backend.enqueue("u1", delete)
+        self.assertEqual(len(self.backend.snapshot("u1")["employees"]), 1)
+        with self.store.connect() as db:
+            self.backend.poll(db, {"node": "n1", "owner_id": "u1"})
+            response = self.control.apply(delete)
+            self.assertEqual(response["state"], "applied")
+            self.backend.report(db, {"node": "n1", "owner_id": "u1"}, delete["body"]["id"], **response)
+        self.assertEqual(self.backend.snapshot("u1")["employees"], [])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT enabled FROM agents WHERE id='delete-test-agent'").fetchone()[0], 0)
+            self.assertIsNone(db.execute("SELECT admin_agent_id FROM projects WHERE id='p1'").fetchone()[0])
+        self.assertEqual(work.read_text(), "research")
+        self.assertTrue(all(not b["enabled"] and not b["assigned"] for b in self.connector.bindings()))
+        self.assertEqual(self.control.apply(delete), response)
+        self.assertEqual(self.configure()["state"], "failed")
+
+    def test_delete_rejects_active_work_without_disabling_bindings(self):
+        self.create()
+        self.configure()
+        response = self.control.apply(self.envelope("dispatch", {"id": "e1", "project_id": "p1"}))
+        backend = response["result"]["backend_project"]
+        active = self.connector.root / "projects" / backend / "active.json"
+        write_json(active, {"job": "running"})
+        deleted = self.control.apply(self.envelope("delete", {"id": "e1"}))
+        self.assertEqual(deleted["state"], "failed")
+        self.assertTrue(self.connector.bindings()[0]["enabled"])
+        self.assertTrue(active.is_file())
 
     def test_browse_and_unknown_receipt(self):
         (self.workspace / "folder").mkdir()

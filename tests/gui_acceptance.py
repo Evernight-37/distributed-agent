@@ -88,6 +88,13 @@ with tempfile.TemporaryDirectory() as td:
                 "document.querySelector('#projectMembers')?.open && document.querySelector('#projectTasks')?.open && document.querySelector('#projectTasks')?.scrollTop>0"
             )
             report["project_panel_state_preserved"] = True
+            report["default_admin_value"] = bool(
+                window.evaluate_js(
+                    "(()=>{const s=document.querySelector('[aria-label=\"呼叫 Agent\"]');s.selectedIndex=0;return s.value==='';})()"
+                )
+            )
+            if not report["default_admin_value"]:
+                raise RuntimeError("Default administrator option must send no explicit mention ID")
             window.evaluate_js(
                 "document.querySelector('.composer textarea').value='<script>原样文本</script>';document.querySelector('.composer').dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}))"
             )
@@ -111,6 +118,17 @@ with tempfile.TemporaryDirectory() as td:
             )
             wait("document.querySelector('#toast')?.textContent.startsWith('连接成功：')")
             report["account_endpoint_test"] = True
+            window.evaluate_js("document.querySelector('#dashboardNav').click()")
+            wait("document.querySelector('#content h1')?.textContent==='控制台'")
+            window.evaluate_js(
+                "Array.from(document.querySelectorAll('#content .agent button')).find(b=>b.textContent==='删除').click()"
+            )
+            wait("document.querySelector('#modalActions')?.textContent.includes('确认删除员工')")
+            window.evaluate_js(
+                "Array.from(document.querySelectorAll('#modalActions button')).find(b=>b.textContent==='确认删除员工').click()"
+            )
+            wait("(refresh(true), !S.dash.employees.some(e=>e.name==='GUI员工'))")
+            report["employee_deleted"] = True
         except Exception as exc:
             report["error"] = str(exc)
         finally:
@@ -126,7 +144,7 @@ with tempfile.TemporaryDirectory() as td:
             window.destroy()
 
     window.events.loaded += validate
-    webview.start(gui="edgechromium")
+    webview.start(gui="cocoa" if sys.platform == "darwin" else "edgechromium")
     server.shutdown()
     server.server_close()
     print(json.dumps(report, ensure_ascii=False))

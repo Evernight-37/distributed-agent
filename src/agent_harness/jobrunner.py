@@ -33,6 +33,15 @@ def _execution(root, name):
 
 
 def _stamp(pid):
+    if sys.platform == "darwin":
+        try:
+            os.kill(pid, 0)
+            result = subprocess.run(
+                ["/bin/ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True, timeout=5
+            )
+            return result.stdout.strip() if result.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            return None
     if os.name != "nt":
         try:
             os.kill(pid, 0)

@@ -148,7 +148,7 @@ def codex_login_status(exe, root=None):
     output = (result.stdout + "\n" + result.stderr).casefold()
     if result.returncode == 0 and "not logged in" not in output:
         return {"logged_in": True}
-    return {"logged_in": False, "login_error": "Codex CLI 尚未登录；请使用当前 Windows 用户完成登录"}
+    return {"logged_in": False, "login_error": "Codex CLI 尚未登录；请使用当前系统用户完成登录"}
 
 
 def cli_status(root=None):
@@ -172,6 +172,21 @@ def cli_status(root=None):
         roaming = os.environ.get("APPDATA")
         if roaming:
             paths.extend(Path(roaming) / "npm" / name for name in ("codex.cmd", "codex.exe"))
+    elif sys.platform == "darwin":
+        # Finder-launched apps do not inherit the interactive shell's PATH.
+        paths.extend(
+            Path(name).expanduser()
+            for name in (
+                "/Applications/Codex.app/Contents/Resources/codex",
+                "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                "~/Applications/Codex.app/Contents/Resources/codex",
+                "/opt/homebrew/bin/codex",
+                "/usr/local/bin/codex",
+                "~/.npm-global/bin/codex",
+                "~/.local/bin/codex",
+            )
+        )
+        paths.extend((Path.home() / ".nvm" / "versions" / "node").glob("*/bin/codex"))
     for name in ("codex", "codex.exe", "codex.cmd"):
         found = shutil.which(name)
         if found:

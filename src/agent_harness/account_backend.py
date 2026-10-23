@@ -49,6 +49,7 @@ class AccountBackend:
                     "conversation_privacy_v2",
                     "service_host_owner_v1",
                     "codex_mcp_v1",
+                    "employee_delete_v1",
                 ],
             }
         if action == "request-device":
@@ -326,7 +327,7 @@ class AccountBackend:
                         (user, project, time.time()),
                     )
                 employees = db.execute(
-                    "SELECT id,node FROM employees WHERE owner_id IN (SELECT user_id FROM project_users WHERE project_id=?)",
+                    "SELECT id,node,status FROM employees WHERE owner_id IN (SELECT user_id FROM project_users WHERE project_id=?)",
                     (project,),
                 ).fetchall()
                 dispatch_state = {}
@@ -351,7 +352,10 @@ class AccountBackend:
                     seen = db.execute("SELECT last_seen FROM pull_devices WHERE node=?", (member["node"],)).fetchone()
                     member["online"] = bool(seen and seen["last_seen"] > time.time() - 45)
                 result["members"] = [
-                    m for m in result.get("members", []) if dispatch_state.get(m.get("employee_id")) != "withdraw"
+                    m
+                    for m in result.get("members", [])
+                    if dispatch_state.get(m.get("employee_id")) != "withdraw"
+                    and not any(e["id"] == m.get("employee_id") and e["status"] == "deleted" for e in employees)
                 ]
             return result
         if op == "create-project":

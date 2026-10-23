@@ -2,6 +2,7 @@
 
 import json
 import hashlib
+import logging
 import os
 import secrets
 import socket
@@ -14,6 +15,7 @@ import urllib.error
 from pathlib import Path
 from common import lock, read_json, validate_local_proxy, write_json
 from desktop_runtime import DesktopRuntime, assets, python_command
+from runtime_paths import application_home
 from pull_worker import validate_server, NoRedirect
 from account_identity import (
     generate_identity,
@@ -29,7 +31,7 @@ MCP_DELEGATE_SCOPES = ["collaboration.message", "collaboration.read", "collabora
 
 class AppBridge:
     def __init__(self, root=None):
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "AgentHarness"
+        base = application_home()
         self.root = Path(root or base / "data").resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.identity = None
@@ -582,7 +584,7 @@ class AppBridge:
             if proc.returncode:
                 raise RuntimeError("无法限制本地账户文件权限")
         else:
-            path.chmod(0o600)
+            path.chmod(0o700 if path.is_dir() else 0o600)
 
     def _runtime(self, server=None):
         if not self.profile:
@@ -679,6 +681,12 @@ class AppBridge:
         runtime.start()
 
     def _owner(self, action, node, data, server=None):
+        if action == "delete":
+            challenge = self._post(
+                server or self.profile["server"], {"action": "challenge", "public_key": self.identity["public_key"]}
+            )
+            if "employee_delete_v1" not in challenge.get("features", []):
+                raise ValueError("协作服务版本过旧，请先更新托管电脑和员工所在设备的应用，再删除员工。")
         envelope = sign_envelope(
             self.identity,
             {
@@ -788,6 +796,7 @@ class AppBridge:
             with self.guard:
                 return {"ok": True, "result": self._invoke(action, data or {})}
         except Exception as exc:
+            logging.getLogger("agent_harness").exception("Application action failed: %s", action)
             return {"ok": False, "error": str(exc)}
 
     def _invoke(self, action, data):
@@ -996,6 +1005,9 @@ class AppBridge:
             return self._owner(
                 "create", data["node"], {"id": "employee-" + secrets.token_hex(16), "name": data["name"]}, server
             )
+        if action == "employee-delete":
+            employee = self._employee(data["id"])
+            return self._owner("delete", employee["node"], {"id": employee["id"]}, employee["server"])
         if action == "employee-configure":
             employee = self._employee(data["id"])
             settings = {k: data[k] for k in ("model", "effort", "enabled", "stages", "timeout")}
@@ -1243,7 +1255,7 @@ class AppBridge:
                 from worker import codex_version
 
                 if not Path(selected).is_absolute() or not Path(selected).is_file() or codex_version(selected) is None:
-                    raise ValueError("请选择能运行的 Codex CLI 程序（codex.exe 或 codex.cmd）")
+                    raise ValueError("请选择能运行的 Codex CLI 程序（macOS: codex；Windows: codex.exe 或 codex.cmd）")
             receivers = self.root / "receivers"
             for path in receivers.glob("device-*"):
                 if path.is_dir() and path.resolve().parent == receivers.resolve():

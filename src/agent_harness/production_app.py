@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import logging
+import sys
 import threading
 import time
 from pathlib import Path
@@ -39,14 +41,28 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data")
     parser.add_argument("--smoke-report")
+    parser.add_argument("--smoke-register", action="store_true")
     args = parser.parse_args()
+    if args.smoke_register and not (args.data and args.smoke_report):
+        parser.error("--smoke-register requires isolated --data and --smoke-report paths")
     import webview
 
     bridge = AppBridge(args.data)
+    diagnostic_path = bridge.root / "app-errors.log"
+    diagnostic_handler = logging.FileHandler(diagnostic_path, encoding="utf-8")
+    if sys.platform != "win32":
+        diagnostic_path.chmod(0o600)
+    diagnostic_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    diagnostic_logger = logging.getLogger("agent_harness")
+    diagnostic_logger.addHandler(diagnostic_handler)
+    diagnostic_logger.setLevel(logging.ERROR)
 
     class API:
         def invoke(self, action, data=None):
-            return bridge.invoke(action, data)
+            logging.getLogger(__name__).info("Bridge request: %s", action)
+            result = bridge.invoke(action, data)
+            logging.getLogger(__name__).info("Bridge response: %s ok=%s", action, result.get("ok"))
+            return result
 
     window = webview.create_window(
         "Agent Harness · 协作工作台",
@@ -79,11 +95,43 @@ def main():
                 if result.get("heading"):
                     break
                 time.sleep(0.05)
+            import ssl
+
+            try:
+                context = ssl.create_default_context()
+                result["tls_context"] = context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+            except Exception as exc:
+                result["tls_error"] = str(exc)
+            if args.smoke_register:
+                window.evaluate_js(
+                    "window.__registrationProbe={pending:true};"
+                    "window.pywebview.api.invoke('register',{username:'macOS packaged test',password:'',server:'http://127.0.0.1:8765'})"
+                    ".then(v=>window.__registrationProbe=v).catch(e=>window.__registrationProbe={error:e.message});true"
+                )
+                deadline = time.monotonic() + 35
+                while time.monotonic() < deadline:
+                    probe = window.evaluate_js("window.__registrationProbe")
+                    if not probe.get("pending"):
+                        break
+                    time.sleep(0.1)
+                result["registration"] = probe
+                if probe.get("ok"):
+                    window.evaluate_js("enter();true")
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        heading = window.evaluate_js("document.querySelector('#content h1')?.textContent")
+                        if heading == "控制台":
+                            break
+                        time.sleep(0.1)
+                    result["dashboard_heading"] = heading
+                from app_lifecycle import Lifecycle
+
+                Lifecycle(bridge.root, host_root=bridge._host_state_root()).stop()
             Path(args.smoke_report).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
             window.destroy()
 
     window.events.loaded += loaded
-    webview.start(gui="edgechromium", debug=False)
+    webview.start(gui="cocoa" if sys.platform == "darwin" else "edgechromium", debug=False)
 
 
 if __name__ == "__main__":

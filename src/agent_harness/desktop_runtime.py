@@ -69,9 +69,9 @@ def web_assets():
 
 def python_command():
     if getattr(sys, "frozen", False):
-        from service_install import installed_bundle
+        from service_install import installed_bundle, runtime_python
 
-        return str(installed_bundle() / "runtime" / "python.exe")
+        return str(runtime_python(installed_bundle()))
     return sys.executable
 
 

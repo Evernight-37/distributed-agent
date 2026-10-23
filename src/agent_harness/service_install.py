@@ -1,14 +1,27 @@
 """Install service binaries separately from the portable UI directory."""
 
 import hashlib
-import os
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 from common import lock
+from runtime_paths import application_home
 
 _installed = None
+
+
+def runtime_python(bundle):
+    bundle = Path(bundle)
+    windows = bundle / "runtime" / "python.exe"
+    return windows if windows.is_file() else bundle / "runtime" / "bin" / "python3"
+
+
+def application_bundle():
+    executable = Path(sys.executable).resolve()
+    if sys.platform == "darwin" and executable.parent.name == "MacOS":
+        return executable.parent.parent / "Resources" / "service-bundle"
+    return executable.parent
 
 
 def install_bundle(bundle, destination):
@@ -30,7 +43,7 @@ def install_bundle(bundle, destination):
                 digest.update(b"\0")
                 digest.update(hashlib.sha256(path.read_bytes()).digest())
                 files.append((path, relative))
-    if not (bundle / "runtime/python.exe").is_file() or not (bundle / "client/desktop_service.py").is_file():
+    if not runtime_python(bundle).is_file() or not (bundle / "client/desktop_service.py").is_file():
         raise RuntimeError("应用安装不完整：缺少后台入口")
     version = digest.hexdigest()
     # Keep the installed runtime path short. Windows can copy files through a
@@ -60,7 +73,7 @@ def install_bundle(bundle, destination):
             for source, relative in files:
                 output = staging / relative
                 output.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, output)
+                shutil.copy2(source, output)
             (staging / ".complete").write_text(version, encoding="ascii")
             staging.rename(target)
         finally:
@@ -72,6 +85,6 @@ def install_bundle(bundle, destination):
 def installed_bundle():
     global _installed
     if _installed is None:
-        home = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "AgentHarness" / "service-runtime"
-        _installed = install_bundle(Path(sys.executable).parent, home)
+        home = application_home() / "service-runtime"
+        _installed = install_bundle(application_bundle(), home)
     return _installed

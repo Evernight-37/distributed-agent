@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import desktop_runtime
 import desktop_service
 from common import read_json, write_json
+from service_install import runtime_python
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -244,7 +245,7 @@ class DesktopRuntimeContractTests(unittest.TestCase):
 
 class PackagedReceiverTests(unittest.TestCase):
     @unittest.skipUnless(
-        (PACKAGED_APP / "runtime" / "python.exe").exists(),
+        (PACKAGED_APP / "runtime" / "python.exe").exists() or (PACKAGED_APP / "runtime" / "bin" / "python3").exists(),
         "Build the portable app first",
     )
     def test_sidecar_pair_register_bind_duplicate_start_and_stop(self):
@@ -272,7 +273,11 @@ class PackagedReceiverTests(unittest.TestCase):
         bundle = PACKAGED_APP
         with (
             tempfile.TemporaryDirectory() as directory,
-            mock.patch.object(desktop_runtime, "python_command", return_value=str(bundle / "runtime/python.exe")),
+            mock.patch.object(
+                desktop_runtime,
+                "python_command",
+                return_value=str(runtime_python(bundle)),
+            ),
             mock.patch.object(desktop_runtime, "assets", return_value=bundle / "client"),
         ):
             root = Path(directory)

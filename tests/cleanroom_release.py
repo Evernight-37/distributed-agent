@@ -1,4 +1,4 @@
-"""Offline clean-room verification for one unpacked Windows release."""
+"""Offline clean-room verification for one unpacked Windows or macOS release."""
 
 import argparse
 import json
@@ -16,6 +16,9 @@ def main():
     parser.add_argument("scratch", type=Path)
     args = parser.parse_args()
     package = args.package.resolve()
+    app = package if package.suffix == ".app" else None
+    if app:
+        package = app / "Contents" / "Resources" / "service-bundle"
     scratch = args.scratch.resolve()
     expected_version = (Path(__file__).resolve().parents[1] / "VERSION").read_text(encoding="utf-8").strip()
     if scratch.exists():
@@ -26,9 +29,9 @@ def main():
     os.environ["LOCALAPPDATA"] = str(local)
     os.environ["CODEX_HOME"] = str(scratch / "codex-home")
     client = package / "client"
-    runtime = package / "runtime" / "python.exe"
+    runtime = package / "runtime" / ("bin/python3" if app else "python.exe")
     required = (
-        package / "AgentHarness.exe",
+        app / "Contents/MacOS/AgentHarness" if app else package / "AgentHarness.exe",
         runtime,
         client / "app_bridge.py",
         client / "mcp_adapter.py",
@@ -39,8 +42,11 @@ def main():
     if (package / "VERSION").read_text(encoding="utf-8").strip() != expected_version:
         raise RuntimeError("wrong release version")
     sys.path.insert(0, str(client))
+    sys.dont_write_bytecode = True
+    compiled = scratch / "compiled"
+    compiled.mkdir()
     for source in client.glob("*.py"):
-        py_compile.compile(str(source), doraise=True)
+        py_compile.compile(str(source), cfile=str(compiled / (source.name + "c")), doraise=True)
 
     from app_bridge import AppBridge, MCP_DELEGATE_SCOPES
     from account_identity import generate_identity
@@ -101,7 +107,7 @@ def main():
     )
     result = subprocess.run(
         [
-            str(installed / "runtime" / "python.exe"),
+            str(installed / "runtime" / ("bin/python3" if app else "python.exe")),
             "-X",
             "utf8",
             str(installed / "client" / "mcp_adapter.py"),

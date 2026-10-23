@@ -1696,6 +1696,7 @@
           r.append(
             i,
             button("设置", () => employeeSettings(a)),
+            button("删除", () => deleteEmployee(a)),
           );
           card.append(
             r,
@@ -1876,6 +1877,27 @@
           );
           updateMachines();
           a.append(button("取消", closeModal), add);
+        });
+      }
+      function deleteEmployee(e) {
+        modal("删除员工 · " + e.name, (b, actions) => {
+          note(
+            b,
+            "将移除该员工并撤回所有项目派遣；工作文件、会话和任务历史会保留。若它是管理员，群主需要另选管理员。未完成的任务需先结束；离线设备会在上线后确认删除。",
+          );
+          actions.append(
+            button("取消", closeModal),
+            button(
+              "确认删除员工",
+              async () => {
+                await api("employee-delete", { id: e.id });
+                closeModal();
+                notify("删除请求已提交，等待目标设备确认。");
+                await refresh(true);
+              },
+              "primary",
+            ),
+          );
         });
       }
       function employeeSettings(e) {
@@ -2394,7 +2416,9 @@
             text = el("textarea");
           if (isGroup) {
             mention.setAttribute("aria-label", "呼叫 Agent");
-            mention.append(el("option", "", "默认由管理员回复"));
+            const defaultMention = el("option", "", "默认由管理员回复");
+            defaultMention.value = "";
+            mention.append(defaultMention);
             v.members.forEach((a) => {
               const option = el("option", "", "@" + (a.name || a.id));
               option.value = a.id;
@@ -3053,7 +3077,8 @@
           "Codex 需要在这台电脑上单独安装并登录。这里只读取 CLI 返回的登录状态，不会读取登录凭据。",
         );
         const path = field(card, "手动指定程序（留空则自动检测）", "");
-        path.placeholder = "选择 codex.exe 或 codex.cmd";
+        path.placeholder =
+          "选择 codex（Mac）或 codex.exe / codex.cmd（Windows）";
         const browse = button("浏览…", async () => {
           const r = await api("codex-cli-choose");
           if (r?.path) path.value = r.path;
@@ -3097,7 +3122,9 @@
               statusLine.className = "error small";
               statusLine.textContent =
                 "未找到 Codex CLI" +
-                (r?.error ? "：" + r.error : "。请安装后浏览选择 codex.exe。");
+                (r?.error
+                  ? "：" + r.error
+                  : "。请安装后浏览选择 Codex CLI 程序。");
             }
           } catch (e) {
             statusLine.className = "error small";
