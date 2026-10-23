@@ -18,6 +18,7 @@ from pull_worker import NoRedirect, deploy_runtime
 from release_info import version_path
 
 SERVICE_RUNTIME_FILES = (
+    "broker_transport.py",
     "desktop_service.py",
     "local_panel.py",
     "pull_worker.py",
@@ -134,7 +135,7 @@ class DesktopRuntime:
             pass
         return value
 
-    def pair(self, server, code):
+    def pair(self, server, code, broker_proxy=None):
         if self.config_path.exists():
             raise ValueError("这台机器已配对，请保留原身份并点启动")
         if not code.strip():
@@ -142,7 +143,7 @@ class DesktopRuntime:
         self.root.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
             [python_command(), "-X", "utf8", str(assets() / "desktop_service.py"), "pair", str(self.root)],
-            input=json.dumps({"server": server.strip(), "code": code.strip()}),
+            input=json.dumps({"server": server.strip(), "code": code.strip(), "broker_proxy": broker_proxy}),
             capture_output=True,
             text=True,
             encoding="utf-8",

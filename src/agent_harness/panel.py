@@ -249,7 +249,7 @@ def handler_for(root, backend=None, public_origin=None):
                     if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                         raise ValueError("Expected JSON")
                     size = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < size <= 262144:
+                    if not 0 < size <= 8 * 1024 * 1024:
                         raise ValueError("Invalid body size")
                     data = json.loads(self.rfile.read(size))
                     return self.send(200, accounts.api(data))

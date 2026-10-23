@@ -16,7 +16,8 @@ from pathlib import Path
 from common import lock, read_json, validate_local_proxy, write_json
 from desktop_runtime import DesktopRuntime, assets, python_command
 from runtime_paths import application_home
-from pull_worker import validate_server, NoRedirect
+from pull_worker import validate_server
+from broker_transport import broker_opener
 from account_identity import (
     generate_identity,
     sign_envelope,
@@ -47,6 +48,7 @@ class AppBridge:
         self.activated_services = set()
         self.guard = threading.RLock()
         self.allow_window_close = False
+        self.broker_proxy = read_json(self.root / "broker-network.json", {}).get("proxy")
 
     def _profiles(self):
         return [read_json(p) for p in (self.root / "profiles").glob("*.json")]
@@ -59,9 +61,7 @@ class AppBridge:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect()).open(
-                req, timeout=timeout
-            ) as response:
+            with broker_opener(self.broker_proxy).open(req, timeout=timeout) as response:
                 result = json.load(response)
         except urllib.error.HTTPError as exc:
             try:
@@ -75,9 +75,11 @@ class AppBridge:
             raise RuntimeError(
                 "无法连接协作服务 " + server + "。请检查该电脑的服务是否运行，以及 Tailscale 是否已连接。"
             ) from None
+        if not isinstance(result, dict):
+            raise RuntimeError("协作服务返回了无效数据")
         if "error" in result:
             raise RuntimeError(result["error"])
-        return result.get("result", result)
+        return result.get("result", result) if result.get("ok") is True else result
 
     def _server(self, server):
         server = (server or "http://127.0.0.1:8765").rstrip("/")
@@ -249,6 +251,10 @@ class AppBridge:
         server = server or self.profile["server"]
         challenge = self._post(server, {"action": "challenge", "public_key": self.identity["public_key"]}, timeout)
         features = set(challenge.get("features", []))
+        if (
+            operation.startswith("attachment-") or (payload or {}).get("attachment_ids")
+        ) and "chat_attachments_v1" not in features:
+            raise RuntimeError("托管端尚不支持附件。请让托管电脑升级到 1.0.2 并重启协作服务。")
         if (
             operation in {"project", "message", "conversation-read", "memory-note-add", "memory-note-delete"}
             and "conversation_privacy_v2" not in features
@@ -667,7 +673,10 @@ class AppBridge:
         runtime = self._runtime(server)
         if not runtime.config_path.exists():
             pair = self._rpc("pair-local", {"node": self.profile["node"]}, server=server)
-            runtime.pair(server, pair.get("code", pair.get("pair_code")))
+            if self.broker_proxy:
+                runtime.pair(server, pair.get("code", pair.get("pair_code")), broker_proxy=self.broker_proxy)
+            else:
+                runtime.pair(server, pair.get("code", pair.get("pair_code")))
             config = read_json(runtime.config_path)
             config["owner_account_id"] = self.identity["account_id"]
             write_json(runtime.config_path, config)
@@ -1041,6 +1050,20 @@ class AppBridge:
 
             chosen = self.window.create_file_dialog(webview.FileDialog.FOLDER)
             return {"path": chosen[0] if chosen else ""}
+        if action == "attachment-save":
+            if not self.window:
+                raise RuntimeError("文件保存窗口尚未就绪")
+            from attachments import decode_file, safe_name
+            import webview
+
+            server = self.project_servers.get(data["project"], self.profile["server"])
+            file = self._rpc("attachment-get", data, server=server, timeout=45)
+            chosen = self.window.create_file_dialog(webview.FileDialog.SAVE, save_filename=safe_name(file["name"]))
+            if not chosen:
+                return {"saved": False}
+            path = Path(chosen if isinstance(chosen, str) else chosen[0])
+            path.write_bytes(decode_file(file["base64"]))
+            return {"saved": True, "name": path.name}
         if action == "new-project":
             server = data.get("server") or self.profile["server"]
             if server == "http://127.0.0.1:8765" and not self.profile.get("local_host_enabled"):
@@ -1093,13 +1116,15 @@ class AppBridge:
             "conversation-read",
             "memory-note-add",
             "memory-note-delete",
+            "attachment-upload",
+            "attachment-get",
         }:
             project = data.get("project", data.get("id"))
             server = self.project_servers.get(project, self.profile["server"])
             payload = dict(data)
             if action == "message":
                 payload.setdefault("client_message_id", str(uuid.uuid4()))
-            result = self._rpc(action, payload, server=server)
+            result = self._rpc(action, payload, server=server, timeout=45 if action.startswith("attachment-") else 15)
             if action == "project":
                 result["server"] = server
             if action == "invite":
