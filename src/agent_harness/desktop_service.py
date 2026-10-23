@@ -231,7 +231,7 @@ if __name__ == "__main__":
     if command == "pair":
         try:
             data = json.load(sys.stdin)
-            value = enroll(data["server"], data["code"], root)
+            value = enroll(data["server"], data["code"], root, broker_proxy=data.get("broker_proxy"))
             print(json.dumps({"ok": True, "result": value}, ensure_ascii=False))
         except Exception as exc:
             error = str(exc)

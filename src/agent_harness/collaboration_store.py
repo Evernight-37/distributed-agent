@@ -47,6 +47,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS invitations(hash TEXT PRIMARY KEY,project_id TEXT NOT NULL,expires REAL NOT NULL,used INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT,action TEXT,details TEXT,created_at REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS agent_cursors(agent_id TEXT,channel TEXT,last_message INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(agent_id,channel));
+            CREATE TABLE IF NOT EXISTS attachments(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,owner_id TEXT NOT NULL,name TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,sha256 TEXT NOT NULL,content BLOB NOT NULL,created_at REAL NOT NULL,message_id INTEGER REFERENCES messages(id));
+            CREATE INDEX IF NOT EXISTS attachments_message ON attachments(message_id);
             CREATE TABLE IF NOT EXISTS service_host(id INTEGER PRIMARY KEY CHECK(id=1),owner_account_id TEXT NOT NULL,host_node TEXT);
             CREATE TABLE IF NOT EXISTS service_metadata(id INTEGER PRIMARY KEY CHECK(id=1),service_id TEXT NOT NULL);
             CREATE UNIQUE INDEX IF NOT EXISTS one_human_message_submission ON messages(project_id,sender_id,client_message_id) WHERE client_message_id IS NOT NULL;
@@ -358,7 +360,12 @@ class Store:
         conversation_id=None,
         client_message_id=None,
         sender_client=None,
+        attachment_ids=None,
     ):
+        from attachments import Attachments
+
+        attachments = Attachments(self)
+        attachment_ids = attachments.ids(attachment_ids if attachment_ids is not None else [])
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self.require_member(db, project, user)
@@ -396,11 +403,12 @@ class Store:
                         or existing["recipient_id"] != recipient
                         or existing["mention_agent_id"] != mention_agent_id
                         or existing["sender_client"] != sender_client
+                        or sorted(a["id"] for a in attachments.metadata(db, existing["id"])) != sorted(attachment_ids)
                     ):
                         raise ValueError("消息幂等标识已用于其他内容")
                     return {"id": existing["id"], "conversation_id": existing["conversation_id"], "duplicate": True}
                 client_message_id = client_message_id.lower()
-            return self._message(
+            result = self._message(
                 db,
                 project,
                 user,
@@ -411,6 +419,8 @@ class Store:
                 client_message_id=client_message_id,
                 sender_client=sender_client,
             )
+            attachments.bind(db, user, project, result["id"], attachment_ids)
+            return result
 
     def _message(
         self,
@@ -761,6 +771,9 @@ class Store:
                     mention_agent_name=mention[0] if mention else None,
                     channel="direct" if item["recipient_id"] else "group",
                 )
+                from attachments import Attachments
+
+                item["attachments"] = Attachments(self).metadata(db, item["id"])
                 messages.append(item)
             conversations = self._conversation_list(db, project, user, messages, members, people)
             tasks = []

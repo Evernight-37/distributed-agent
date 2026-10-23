@@ -76,7 +76,7 @@ class HarnessMcpBackend:
             raise RuntimeError("协作服务返回无效数据")
         if result.get("error"):
             raise RuntimeError(result["error"])
-        return result.get("result", result)
+        return result.get("result", result) if result.get("ok") is True else result
 
     def _rpc(self, server, operation, payload=None, timeout=12):
         identity = self.grant["identity"]

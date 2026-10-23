@@ -1272,6 +1272,58 @@
           ? String(value)
           : d.toLocaleString("zh-CN");
       }
+      function fileSize(bytes) {
+        return bytes < 1024 * 1024
+          ? (bytes / 1024).toFixed(1) + " KB"
+          : (bytes / 1024 / 1024).toFixed(1) + " MB";
+      }
+      function attachmentCard(file, project) {
+        const card = el("div", "note attachment-card");
+        card.append(
+          el("span", "", "📎 " + file.name + " · " + fileSize(file.size)),
+        );
+        if (
+          ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(
+            file.mime,
+          )
+        ) {
+          card.append(
+            button("预览图片", async () => {
+              const result = await api("attachment-get", {
+                project,
+                id: file.id,
+              });
+              if (
+                ![
+                  "image/png",
+                  "image/jpeg",
+                  "image/gif",
+                  "image/webp",
+                ].includes(result.mime)
+              )
+                throw new Error("附件不是可预览的图片");
+              modal(file.name, (body) => {
+                const img = el("img");
+                img.alt = file.name;
+                img.src = "data:" + result.mime + ";base64," + result.base64;
+                img.style.maxWidth = "100%";
+                img.style.maxHeight = "65vh";
+                body.append(img);
+              });
+            }),
+          );
+        }
+        card.append(
+          button("下载", async () => {
+            const result = await api("attachment-save", {
+              project,
+              id: file.id,
+            });
+            if (result.saved) notify("已保存：" + result.name);
+          }),
+        );
+        return card;
+      }
       function field(parent, label, value = "", options = null, type = "text") {
         const id = "f" + Math.random().toString(36).slice(2),
           l = el("label", "label", label);
@@ -2388,6 +2440,9 @@
             body,
             el("div", "muted small", date(m.created_at)),
           );
+          (m.attachments || []).forEach((file) =>
+            bubble.append(attachmentCard(file, S.project)),
+          );
           row.append(el("span", "avatar", sender.slice(0, 1)), bubble);
           msgs.append(row);
         });
@@ -2412,6 +2467,8 @@
           };
           if (!draft.client_message_id) draft.client_message_id = messageId();
           if (!S.drafts.has(draftKey)) S.drafts.set(draftKey, draft);
+          draft.attachments ||= [];
+          const projectId = S.project;
           const mention = el("select", "mention-agent"),
             text = el("textarea");
           if (isGroup) {
@@ -2436,6 +2493,7 @@
             const mentionValue = isGroup ? mention.value : "";
             const previous = S.drafts.get(draftKey);
             S.drafts.set(draftKey, {
+              ...previous,
               body: text.value,
               mention: mentionValue,
               client_message_id:
@@ -2451,6 +2509,109 @@
           const send = button("发送", null, "primary");
           send.type = "submit";
           composer.append(text, send);
+          if ((v.capabilities || []).includes("chat_attachments_v1")) {
+            const picker = el("input"),
+              files = el("div", "attachment-draft");
+            picker.type = "file";
+            picker.multiple = true;
+            picker.hidden = true;
+            const redrawFiles = () => {
+              files.replaceChildren();
+              (S.drafts.get(draftKey)?.attachments || []).forEach((file) => {
+                const row = el(
+                  "div",
+                  "small",
+                  "📎 " + file.name + " · " + fileSize(file.size),
+                );
+                row.append(
+                  button("移除", () => {
+                    const current = S.drafts.get(draftKey);
+                    current.attachments = current.attachments.filter(
+                      (f) => f.id !== file.id,
+                    );
+                    current.client_message_id = messageId();
+                    redrawFiles();
+                  }),
+                );
+                files.append(row);
+              });
+            };
+            const addFiles = async (incoming) => {
+              const current = S.drafts.get(draftKey);
+              if (!current || sending || current.uploading)
+                throw new Error("请等待当前文件处理完成");
+              if (current.attachments.length + incoming.length > 5)
+                throw new Error("每条消息最多 5 个附件");
+              if (incoming.some((file) => file.size > 5 * 1024 * 1024))
+                throw new Error("每个附件最大 5 MB");
+              current.uploading = true;
+              files.append(el("span", "muted small", "正在上传附件…"));
+              try {
+                for (const file of incoming) {
+                  const encoded = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () =>
+                      resolve(String(reader.result).split(",")[1]);
+                    reader.onerror = () =>
+                      reject(new Error("无法读取：" + file.name));
+                    reader.readAsDataURL(file);
+                  });
+                  const metadata = await api("attachment-upload", {
+                    project: projectId,
+                    name: file.name || "截图.png",
+                    base64: encoded,
+                  });
+                  (S.drafts.get(draftKey) || current).attachments.push(
+                    metadata,
+                  );
+                  (S.drafts.get(draftKey) || current).client_message_id =
+                    messageId();
+                }
+              } finally {
+                (S.drafts.get(draftKey) || current).uploading = false;
+                redrawFiles();
+              }
+            };
+            picker.onchange = () =>
+              run(async () => {
+                await addFiles(Array.from(picker.files));
+                picker.value = "";
+              });
+            text.addEventListener("paste", (e) => {
+              const incoming = Array.from(e.clipboardData?.files || []);
+              if (incoming.length) {
+                e.preventDefault();
+                run(() => addFiles(incoming));
+              }
+            });
+            composer.ondragover = (e) => {
+              e.preventDefault();
+            };
+            composer.ondrop = (e) => {
+              e.preventDefault();
+              const incoming = Array.from(e.dataTransfer?.files || []);
+              if (incoming.length) run(() => addFiles(incoming));
+            };
+            composer.append(
+              button("添加文件 / 图片", () => picker.click()),
+              picker,
+              files,
+              el(
+                "div",
+                "muted small",
+                "可拖入文件或粘贴截图；每个最大 5 MB，每条最多 5 个。",
+              ),
+            );
+            redrawFiles();
+          } else {
+            composer.append(
+              el(
+                "div",
+                "muted small",
+                "托管端升级到 1.0.2 后可发送文件和截图。",
+              ),
+            );
+          }
           let sending = false,
             composing = false;
           text.addEventListener("compositionstart", () => {
@@ -2469,7 +2630,12 @@
             e.preventDefault();
             run(async () => {
               if (sending) return;
-              const body = text.value.trim();
+              const submission = S.drafts.get(draftKey) || draft;
+              if (submission.uploading)
+                throw new Error("附件仍在上传，请稍后发送");
+              const attached = submission.attachments || [];
+              const body =
+                text.value.trim() || (attached.length ? "📎 附件" : "");
               if (!body) return;
               sending = true;
               const recipient =
@@ -2477,7 +2643,6 @@
                 (!isGroup
                   ? conversationParticipants(selected).find((id) => id !== me)
                   : null);
-              const submission = S.drafts.get(draftKey) || draft;
               try {
                 await api("message", {
                   project: S.project,
@@ -2488,6 +2653,7 @@
                   recipient_id: recipient || null,
                   mention_agent_id: isGroup ? mention.value || null : null,
                   client_message_id: submission.client_message_id,
+                  attachment_ids: attached.map((file) => file.id),
                 });
                 text.value = "";
                 S.drafts.delete(draftKey);

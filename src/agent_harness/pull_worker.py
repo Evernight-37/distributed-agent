@@ -16,6 +16,7 @@ from pathlib import Path
 
 from common import identifier, lock, read_json, validate_project, write_json
 from release_info import version_path
+from broker_transport import broker_opener
 
 TERMINAL = {"needs_review", "completed", "failed", "cancelled", "timed_out", "interrupted", "unknown"}
 
@@ -63,9 +64,7 @@ def api(config, operation, payload=None):
         headers["Authorization"] = "Bearer " + config["device_token"]
     request = urllib.request.Request(url, data=json.dumps(payload or {}).encode(), headers=headers, method="POST")
     # System proxy configuration must not intercept the owner's explicit broker route.
-    with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect()).open(
-        request, timeout=15
-    ) as response:
+    with broker_opener(config.get("broker_proxy")).open(request, timeout=15) as response:
         data = json.load(response)
     if data.get("ok") is False:
         raise ValueError(data.get("error", "Broker rejected request"))
@@ -82,7 +81,7 @@ def validate_server(server):
         raise ValueError("Broker URL must contain only its origin")
 
 
-def enroll(server, pair_code, root, config_path=None):
+def enroll(server, pair_code, root, config_path=None, broker_proxy=None):
     validate_server(server)
     root = Path(root).resolve()
     deploy_runtime(root)
@@ -90,6 +89,9 @@ def enroll(server, pair_code, root, config_path=None):
     if config_path.exists():
         raise ValueError("Connector is already enrolled; retain its existing device identity")
     config = {"server": server.rstrip("/"), "root": str(root), "device_token": secrets.token_urlsafe(48)}
+    if broker_proxy:
+        broker_opener(broker_proxy)
+        config["broker_proxy"] = broker_proxy
     result = api(config, "enroll", {"pair_code": pair_code, "device_token": config["device_token"]})
     config["node"] = result.get("node", result.get("name"))
     write_json(config_path, config)

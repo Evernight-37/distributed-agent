@@ -50,6 +50,7 @@ class AccountBackend:
                     "service_host_owner_v1",
                     "codex_mcp_v1",
                     "employee_delete_v1",
+                    "chat_attachments_v1",
                 ],
             }
         if action == "request-device":
@@ -374,7 +375,15 @@ class AccountBackend:
                 p.get("conversation_id"),
                 p.get("client_message_id"),
                 "codex" if delegate_scopes is not None else None,
+                p.get("attachment_ids"),
             )
+        if op in {"attachment-upload", "attachment-get"}:
+            from attachments import Attachments
+
+            files = Attachments(self.store)
+            if op == "attachment-upload":
+                return files.upload(user, p["project"], p["name"], p["base64"])
+            return files.download(user, p["project"], p["id"])
         if op == "conversation-read":
             return self.store.mark_conversation_read(user, p["project"], p["conversation_id"])
         if op == "task":

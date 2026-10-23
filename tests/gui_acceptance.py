@@ -81,13 +81,16 @@ with tempfile.TemporaryDirectory() as td:
                     "document.querySelectorAll('.conversation-layout > *').length===2 && !document.querySelector('.project-rail')"
                 )
             )
+            wait("!polling")
             window.evaluate_js(
-                "S.view.tasks=Array.from({length:40},(_,i)=>({id:'scroll-'+i,title:'任务 '+i,state:'needs_review'}));renderProject();let t=document.querySelector('#projectTasks');t.open=true;t.scrollTop=80;document.querySelector('#projectMembers').open=true;renderProject()"
+                "polling=true;window.__panelProbe={pending:true};S.view.tasks=Array.from({length:40},(_,i)=>({id:'scroll-'+i,title:'任务 '+i,state:'needs_review'}));renderProject();"
+                "requestAnimationFrame(()=>{const t=document.querySelector('#projectTasks');t.open=true;void t.offsetHeight;t.scrollTop=80;document.querySelector('#projectMembers').open=true;renderProject();"
+                "requestAnimationFrame(()=>{window.__panelProbe={ok:document.querySelector('#projectMembers').open&&document.querySelector('#projectTasks').open&&document.querySelector('#projectTasks').scrollTop>0};polling=false;});});true"
             )
-            wait(
-                "document.querySelector('#projectMembers')?.open && document.querySelector('#projectTasks')?.open && document.querySelector('#projectTasks')?.scrollTop>0"
-            )
-            report["project_panel_state_preserved"] = True
+            wait("!window.__panelProbe.pending")
+            report["project_panel_state_preserved"] = bool(window.evaluate_js("window.__panelProbe.ok"))
+            if not report["project_panel_state_preserved"]:
+                raise RuntimeError("Expanded panels and scroll position were not preserved")
             report["default_admin_value"] = bool(
                 window.evaluate_js(
                     "(()=>{const s=document.querySelector('[aria-label=\"呼叫 Agent\"]');s.selectedIndex=0;return s.value==='';})()"
@@ -100,6 +103,36 @@ with tempfile.TemporaryDirectory() as td:
             )
             wait("document.querySelector('.bubble p')?.textContent==='<script>原样文本</script>'")
             report["message_safe_text"] = True
+            window.evaluate_js(
+                "(()=>{const d=new DataTransfer();d.items.add(new File(['attachment test'],'GUI附件.txt',{type:'text/plain'}));"
+                "const input=document.querySelector('.composer input[type=file]');input.files=d.files;input.dispatchEvent(new Event('change'));})()"
+            )
+            wait(
+                "document.querySelector('.attachment-draft')?.textContent.includes('GUI附件.txt') && !S.drafts.values().next().value.uploading"
+            )
+            window.evaluate_js(
+                "document.querySelector('.composer').dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}))"
+            )
+            wait("document.querySelector('.messages .attachment-card')?.textContent.includes('GUI附件.txt')")
+            report["file_attachment_sent"] = True
+            window.evaluate_js(
+                "(()=>{const raw=atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8X8AAAAASUVORK5CYII=');"
+                "const d=new DataTransfer();d.items.add(new File([Uint8Array.from(raw,c=>c.charCodeAt(0))],'截图.png',{type:'image/png'}));"
+                "const e=new Event('paste',{bubbles:true,cancelable:true});Object.defineProperty(e,'clipboardData',{value:d});document.querySelector('.composer textarea').dispatchEvent(e);})()"
+            )
+            wait(
+                "document.querySelector('.attachment-draft')?.textContent.includes('截图.png') && !S.drafts.values().next().value.uploading"
+            )
+            window.evaluate_js(
+                "document.querySelector('.composer').dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}))"
+            )
+            wait("Array.from(document.querySelectorAll('.attachment-card button')).some(b=>b.textContent==='预览图片')")
+            window.evaluate_js(
+                "Array.from(document.querySelectorAll('.attachment-card button')).find(b=>b.textContent==='预览图片').click()"
+            )
+            wait("document.querySelector('#modalBody img')?.naturalWidth===1")
+            report["pasted_screenshot_preview"] = True
+            window.evaluate_js("closeModal();true")
             report["selection_preserved"] = bool(
                 window.evaluate_js(
                     "(()=>{const p=document.querySelector('.bubble p'),box=document.querySelector('.messages'),r=document.createRange(),s=window.getSelection();r.selectNodeContents(p);s.removeAllRanges();s.addRange(r);S.dirty=false;renderProject();const ok=document.querySelector('.messages')===box&&S.dirty;s.removeAllRanges();return ok})()"

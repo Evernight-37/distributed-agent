@@ -1,0 +1,31 @@
+name: Verify Linux receiver
+
+on:
+  push:
+    branches: [macos-improvements, windows-improvements]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install receiver test dependencies
+        run: python -m pip install cryptography==46.0.3
+      - name: Verify headless source
+        run: |
+          python -m unittest discover -s tests -t . -q
+          python src/agent_harness/linux_receiver.py --help
+      - name: Package Linux receiver
+        run: python scripts/build_linux_receiver.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgentHarness-linux-receiver
+          path: dist/AgentHarness-*-linux-receiver.tar.gz*
+          if-no-files-found: error

@@ -17,6 +17,8 @@ URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSIO
 # SHA-256 published on the Python.org release page; never run an unverified download.
 SHA256 = "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15"
 CLIENT_FILES = (
+    "broker_transport.py",
+    "attachments.py",
     "common.py",
     "pull_worker.py",
     "local_panel.py",
