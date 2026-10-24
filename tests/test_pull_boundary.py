@@ -1,5 +1,9 @@
 import tempfile
 import unittest
+import json
+import os
+from pathlib import Path
+from unittest.mock import patch
 from collaboration_store import Store
 from broker import PullBackend
 from panel import action
@@ -7,6 +11,38 @@ import worker
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_owner_selected_workspace_accepts_implementation_without_linked_worktree(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(worker, "ROOT", Path(folder)):
+            workspace = Path(folder) / "workspace"
+            workspace.mkdir()
+            worker.rpc(
+                {
+                    "action": "register",
+                    "project": {
+                        "name": "local",
+                        "remote_path": str(workspace),
+                        "model": "test-model",
+                        "effort": "low",
+                        "timeout": 30,
+                        "local_control": True,
+                    },
+                    "memory": {"revision": 0},
+                }
+            )
+            with patch.object(worker, "launch_supervisor", return_value=os.getpid()) as launch:
+                result = worker.rpc(
+                    {
+                        "action": "start",
+                        "project": "local",
+                        "job": "local-edit",
+                        "prompt": json.dumps({"stage": "implement", "allowed_files": "result.txt"}),
+                    }
+                )
+            launch.assert_called_once_with("local-edit")
+            self.assertEqual(result["status"], "starting")
+            config = worker.read_json(worker.job_dir("local-edit") / "request.json")
+            self.assertEqual(config["project"]["remote_path"], str(workspace.resolve()))
+
     def test_default_panel_and_coordinator_never_construct_ssh_adapter(self):
         from panel import handler_for
         from coordinator import Coordinator
