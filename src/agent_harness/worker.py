@@ -599,7 +599,11 @@ def rpc(request, managed_runtime=None):
                         raise ValueError("Remote directory is busy in another project")
             validate_project(project)
             contract = json.loads(request["prompt"])
-            if contract.get("stage") == "implement":
+            # A pull receiver uses a directory chosen and enabled by its
+            # machine owner. Keep the linked-worktree requirement for legacy
+            # centrally configured workers, while allowing local execution in
+            # that selected workspace (still under Codex workspace-write).
+            if contract.get("stage") == "implement" and not project.get("local_control"):
                 require_worktree(project)
             job = identifier(request["job"])
             path = job_dir(job)
