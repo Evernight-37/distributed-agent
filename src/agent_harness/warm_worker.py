@@ -91,8 +91,6 @@ def server_command(stage):
         "--disable",
         "skill_mcp_dependency_install",
     ]
-    if stage in {"discuss", "review"}:
-        command += ["--disable", "shell_tool", "--disable", "unified_exec"]
     return command
 
 
@@ -261,6 +259,8 @@ class WarmManager:
             )
         prompt = (
             GROUP_RULES
+            + "\nASSIGNED LOCAL PROJECT DIRECTORY:\n"
+            + cwd
             + "\nPROJECT MEMORY:\n"
             + json.dumps(config["memory"], ensure_ascii=False)
             + "\nTASK CONTRACT:\n"
