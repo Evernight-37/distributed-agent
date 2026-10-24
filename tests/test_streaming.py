@@ -48,6 +48,50 @@ class StreamingTests(unittest.TestCase):
         expected = Path(__file__).resolve().parents[1].joinpath("VERSION").read_text(encoding="utf-8").strip()
         self.assertEqual(application_version(), expected)
 
+    def test_administrator_self_assignment_reports_back_to_the_group(self):
+        self.store.message(self.owner, self.project, "请修改 README.md 中的项目说明")
+        self.coordinator.wake_messages()
+        self.coordinator.dispatch()
+        self.backend.result = {
+            "status": "needs_review",
+            "report": json.dumps(
+                {
+                    "reply": "开始修改项目说明",
+                    "tasks": [
+                        {
+                            "agent": "admin",
+                            "title": "修改说明",
+                            "instructions": "按人类要求修改 README.md",
+                            "stage": "implement",
+                            "allowed_files": "README.md",
+                            "acceptance": "说明已更新",
+                            "validation": "核对差异",
+                        }
+                    ],
+                    "messages": [],
+                    "executions": [],
+                    "done": True,
+                }
+            ),
+        }
+        self.coordinator.collect()
+        with self.store.connect() as db:
+            task = dict(db.execute("SELECT * FROM tasks WHERE state='queued'").fetchone())
+        contract = json.loads(task["contract"])
+        self.assertEqual(contract["stage"], "implement")
+        self.assertFalse(contract["private_turn"])
+        self.assertIsNone(contract["reply_to"])
+        self.coordinator.dispatch()
+        self.backend.result = {
+            "status": "needs_review",
+            "report": json.dumps({"reply": "项目说明已更新", "done": True}),
+        }
+        self.coordinator.collect()
+        view = self.store.project_view(self.owner, self.project)
+        self.assertEqual(view["messages"][-1]["body"], "项目说明已更新")
+        self.assertEqual(view["messages"][-1]["conversation_id"], "group:" + self.project)
+        self.assertIsNone(view["messages"][-1]["recipient_id"])
+
     def test_reply_stream_stays_above_midturn_human_message(self):
         self.store.message(self.owner, self.project, "first")
         self.coordinator.wake_messages()

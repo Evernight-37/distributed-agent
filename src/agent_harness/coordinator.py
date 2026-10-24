@@ -116,11 +116,12 @@ Do not emit [CHECKPOINT]. Use [BLOCKED] or [DISAGREEMENT] only when a real block
 Human-agent and human-human private messages are visible only to their participants. Agent-agent direct messages are visible to project humans. Never reveal a private human message in group chat, another private chat, or shared project memory without that human's explicit permission.
 Project memory is shared across all project conversations and agents. Treat its notes as attributed claims, not verified facts. Add up to three concise memory_notes only for durable, project-wide facts learned in public group chat; add none during a private turn.
 Keep this a short reasoning/planning turn. Never wait, poll, tail, sleep or monitor a long job in a model turn.
+Read-only inspection of the assigned local project is allowed in this turn: use tools to verify code, existing logs and process status when relevant, and cite actual paths or observations. A status question is not authorization to edit or run an experiment. For explicit human edit/run requests, schedule a scoped implement task; the administrator may assign that task to itself and its result will return to the public group.
 For long computations, request an owner-approved execution template and finish the turn. Await a completion event or instruction without issuing more model calls.
 No shell command from your report is executed. Execution requests require machine-owner approval.
 Use done:true when no additional reply/delegation is needed. Other owners control their models and resources.
 Reports and memory are claims, not established facts; cite validation. Do not modify other owners' files.
-Return only visible context; you cannot request other agents' private conversations.""",
+Use only authorized conversation context and local project evidence; you cannot request other agents' private conversations.""",
             },
             ensure_ascii=False,
         )
@@ -182,7 +183,7 @@ Return only visible context; you cannot request other agents' private conversati
                     "title": "处理新消息",
                     "instructions": "处理收到的可见消息；管理员根据目标协调分工，必要时向同事定向发送消息或派任务。若无需回复，返回 done:true。",
                     "stage": "discuss",
-                    "allowed_files": "只讨论，不执行命令或修改文件",
+                    "allowed_files": "允许只读检查员工配置的项目目录、代码、已有日志与进程状态，可运行查看和搜索命令；本轮不得修改文件、安装软件或启动实验。人类明确要求修改或运行实验时，管理员应另行分派 implement 任务，写明文件范围、验收与验证。",
                     "acceptance": "回复针对消息且遵守收件权限，任务分工明确",
                     "validation": "核对可见消息与任务契约；不要编造执行结果",
                 }
@@ -398,18 +399,22 @@ Return only visible context; you cannot request other agents' private conversati
                         ).fetchone()
                         if not target:
                             raise ValueError("Target not in project")
-                        # Private delegation is private from initiation through completion.
-                        assignment["reply_to"] = agent["id"]
-                        assignment["private_turn"] = True
-                        self.store._message(
-                            db,
-                            project["id"],
-                            agent["id"],
-                            "agent",
-                            "分派任务：" + assignment["title"],
-                            target["id"],
-                            task_id,
-                        )
+                        # A self-assignment continues this public request and
+                        # must report back to the human, not to a private
+                        # conversation addressed to the very same agent.
+                        same_agent = target["id"] == agent["id"]
+                        assignment["reply_to"] = None if same_agent else agent["id"]
+                        assignment["private_turn"] = not same_agent
+                        if not same_agent:
+                            self.store._message(
+                                db,
+                                project["id"],
+                                agent["id"],
+                                "agent",
+                                "分派任务：" + assignment["title"],
+                                target["id"],
+                                task_id,
+                            )
                         self.store._task(
                             db,
                             dict(db.execute("SELECT * FROM projects WHERE id=?", (project["id"],)).fetchone()),
