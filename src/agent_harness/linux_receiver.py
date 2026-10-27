@@ -5,9 +5,11 @@ import getpass
 import json
 import os
 import shlex
+import shutil
 import signal
 import socket
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -169,6 +171,65 @@ def codex_command(root, command):
     return bridge._mcp_status()
 
 
+def _sync_codex_path(root, selected):
+    bridge = AppBridge(root)
+    for receiver in receiver_paths(root):
+        bridge._sync_cli(DesktopRuntime(receiver), selected)
+
+
+def codex_path_command(root, action, selected=None):
+    root = Path(root).resolve()
+    saved_path = root / "codex-cli.json"
+    if action == "set":
+        candidate = Path(selected).expanduser()
+        if not candidate.is_absolute():
+            raise ValueError("Codex CLI 必须使用绝对路径")
+        candidate = candidate.resolve()
+        version = codex_version(candidate) if candidate.is_file() else None
+        if version is None:
+            raise ValueError("所选程序无法运行 Codex CLI")
+        result = {
+            "found": True,
+            "configured": True,
+            "path": str(candidate),
+            "version": ".".join(map(str, version)),
+            "mode": "manual",
+        }
+        _private_json(saved_path, result)
+        _sync_codex_path(root, str(candidate))
+        return result
+    if action == "detect":
+        result = cli_status(root)
+        selected_path = result.get("path", "") if result.get("found") else ""
+        stored = {
+            "path": selected_path,
+            "version": result.get("version", ""),
+            "error": result.get("error", ""),
+            "mode": "auto",
+        }
+        _private_json(saved_path, stored)
+        _sync_codex_path(root, selected_path)
+        return {**result, "mode": "auto"}
+    saved = read_json(saved_path, {})
+    path = saved.get("path") if isinstance(saved, dict) else None
+    version = codex_version(path) if isinstance(path, str) and path and Path(path).is_file() else None
+    if version is None:
+        return {
+            "found": False,
+            "configured": bool(path),
+            "path": path,
+            "mode": saved.get("mode") if isinstance(saved, dict) else None,
+            "error": "设置的 Codex CLI 路径无效；请运行 codex path set 或 codex path detect",
+        }
+    return {
+        "found": True,
+        "configured": True,
+        "path": path,
+        "version": ".".join(map(str, version)),
+        "mode": saved.get("mode", "manual"),
+    }
+
+
 def _set_broker_proxy(root, proxy):
     root = Path(root)
     if proxy:
@@ -185,17 +246,34 @@ def _set_broker_proxy(root, proxy):
             else:
                 config.pop("broker_proxy", None)
             _private_json(path, config)
-    return {"enabled": bool(proxy), "proxy": proxy, "restart_required": True}
+    return {
+        "enabled": bool(proxy),
+        "proxy": proxy,
+        "receiver_restart_required": True,
+        "codex_mcp_restart_required": False,
+        "note": "请重启 Harness 服务；长连接 Codex MCP 会在下一次请求时自动重新读取代理",
+    }
 
 
 def _set_codex_proxy(root, setting):
     setting = validate_local_proxy(setting)
     root = Path(root)
     bridge = AppBridge(root)
+    warnings = []
     for receiver in receiver_paths(root):
-        bridge._sync_proxy(DesktopRuntime(receiver), setting)
+        runtime = DesktopRuntime(receiver)
+        bridge._sync_proxy(runtime, setting)
+        if runtime.status().get("running"):
+            try:
+                runtime._control("action", {"action": "retire-workers-after-turn"})
+            except (OSError, RuntimeError, ValueError) as exc:
+                warnings.append({"receiver": receiver.name, "error": str(exc)[:500]})
     _private_json(root / "codex-proxy.json", setting)
-    return {**setting, "applies_to": "next Codex turn"}
+    result = {**setting, "applies_to": "next newly started Codex worker"}
+    if warnings:
+        result["warnings"] = warnings
+        result["note"] = "代理已保存；部分常驻 worker 无法请求安全回收，请重启 Harness 服务"
+    return result
 
 
 def network_status(root):
@@ -218,6 +296,66 @@ def _proxy_reachable(address):
         return False
 
 
+def _disk_status(path):
+    try:
+        usage = shutil.disk_usage(path)
+        return {"total_bytes": usage.total, "free_bytes": usage.free}
+    except OSError as exc:
+        return {"error": type(exc).__name__}
+
+
+def _project_health(root):
+    projects = []
+    seen = set()
+    for receiver in receiver_paths(root):
+        for config_path in sorted((receiver / "projects").glob("*/project.json")):
+            config = read_json(config_path, {})
+            remote = config.get("remote_path") if isinstance(config, dict) else None
+            if not isinstance(remote, str) or not remote:
+                continue
+            path = Path(remote).expanduser().resolve()
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            projects.append(
+                {
+                    "path": key,
+                    "exists": path.is_dir(),
+                    "readable": path.is_dir() and os.access(path, os.R_OK | os.X_OK),
+                    "writable": path.is_dir() and os.access(path, os.W_OK | os.X_OK),
+                    "disk": _disk_status(path) if path.is_dir() else None,
+                }
+            )
+    return projects
+
+
+def _gpu_status():
+    executable = shutil.which("nvidia-smi")
+    if not executable:
+        return {"available": False}
+    try:
+        result = subprocess.run(
+            [executable, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"available": False, "error": type(exc).__name__}
+    if result.returncode:
+        return {"available": False, "error": (result.stderr or "nvidia-smi failed").strip()[:500]}
+    devices = []
+    for line in result.stdout.splitlines()[:16]:
+        name, separator, memory = line.rpartition(",")
+        if separator and memory.strip().isdigit():
+            devices.append({"name": name.strip()[:200], "memory_total_mib": int(memory.strip())})
+    return {"available": bool(devices), "devices": devices}
+
+
 def doctor(root):
     root = Path(root).resolve()
     root_mode = stat.S_IMODE(root.stat().st_mode) if root.exists() else None
@@ -235,8 +373,11 @@ def doctor(root):
     result.update(
         version=version_path.read_text(encoding="utf-8").strip() if version_path.is_file() else "source",
         python=sys.version.split()[0],
-        private_root=root_mode in {0o700, 0o750},
+        private_root=root_mode == 0o700,
         root_mode=oct(root_mode) if root_mode is not None else None,
+        root_disk=_disk_status(root),
+        projects=_project_health(root),
+        gpu=_gpu_status(),
         service=service_state,
         linger=service.linger_status(),
         network=network,
@@ -274,12 +415,20 @@ def service_command(root, args):
         result["linger"] = manager.linger_status()
         return result
     if args.service_action == "logs":
+        if args.follow:
+            print("正在跟随 systemd journal；接收端文件日志请另开终端运行不带 --follow 的命令。", flush=True)
         completed = manager.logs(args.lines, args.follow)
         if not args.follow:
             if completed.stdout:
                 print(completed.stdout, end="")
             if completed.returncode:
                 raise RuntimeError((completed.stderr or "journalctl 失败").strip())
+            for item in manager.receiver_logs(args.lines):
+                print(f"\n== {item['receiver']} receiver logs ==")
+                for key in ("stdout", "stderr"):
+                    if item.get(key):
+                        print(f"-- {key} --")
+                        print(item[key])
         return None
     return manager.uninstall()
 
@@ -301,11 +450,20 @@ def build_parser():
     upgrade = commands.add_parser("upgrade", help="Install a verified Linux receiver bundle side by side")
     upgrade.add_argument("--bundle", type=Path, required=True)
     upgrade.add_argument("--sha256", required=True)
+    upgrade.add_argument(
+        "--retry", action="store_true", help="Retry activation of an already installed verified release"
+    )
     commands.add_parser("rollback", help="Return to the previous installed Linux receiver")
     codex = commands.add_parser("codex", help="Connect the interactive Codex CLI to Harness")
     codex_actions = codex.add_subparsers(dest="codex_action", required=True)
     for name in ("connect", "status", "disconnect"):
         codex_actions.add_parser(name)
+    codex_path = codex_actions.add_parser("path", help="Manage the Codex CLI executable")
+    path_actions = codex_path.add_subparsers(dest="path_action", required=True)
+    path_set = path_actions.add_parser("set")
+    path_set.add_argument("path")
+    path_actions.add_parser("detect")
+    path_actions.add_parser("status")
     service = commands.add_parser("service", help="Manage the systemd user service")
     service_actions = service.add_subparsers(dest="service_action", required=True)
     for name in ("install", "start", "stop", "restart", "status", "uninstall"):
@@ -332,6 +490,8 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        raise PermissionError("拒绝以 root 运行 Agent Harness；请使用专用普通用户")
     args.root = args.root.expanduser().resolve()
     args.root.mkdir(parents=True, exist_ok=True, mode=0o700)
     args.root.chmod(0o700)
@@ -352,13 +512,16 @@ def main(argv=None):
     elif args.command == "upgrade":
         from linux_upgrade import upgrade
 
-        result = upgrade(args.root, args.bundle, args.sha256, refresh_mcp_launchers)
+        result = upgrade(args.root, args.bundle, args.sha256, refresh_mcp_launchers, retry=args.retry)
     elif args.command == "rollback":
         from linux_upgrade import rollback
 
         result = rollback(args.root, refresh_mcp_launchers)
     elif args.command == "codex":
-        result = codex_command(args.root, args.codex_action)
+        if args.codex_action == "path":
+            result = codex_path_command(args.root, args.path_action, getattr(args, "path", None))
+        else:
+            result = codex_command(args.root, args.codex_action)
     elif args.command == "service":
         result = service_command(args.root, args)
     elif args.network_action in {"status", "test"}:

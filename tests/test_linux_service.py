@@ -88,6 +88,29 @@ class LinuxServiceTests(unittest.TestCase):
         self.assertEqual(path.parent.name, "user")
         self.assertEqual(path.parent.parent.name, "systemd")
 
+    def test_receiver_logs_are_bounded_and_exclude_task_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "data"
+            receiver = root / "receivers/device-one"
+            receiver.mkdir(parents=True)
+            (receiver / "desktop-service.stdout.log").write_text("one\ntwo\nthree\n", encoding="utf-8")
+            (receiver / "desktop-service.stderr.log").write_text("error-one\nerror-two\n", encoding="utf-8")
+            (receiver / "report.txt").write_text("secret task report", encoding="utf-8")
+            outside = root / "outside.log"
+            outside.write_text("must not be exposed", encoding="utf-8")
+            linked_receiver = root / "receivers/device-linked"
+            linked_receiver.mkdir()
+            try:
+                (linked_receiver / "desktop-service.stdout.log").symlink_to(outside)
+            except OSError:
+                pass
+            manager = ServiceManager(root, "/usr/bin/python3", "/opt/receiver.py", home=directory)
+            result = manager.receiver_logs(lines=1)
+            self.assertEqual(result[0]["stdout"], "three")
+            self.assertEqual(result[0]["stderr"], "error-two")
+            self.assertNotIn("secret task report", str(result))
+            self.assertNotIn("must not be exposed", str(result))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,9 @@ from linux_service import ServiceManager
 
 
 VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+")
+MAX_ARCHIVE_MEMBERS = 4096
+MAX_ARCHIVE_FILE_SIZE = 256 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_SIZE = 1024 * 1024 * 1024
 
 
 def _digest(path):
@@ -27,9 +30,14 @@ def _digest(path):
 
 
 def _members(archive):
-    members = archive.getmembers()
+    members = []
     roots = set()
-    for member in members:
+    paths = set()
+    total_size = 0
+    for member in archive:
+        if len(members) >= MAX_ARCHIVE_MEMBERS:
+            raise ValueError("升级包文件数量过多")
+        members.append(member)
         name = PurePosixPath(member.name)
         if name.is_absolute() or ".." in name.parts or not name.parts:
             raise ValueError("升级包包含不安全路径")
@@ -37,6 +45,16 @@ def _members(archive):
             raise ValueError("升级包不能包含链接或设备文件")
         if not (member.isdir() or member.isfile()):
             raise ValueError("升级包包含不支持的文件类型")
+        normalized = name.as_posix().rstrip("/")
+        if normalized in paths:
+            raise ValueError("升级包包含重复路径")
+        paths.add(normalized)
+        if member.isfile():
+            if member.size < 0 or member.size > MAX_ARCHIVE_FILE_SIZE:
+                raise ValueError("升级包包含过大的单个文件")
+            total_size += member.size
+            if total_size > MAX_ARCHIVE_TOTAL_SIZE:
+                raise ValueError("升级包解压后总体积过大")
         roots.add(name.parts[0])
     if len(roots) != 1:
         raise ValueError("升级包必须只有一个顶层目录")
@@ -47,6 +65,7 @@ def _extract(bundle, destination):
     with tarfile.open(bundle, "r:gz") as archive:
         members, top = _members(archive)
         base = Path(destination).resolve()
+        extracted_size = 0
         for member in members:
             relative = PurePosixPath(member.name)
             target = base.joinpath(*relative.parts)
@@ -60,8 +79,15 @@ def _extract(bundle, destination):
             if source is None:
                 raise ValueError("升级包文件无法读取")
             with source, target.open("wb") as output:
+                written = 0
                 for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    written += len(chunk)
+                    extracted_size += len(chunk)
+                    if written > MAX_ARCHIVE_FILE_SIZE or extracted_size > MAX_ARCHIVE_TOTAL_SIZE:
+                        raise ValueError("升级包实际解压体积超过限制")
                     output.write(chunk)
+                if written != member.size:
+                    raise ValueError("升级包文件大小与清单不一致")
             target.chmod(member.mode & 0o777)
         return base / top
 
@@ -102,7 +128,40 @@ def _runtime(release):
     return python, script
 
 
-def upgrade(root, bundle, expected_sha256, refresh_launchers):
+def _current_runtime(root):
+    """Return the active recorded runtime, falling back only before state exists."""
+    record = read_json(_record_path(root), {})
+    current = record.get("current") if isinstance(record, dict) else None
+    if current is not None:
+        if not isinstance(current, dict) or not all(
+            isinstance(current.get(key), str) for key in ("release", "python", "script")
+        ):
+            raise ValueError("Linux 安装状态中的当前版本无效")
+        release = Path(current["release"]).expanduser().resolve()
+        python, script = _runtime(release)
+        recorded_python = Path(current["python"]).expanduser().absolute()
+        recorded_script = Path(current["script"]).expanduser().absolute()
+        if python != recorded_python or script != recorded_script:
+            raise ValueError("Linux 安装状态中的运行路径不匹配")
+        return release, python, script
+    return (
+        Path(__file__).resolve().parent.parent,
+        Path(sys.executable).resolve(),
+        Path(__file__).resolve().parent / "linux_receiver.py",
+    )
+
+
+def _bundle_marker(release):
+    return Path(release) / ".agent-harness-bundle-sha256"
+
+
+def _write_bundle_marker(release, digest):
+    marker = _bundle_marker(release)
+    marker.write_text(digest + "\n", encoding="ascii")
+    marker.chmod(0o600)
+
+
+def upgrade(root, bundle, expected_sha256, refresh_launchers, retry=False):
     root = Path(root).resolve()
     bundle = Path(bundle).expanduser().resolve()
     expected = expected_sha256.strip().lower()
@@ -116,8 +175,8 @@ def upgrade(root, bundle, expected_sha256, refresh_launchers):
     releases = root.parent / "releases"
     releases.mkdir(parents=True, exist_ok=True, mode=0o700)
     releases.chmod(0o700)
-    old_release = Path(__file__).resolve().parent.parent
-    old_python, old_script = Path(sys.executable).resolve(), Path(__file__).resolve().parent / "linux_receiver.py"
+    old_release, old_python, old_script = _current_runtime(root)
+    reused = False
     with tempfile.TemporaryDirectory(dir=releases) as temporary:
         unpacked = _extract(bundle, temporary)
         version_file = unpacked / "client" / "VERSION"
@@ -128,15 +187,31 @@ def upgrade(root, bundle, expected_sha256, refresh_launchers):
             raise ValueError("升级包版本无效")
         destination = releases / version
         if destination.exists():
-            raise ValueError("该版本已安装；请使用 service restart 或 rollback")
-        os.replace(unpacked, destination)
-    try:
-        # Virtual environments embed absolute interpreter paths and must be
-        # created only after the release reaches its final location.
-        subprocess.run([sys.executable, str(destination / "install.py")], cwd=destination, check=True)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        shutil.rmtree(destination)
-        raise RuntimeError("新版本依赖安装失败；当前服务未切换") from exc
+            if not retry:
+                raise ValueError("该版本已安装；确认是上次失败后可使用 --retry 重新激活")
+            marker = _bundle_marker(destination)
+            if not marker.is_file() or marker.read_text(encoding="ascii").strip() != expected:
+                raise ValueError("已安装版本与本次升级包无法安全匹配")
+            _runtime(destination)
+            reused = True
+        else:
+            os.replace(unpacked, destination)
+    if not reused:
+        try:
+            # Virtual environments embed absolute interpreter paths and must be
+            # created only after the release reaches its final location.
+            subprocess.run([sys.executable, str(destination / "install.py")], cwd=destination, check=True)
+            _write_bundle_marker(destination, expected)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            cleanup_error = None
+            try:
+                shutil.rmtree(destination)
+            except OSError as cleanup_exc:
+                cleanup_error = cleanup_exc
+            message = "新版本依赖安装失败；当前服务未切换"
+            if cleanup_error is not None:
+                message += f"；失败目录清理也未完成（{type(cleanup_error).__name__}）"
+            raise RuntimeError(message) from exc
     new_python, new_script = _runtime(destination)
     new_manager = ServiceManager(root, new_python, new_script)
     old_manager = ServiceManager(root, old_python, old_script)
@@ -155,7 +230,7 @@ def upgrade(root, bundle, expected_sha256, refresh_launchers):
     path = _record_path(root)
     write_json(path, record)
     path.chmod(0o600)
-    return {"version": version, "release": str(destination), "rollback_available": True}
+    return {"version": version, "release": str(destination), "rollback_available": True, "reused": reused}
 
 
 def rollback(root, refresh_launchers):

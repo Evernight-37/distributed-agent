@@ -380,6 +380,22 @@ class ManagedRuntime:
                     pass
         return len(retired)
 
+    def retire_workers_after_turn(self):
+        """Revoke every owned warm registration without interrupting active turns."""
+        retired = []
+        with lock(ROOT / "registry.lock"):
+            for directory in (ROOT / "projects").glob("*"):
+                if not directory.is_dir():
+                    continue
+                warm = read_json(directory / "warm.json") or {}
+                generation, pid = warm.get("generation"), warm.get("pid")
+                if generation and isinstance(pid, int) and self.owns(generation, pid):
+                    # An active worker observes this only after run_job returns;
+                    # an idle worker exits within its next 200 ms loop.
+                    write_json(directory / "warm.json", None)
+                    retired.append(generation)
+        return len(retired)
+
 
 def reconcile(active):
     if not active:

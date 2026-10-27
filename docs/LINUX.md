@@ -1,13 +1,13 @@
-# Linux 无界面接收端（1.1.0）
+# Linux 无界面接收端（1.1.1）
 
 Linux 接收端把服务器作为你账户名下的一台执行机器。Windows 或 macOS 控制台可以在这台机器上添加员工、选择服务器项目目录并派入项目；群聊呼叫员工后，它会启动独立 Codex 会话并回传结果。接收端不会接管 VS Code 中已经打开的 Codex 对话。
 
-需要 Python 3.10+、可运行且已登录的 Codex CLI，以及到协作服务的网络连接。服务器项目文件始终留在服务器。普通用户即可安装，不修改系统 Python，也不需要 Linux 桌面环境。
+需要 Python 3.10+、Python 的 `venv` 组件、可运行且已登录的 Codex CLI，以及到协作服务的网络连接。服务器项目文件始终留在服务器。普通用户即可安装，不修改系统 Python，也不需要 Linux 桌面环境。Ubuntu/Debian 的精简安装若缺少 `venv`，先由管理员一次性安装对应包（例如 Ubuntu 24.04 的 `python3-venv`）；此后安装和运行 Harness 都使用普通用户。不要使用 `sudo` 或 root 运行 Harness、Codex 或 MCP；1.1.1 会拒绝实际 root 操作。
 
 ## 首次安装
 
 ```bash
-tar -xzf AgentHarness-1.1.0-linux-receiver.tar.gz
+tar -xzf AgentHarness-1.1.1-linux-receiver.tar.gz
 cd AgentHarness-linux
 python3 install.py
 ./harness link --server https://你的团队地址 --codex /绝对路径/codex
@@ -56,6 +56,9 @@ python3 install.py
 ```bash
 ./harness codex connect
 ./harness codex status
+./harness codex path detect
+./harness codex path set /新的/绝对路径/codex
+./harness codex path status
 ```
 
 连接后，Linux 当前用户的普通 Codex 对话可以列出 Harness 项目、读取有权会话、发送消息，并给自己名下的 Agent 派发异步任务。它不能邀请成员、修改管理员、控制别人机器或批准执行命令。
@@ -83,7 +86,7 @@ MCP 使用数据目录中的稳定启动器。并排升级会更新启动器内�
 ./harness network test
 ```
 
-两类代理都只接受本机回环地址。修改协作服务代理后执行 `./harness service restart`；模型代理从下一轮 Codex 任务起生效。`network test` 会检查端口、接收端和 Codex 登录状态，但不会发起模型调用。
+两类代理都只接受本机回环地址。修改协作服务代理后执行 `./harness service restart`；长连接 MCP 会在下一次请求时重新读取代理。模型代理保存后会让空闲常驻 worker 退出，活跃 worker 完成本轮后退出，因此新代理从下一次新 worker 生效。`network test` 会检查端口、接收端和 Codex 登录状态，但不会发起模型调用。
 
 服务器无法安装内核 Tailscale 时，可在用户目录启动官方 userspace 模式：
 
@@ -106,7 +109,7 @@ tailscale --socket="$HOME/.local/share/AgentHarness/tailscale/tailscaled.sock" u
 
 ```bash
 ./harness upgrade \
-  --bundle /绝对路径/AgentHarness-1.1.0-linux-receiver.tar.gz \
+  --bundle /绝对路径/AgentHarness-1.1.1-linux-receiver.tar.gz \
   --sha256 64位十六进制摘要
 ```
 
@@ -114,6 +117,12 @@ tailscale --socket="$HOME/.local/share/AgentHarness/tailscale/tailscaled.sock" u
 
 ```bash
 ./harness rollback
+```
+
+若包已经完整安装、但上次服务切换失败，可验证同一个包和摘要后重试：
+
+```bash
+./harness upgrade --bundle /绝对路径/同一个包.tar.gz --sha256 原摘要 --retry
 ```
 
 不要从聊天消息或不可信网页复制摘要；摘要必须来自你信任的发布渠道。旧版本目录会保留用于回滚，不会自动删除。
@@ -124,3 +133,4 @@ tailscale --socket="$HOME/.local/share/AgentHarness/tailscale/tailscaled.sock" u
 - 附件可在成员间传输和预览，但尚不会自动作为图片或文件输入交给 Codex。
 - 接收端不调度 GPU/显存资源；多个 Agent 并行时仍需机器所有者合理配置并发。
 - `systemd --user` 是否能在无人登录时持续运行取决于服务器的 linger 策略。
+- 实现任务的“声明修改范围”是提示合同，不是文件 ACL；实现阶段可写机器所有者登记的整个项目工作区。严格隔离应使用专用 Git worktree 和专用普通 Unix 用户。

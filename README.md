@@ -4,7 +4,7 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 
 ## 使用应用
 
-当前整合版为 **1.1.0**。Windows 便携包由 [Build Windows release](https://github.com/Evernight-37/distributed-agent/actions/workflows/windows-release.yml) 构建；macOS 可构建原生 `.app`，Linux 服务器可安装 [无界面接收端](docs/LINUX.md)，由 Mac 或 Windows 控制台管理。1.1.0 在原有附件、员工管理、跨成员 Agent 呼叫和受限实现任务基础上，补齐 Linux systemd 常驻、Codex MCP、代理与健康检查、安全升级和回滚。
+当前整合版为 **1.1.1**。Windows 便携包由 [Build Windows release](https://github.com/Evernight-37/distributed-agent/actions/workflows/windows-release.yml) 构建；macOS 可构建原生 `.app`，Linux 服务器可安装 [无界面接收端](docs/LINUX.md)，由 Mac 或 Windows 控制台管理。Linux 安装需要 Python 3.10+ 及其 `venv` 组件。1.1.1 修复 Linux 连续升级、失败重试、Codex 路径更新、代理热加载、日志与健康检查，并默认拒绝 root 运行。
 
 从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases) 下载完整 Windows 压缩包，解压后双击 `AgentHarness.exe`。请保留整个目录；应用自带隔离的后台 Python 运行时，不要求用户安装 Python。系统需要 Edge WebView2，并且每台执行 Agent 的电脑需要已有可用的 Codex 登录。
 
@@ -29,6 +29,8 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 项目数据保存在创建项目时选择的协作服务上。托管电脑可在 **设置 → 协作服务 → 创建团队入口** 中建立 Tailscale 私有 HTTPS 地址。同事加入同一 Tailscale 网络后，用该地址和项目邀请码加入项目；不需要为每个团队重新创建账户。Tailscale 显示的 `100.x.x.x` 是机器地址，不是团队服务地址；应用中可分享的地址形如 `https://电脑名.xxxx.ts.net`。
 
 应用不会安装组网软件、开放防火墙或接管 Codex/GitHub 凭据。服务运营者能够读取其数据库中的项目内容，因此成员应信任托管者。
+
+实现任务中的“声明修改范围”是任务合同，不是文件系统 ACL。执行进程获得机器所有者登记的整个项目工作区写权限；高敏项目应使用专用普通系统用户和独立 Git worktree，不要给 Agent 免密 sudo 或传统 Docker socket。
 
 ## 从源码验证和构建
 

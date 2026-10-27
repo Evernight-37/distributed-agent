@@ -137,6 +137,35 @@ class ServiceManager:
             check=False,
         )
 
+    def receiver_logs(self, lines=100, byte_limit=262144):
+        """Return bounded service stdout/stderr only; never task prompts or reports."""
+
+        if not isinstance(lines, int) or isinstance(lines, bool) or not 1 <= lines <= 10000:
+            raise ValueError("日志行数必须在 1 到 10000 之间")
+        if not isinstance(byte_limit, int) or not 1024 <= byte_limit <= 1048576:
+            raise ValueError("日志读取上限无效")
+        receivers = self.root / "receivers"
+        result = []
+        for receiver in sorted(receivers.glob("device-*")):
+            if not receiver.is_dir() or receiver.resolve().parent != receivers.resolve():
+                continue
+            item = {"receiver": receiver.name}
+            for name, key in (
+                ("desktop-service.stdout.log", "stdout"),
+                ("desktop-service.stderr.log", "stderr"),
+            ):
+                path = receiver / name
+                if path.is_symlink() or not path.is_file() or path.resolve().parent != receiver.resolve():
+                    continue
+                with path.open("rb") as stream:
+                    stream.seek(0, 2)
+                    stream.seek(max(0, stream.tell() - byte_limit))
+                    text = stream.read(byte_limit).decode("utf-8", errors="replace")
+                item[key] = "\n".join(text.splitlines()[-lines:])
+            if len(item) > 1:
+                result.append(item)
+        return result
+
     def uninstall(self):
         # A missing unit is already uninstalled; tolerate this for idempotence.
         self._command("disable", "--now", UNIT_NAME, check=False)

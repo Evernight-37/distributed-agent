@@ -1138,7 +1138,13 @@
             "",
             "textarea",
           ).required = true;
-          field(f, "允许修改的文件／责任范围", "allowed_files", "", "textarea");
+          field(
+            f,
+            "声明的修改范围（提示约束；实现任务可写整个项目工作区）",
+            "allowed_files",
+            "",
+            "textarea",
+          );
           field(f, "验收条件", "acceptance", "", "textarea").required = true;
           field(f, "验证方法／命令", "validation", "", "textarea").required =
             true;

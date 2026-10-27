@@ -119,6 +119,9 @@ def serve(root):
                                 result = connector.executor(
                                     {"action": "register", "project": project, "memory": {"revision": 0, "entries": []}}
                                 )
+                        elif action == "retire-workers-after-turn":
+                            retire = getattr(runtime, "retire_workers_after_turn", None)
+                            result = {"retired": retire() if retire else 0}
                         else:
                             raise ValueError("Unknown desktop action")
                     elif route == "stop" and data is not None:

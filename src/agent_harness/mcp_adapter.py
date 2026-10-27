@@ -30,12 +30,16 @@ class HarnessMcpBackend:
             if network_path
             else self.grant_path.parent.parent / "broker-network.json"
         )
-        network = read_json(network_path, {})
-        proxy = network.get("proxy") if isinstance(network, dict) else None
-        self.opener = broker_opener(proxy)
+        self.network_path = network_path
         self.project_servers = {}
         self.last_dashboard = 0.0
         self.dashboard_cache = None
+
+    def _opener(self):
+        """Reload the local broker proxy so long-lived MCP sessions update safely."""
+        network = read_json(self.network_path, {})
+        proxy = network.get("proxy") if isinstance(network, dict) else None
+        return broker_opener(proxy)
 
     def _load_grant(self):
         value = read_json(self.grant_path)
@@ -69,7 +73,7 @@ class HarnessMcpBackend:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with self.opener.open(request, timeout=timeout) as response:
+            with self._opener().open(request, timeout=timeout) as response:
                 result = json.load(response)
         except urllib.error.HTTPError as exc:
             try:
@@ -208,7 +212,10 @@ class HarnessMcpBackend:
                         "title": {"type": "string"},
                         "instructions": {"type": "string"},
                         "stage": {"type": "string", "enum": ["discuss", "review", "implement"]},
-                        "allowed_files": {"type": "string"},
+                        "allowed_files": {
+                            "type": "string",
+                            "description": "声明的修改范围；这是任务合同，不是文件系统 ACL。实现任务仍可写机器所有者登记的整个项目工作区。",
+                        },
                         "acceptance": {"type": "string"},
                         "validation": {"type": "string"},
                     },

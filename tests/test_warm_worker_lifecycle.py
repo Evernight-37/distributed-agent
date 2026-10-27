@@ -102,6 +102,36 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             self.assertIsNone(read_json(idle / "warm.json"))
             self.assertEqual(read_json(active / "warm.json")["generation"], "active-generation")
 
+    def test_proxy_refresh_revokes_idle_and_active_warm_workers_after_turn(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = self.runtime_root(folder)
+            worker.set_root(root)
+            idle = root / "projects" / "idle"
+            active = root / "projects" / "active"
+            idle.mkdir(parents=True)
+            active.mkdir(parents=True)
+            write_json(idle / "active.json", None)
+            write_json(active / "active.json", {"job": "job-active"})
+
+            class Child:
+                def __init__(self, pid):
+                    self.pid = pid
+
+                def poll(self):
+                    return None
+
+            runtime = worker.ManagedRuntime(root)
+            runtime._children = {
+                "idle-generation": Child(101),
+                "active-generation": Child(202),
+            }
+            write_json(idle / "warm.json", {"generation": "idle-generation", "pid": 101})
+            write_json(active / "warm.json", {"generation": "active-generation", "pid": 202})
+            self.assertEqual(runtime.retire_workers_after_turn(), 2)
+            self.assertIsNone(read_json(idle / "warm.json"))
+            self.assertIsNone(read_json(active / "warm.json"))
+            self.assertEqual(read_json(active / "active.json")["job"], "job-active")
+
     def setUp(self):
         self.original_root = worker.ROOT
 
