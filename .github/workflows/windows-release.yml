@@ -1,8 +1,8 @@
-name: Build Windows improvements
+name: Build Windows release
 
 on:
   push:
-    branches: [windows-improvements]
+    branches: [main, windows-improvements]
   workflow_dispatch:
 
 permissions:

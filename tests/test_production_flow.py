@@ -1,4 +1,4 @@
-import tempfile, threading, unittest
+import hashlib, tempfile, threading, unittest
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
@@ -91,6 +91,60 @@ class ProductionFlow(unittest.TestCase):
             self.assertTrue(result["ok"], result)
             stop.assert_called_once()
             start.assert_called_once_with(open_browser=False, state_root=saved.resolve())
+
+    def test_execution_approval_recovers_service_after_app_restart(self):
+        class Runtime:
+            def __init__(self, root):
+                self.root = root
+                self.calls = []
+
+            def _control(self, operation, payload):
+                self.calls.append((operation, payload))
+                return {"approved": True}
+
+        with tempfile.TemporaryDirectory() as td:
+            bridge = AppBridge(Path(td) / "app")
+            bridge.identity = {"account_id": "account"}
+            bridge.profile = {"server": "https://primary.example", "node": "device-test"}
+            runtime = Runtime(Path(td) / "receiver")
+            job_id = "job-restart-approval"
+            receipt = runtime.root / "pull-receipts" / (hashlib.sha256(job_id.encode()).hexdigest() + ".json")
+            write_json(receipt, {"phase": "waiting_local_approval", "job": {"id": job_id}})
+            with (
+                patch.object(bridge, "_attached_services", return_value=["https://team.example"]),
+                patch.object(bridge, "_runtime", return_value=runtime),
+            ):
+                result = bridge.invoke("approve-execution", {"job_id": job_id, "approved": True})
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(bridge.job_servers[job_id], "https://team.example")
+            self.assertEqual(
+                runtime.calls,
+                [("action", {"action": "approve-execution", "job_id": job_id, "approved": True})],
+            )
+
+    def test_execution_approval_never_falls_back_to_primary_service(self):
+        class Runtime:
+            def __init__(self, root):
+                self.root = root
+                self.calls = []
+
+            def _control(self, operation, payload):
+                self.calls.append((operation, payload))
+                return {"approved": True}
+
+        with tempfile.TemporaryDirectory() as td:
+            bridge = AppBridge(Path(td) / "app")
+            bridge.identity = {"account_id": "account"}
+            bridge.profile = {"server": "https://primary.example", "node": "device-test"}
+            runtime = Runtime(Path(td) / "receiver")
+            with (
+                patch.object(bridge, "_attached_services", return_value=["https://team.example"]),
+                patch.object(bridge, "_runtime", return_value=runtime),
+            ):
+                result = bridge.invoke("approve-execution", {"job_id": "job-missing", "approved": True})
+            self.assertFalse(result["ok"])
+            self.assertIn("找不到等待批准", result["error"])
+            self.assertEqual(runtime.calls, [])
 
     def test_two_devices_and_owner_controls(self):
         with tempfile.TemporaryDirectory() as td:

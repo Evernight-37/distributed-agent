@@ -603,6 +603,24 @@ class AppBridge:
             path = path.with_name(path.name + "-" + hashlib.sha256(server.encode()).hexdigest()[:16])
         return DesktopRuntime(path)
 
+    def _execution_server(self, job_id):
+        if not isinstance(job_id, str) or not 1 <= len(job_id) <= 160:
+            raise ValueError("执行任务编号无效")
+        cached = self.job_servers.get(job_id)
+        if cached:
+            return cached
+        receipt_name = hashlib.sha256(job_id.encode()).hexdigest() + ".json"
+        matches = []
+        for server in self._attached_services():
+            receipt = read_json(self._runtime(server).root / "pull-receipts" / receipt_name, {})
+            job = receipt.get("job", {})
+            if receipt.get("phase") == "waiting_local_approval" and isinstance(job, dict) and job.get("id") == job_id:
+                matches.append(server)
+        if len(matches) != 1:
+            raise ValueError("找不到等待批准的本机执行任务" if not matches else "多个协作服务返回了相同的执行任务编号")
+        self.job_servers[job_id] = matches[0]
+        return matches[0]
+
     def _proxy_settings(self):
         saved = read_json(self.root / "codex-proxy.json")
         if saved is not None:
@@ -1156,7 +1174,7 @@ class AppBridge:
                 self._runtime(server).stop_and_wait()
             return {"stopped": True}
         if action == "approve-execution":
-            return self._runtime(self.job_servers.get(data["job_id"]))._control(
+            return self._runtime(self._execution_server(data["job_id"]))._control(
                 "action", dict(action="approve-execution", **data)
             )
         if action == "settings-get":

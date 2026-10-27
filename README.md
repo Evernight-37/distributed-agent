@@ -4,7 +4,7 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 
 ## 使用应用
 
-本分支的 **Windows 1.0.2 改进版** 包含群聊文件和图片、员工删除、默认管理员发送及跨成员呼叫修复。完整便携包在 [Build Windows improvements](https://github.com/Evernight-37/distributed-agent/actions/workflows/windows-improvements.yml) 成功运行的 Artifacts 中下载；详见 [1.0.2 升级说明](docs/IMPROVEMENTS-1.0.2.md)。Linux 服务器可安装 [无界面接收端](docs/LINUX.md)，由 Mac 或 Windows 控制台管理。
+当前整合版为 **1.0.3**。Windows 便携包由 [Build Windows release](https://github.com/Evernight-37/distributed-agent/actions/workflows/windows-release.yml) 构建；macOS 可构建原生 `.app`，Linux 服务器可安装 [无界面接收端](docs/LINUX.md)，由 Mac 或 Windows 控制台管理。1.0.3 包含附件、员工管理、跨成员 Agent 呼叫、项目目录检查和受限实现任务。
 
 从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases) 下载完整 Windows 压缩包，解压后双击 `AgentHarness.exe`。请保留整个目录；应用自带隔离的后台 Python 运行时，不要求用户安装 Python。系统需要 Edge WebView2，并且每台执行 Agent 的电脑需要已有可用的 Codex 登录。
 
@@ -16,7 +16,7 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 4. 同事凭两项信息加入项目，再把自己的机器和 Agent 接入该服务。
 5. 每个人配置和派遣自己的 Agent；群主选择管理员 Agent。
 
-同一账户可以关联多台电脑。账户、接收端、MCP 授权和团队数据库位于 `%LOCALAPPDATA%\AgentHarness\data`；项目文件、Codex 登录、设备私钥和研究环境不会自动同步。
+同一账户可以关联多台电脑。Windows 数据位于 `%LOCALAPPDATA%\AgentHarness\data`，macOS 数据位于 `~/Library/Application Support/AgentHarness/data`；项目文件、Codex 登录、设备私钥和研究环境不会自动同步。
 
 ## 在 Codex 中协作
 
@@ -59,7 +59,7 @@ python tests/cleanroom_release.py dist/AgentHarness build/cleanroom
 
 若要同时运行便携包接收端集成测试，请把 `AGENT_HARNESS_TEST_BUNDLE` 指向已构建的 `AgentHarness` 目录，再运行 `python -m unittest tests.test_desktop.PackagedReceiverTests -v`。
 
-运行数据、令牌、密钥、日志、构建缓存和发布包均由 `.gitignore` 排除。Windows 可执行文件当前没有代码签名。
+运行数据、令牌、密钥、日志、构建缓存和发布包均由 `.gitignore` 排除。Windows 可执行文件当前没有代码签名；macOS 构建默认使用 ad-hoc 签名，公开分发仍需开发者证书和公证。
 
 ## 源码目录
 

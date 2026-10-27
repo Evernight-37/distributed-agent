@@ -2,7 +2,7 @@ name: Verify Linux receiver
 
 on:
   push:
-    branches: [macos-improvements, windows-improvements]
+    branches: [main, macos-improvements, windows-improvements]
   workflow_dispatch:
 
 permissions:
