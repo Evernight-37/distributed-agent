@@ -4,7 +4,7 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 
 ## 使用应用
 
-当前整合版为 **1.0.3**。Windows 便携包由 [Build Windows release](https://github.com/Evernight-37/distributed-agent/actions/workflows/windows-release.yml) 构建；macOS 可构建原生 `.app`，Linux 服务器可安装 [无界面接收端](docs/LINUX.md)，由 Mac 或 Windows 控制台管理。1.0.3 包含附件、员工管理、跨成员 Agent 呼叫、项目目录检查和受限实现任务。
+当前整合版为 **1.1.0**。Windows 便携包由 [Build Windows release](https://github.com/Evernight-37/distributed-agent/actions/workflows/windows-release.yml) 构建；macOS 可构建原生 `.app`，Linux 服务器可安装 [无界面接收端](docs/LINUX.md)，由 Mac 或 Windows 控制台管理。1.1.0 在原有附件、员工管理、跨成员 Agent 呼叫和受限实现任务基础上，补齐 Linux systemd 常驻、Codex MCP、代理与健康检查、安全升级和回滚。
 
 从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases) 下载完整 Windows 压缩包，解压后双击 `AgentHarness.exe`。请保留整个目录；应用自带隔离的后台 Python 运行时，不要求用户安装 Python。系统需要 Edge WebView2，并且每台执行 Agent 的电脑需要已有可用的 Codex 登录。
 

@@ -351,6 +351,13 @@ class AppBridge:
         return status["path"]
 
     def _mcp_launch(self):
+        # Headless Linux installations keep a stable launcher inside the
+        # private data directory. Its contents can be refreshed during a
+        # side-by-side upgrade without changing Codex's registered command.
+        if self.profile and os.name != "nt":
+            launcher = self.root / "mcp" / ("launch-" + self.profile["id"] + ".sh")
+            if launcher.is_file() and launcher.resolve().parent == (self.root / "mcp").resolve():
+                return [str(launcher)]
         return [
             python_command(),
             "-X",

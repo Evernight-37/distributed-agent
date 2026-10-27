@@ -16,14 +16,23 @@ from pathlib import Path
 
 from account_identity import sign_envelope
 from common import read_json
-from pull_worker import NoRedirect, validate_server
+from pull_worker import validate_server
+from broker_transport import broker_opener
 from mcp_server import run_stdio
 
 
 class HarnessMcpBackend:
-    def __init__(self, grant_path):
+    def __init__(self, grant_path, network_path=None):
         self.grant_path = Path(grant_path).expanduser().resolve()
         self.grant = self._load_grant()
+        network_path = (
+            Path(network_path).expanduser().resolve()
+            if network_path
+            else self.grant_path.parent.parent / "broker-network.json"
+        )
+        network = read_json(network_path, {})
+        proxy = network.get("proxy") if isinstance(network, dict) else None
+        self.opener = broker_opener(proxy)
         self.project_servers = {}
         self.last_dashboard = 0.0
         self.dashboard_cache = None
@@ -60,9 +69,7 @@ class HarnessMcpBackend:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect()).open(
-                request, timeout=timeout
-            ) as response:
+            with self.opener.open(request, timeout=timeout) as response:
                 result = json.load(response)
         except urllib.error.HTTPError as exc:
             try:
@@ -291,8 +298,9 @@ class HarnessMcpBackend:
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--grant", required=True)
+    parser.add_argument("--network")
     args = parser.parse_args(argv)
-    run_stdio(HarnessMcpBackend(args.grant))
+    run_stdio(HarnessMcpBackend(args.grant, args.network))
 
 
 if __name__ == "__main__":
