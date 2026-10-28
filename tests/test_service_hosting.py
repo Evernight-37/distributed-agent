@@ -3,16 +3,73 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from account_backend import AccountBackend, device_node
-from account_identity import approve_certificate, generate_identity, sign_envelope
-from broker import PullBackend
-from collaboration_store import Store
-from app_bridge import AppBridge
+from agent_harness.account_backend import AccountBackend, device_node
+from agent_harness.account_identity import (
+    approve_certificate,
+    generate_identity,
+    sign_envelope,
+)
+from agent_harness.broker import PullBackend
+from agent_harness.collaboration_store import Store
+from agent_harness.app_bridge import AppBridge
+from agent_harness.storage import create_database_backup
 
 
 class ServiceHostingTests(unittest.TestCase):
+    def test_local_owner_can_backup_and_confirm_restore(self):
+        identity = generate_identity()
+        self.store.claim_local_host(identity["account_id"], device_node(identity["public_key"]))
+        self.call(identity, "register", {"name": "Owner"}, "register")
+        first = self.call(identity, "create-project", {"name": "backup state"})
+        bridge = AppBridge(Path(self.temp.name) / "desktop-backup")
+        bridge.identity = identity
+        bridge.profile = {
+            "server": "http://127.0.0.1:8765",
+            "node": device_node(identity["public_key"]),
+        }
+        bridge.window = MagicMock()
+        exported = Path(self.temp.name) / "selected.sqlite3"
+        bridge.window.create_file_dialog.return_value = str(exported)
+        with patch.object(bridge, "_owned_local_store", return_value=self.store):
+            saved = bridge._invoke("team-service-backup", {})
+        self.assertTrue(saved["saved"])
+        self.call(identity, "create-project", {"name": "newer state"})
+
+        bridge.window.create_file_dialog.return_value = str(exported)
+        with patch.object(bridge, "_owned_local_store", return_value=self.store):
+            selected = bridge._invoke("team-service-restore-select", {})
+        self.assertTrue(selected["selected"])
+        runtime = MagicMock()
+        with (
+            patch.object(bridge, "_owned_local_store", return_value=self.store),
+            patch("agent_harness.app_lifecycle.HostRuntime", return_value=runtime),
+            patch("agent_harness.app_bridge.DesktopRuntime.start_workbench") as restart,
+        ):
+            restored = bridge._invoke("team-service-restore-apply", {"token": selected["token"]})
+        self.assertTrue(restored["restored"])
+        runtime.stop_and_wait.assert_called_once_with()
+        restart.assert_called_once_with(open_browser=False, state_root=self.store.root)
+        with self.store.connect() as db:
+            names = [row[0] for row in db.execute("SELECT name FROM projects")]
+        self.assertEqual(names, [first["name"]])
+
+    def test_restore_selection_rejects_backup_owned_by_another_account(self):
+        identity = generate_identity()
+        other = generate_identity()
+        self.store.claim_local_host(other["account_id"])
+        backup = Path(self.temp.name) / "foreign.sqlite3"
+        create_database_backup(self.store.database, backup)
+        bridge = AppBridge(Path(self.temp.name) / "desktop-foreign")
+        bridge.identity = identity
+        bridge.profile = {"server": "http://127.0.0.1:8765"}
+        bridge.window = MagicMock()
+        bridge.window.create_file_dialog.return_value = str(backup)
+        with patch.object(bridge, "_owned_local_store", return_value=self.store):
+            with self.assertRaisesRegex(PermissionError, "其他账户"):
+                bridge._invoke("team-service-restore-select", {})
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.store = Store(self.temp.name)
@@ -43,7 +100,10 @@ class ServiceHostingTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.store.claim_local_host(generate_identity()["account_id"])
         self.assertTrue(self.call(owner, "dashboard", {})["hosted_by_me"])
-        self.assertEqual(self.call(owner, "create-project", {"name": "After claim"})["name"], "After claim")
+        self.assertEqual(
+            self.call(owner, "create-project", {"name": "After claim"})["name"],
+            "After claim",
+        )
 
     def test_linked_child_can_host_but_visiting_account_cannot_create(self):
         root = generate_identity()
@@ -51,13 +111,23 @@ class ServiceHostingTests(unittest.TestCase):
         child["chain"] = approve_certificate(root, child["public_key"])
         child["account_id"] = root["account_id"]
         self.store.claim_local_host(root["account_id"], device_node(child["public_key"]))
-        self.call(child, "register", {"name": "Owner", "device_name": "Second computer"}, "register")
+        self.call(
+            child,
+            "register",
+            {"name": "Owner", "device_name": "Second computer"},
+            "register",
+        )
         self.assertTrue(self.call(child, "dashboard", {})["hosted_by_me"])
         self.assertEqual(
             self.call(child, "create-project", {"name": "Hosted on second computer"})["name"],
             "Hosted on second computer",
         )
-        self.call(root, "activate-device", {"device_name": "First computer"}, "activate-device")
+        self.call(
+            root,
+            "activate-device",
+            {"device_name": "First computer"},
+            "activate-device",
+        )
         self.assertTrue(self.call(root, "dashboard", {})["hosted_by_me"])
         visitor = generate_identity()
         self.call(visitor, "register", {"name": "Visitor"}, "register")
@@ -83,7 +153,11 @@ class ServiceHostingTests(unittest.TestCase):
         with (
             patch.object(bridge, "_server", return_value="http://127.0.0.1:8765"),
             patch.object(bridge, "_local_host_state", return_value=self.store),
-            patch.object(bridge, "_post", side_effect=lambda _server, request: self.api.api(request)),
+            patch.object(
+                bridge,
+                "_post",
+                side_effect=lambda _server, request: self.api.api(request),
+            ),
             patch.object(bridge, "_save_public_profile"),
             patch.object(bridge, "_enroll"),
         ):
@@ -162,15 +236,18 @@ class ServiceHostingTests(unittest.TestCase):
     def test_app_uses_package_independent_host_data(self):
         bridge = AppBridge(Path(self.temp.name) / "desktop")
         executable = Path(self.temp.name) / "AgentHarness" / "AgentHarness.exe"
-        with patch("app_bridge.sys.frozen", True, create=True), patch("app_bridge.sys.executable", str(executable)):
+        with (
+            patch("agent_harness.app_bridge.sys.frozen", True, create=True),
+            patch("agent_harness.app_bridge.sys.executable", str(executable)),
+        ):
             self.assertEqual(bridge._host_state_root(), bridge.root / "team-service")
 
     def test_saved_host_data_is_reused_after_restart(self):
         bridge = AppBridge(Path(self.temp.name) / "desktop")
         bridge.profile = {"local_host_state": str(self.store.root)}
         with (
-            patch("app_bridge.sys.frozen", True, create=True),
-            patch("app_bridge.DesktopRuntime.start_workbench") as start,
+            patch("agent_harness.app_bridge.sys.frozen", True, create=True),
+            patch("agent_harness.app_bridge.DesktopRuntime.start_workbench") as start,
             patch.object(bridge, "_secure") as secure,
         ):
             bridge._server("http://127.0.0.1:8765")

@@ -5,7 +5,7 @@ import os
 import secrets
 import threading
 from pathlib import Path
-from common import write_json
+from agent_harness.common import write_json
 
 
 def protect(path):
@@ -13,10 +13,17 @@ def protect(path):
         Path(path).chmod(0o600)
         return
     import subprocess
-    from desktop_service import windows_user_sid
+    from agent_harness.desktop_service import windows_user_sid
 
     result = subprocess.run(
-        ["icacls.exe", str(path), "/inheritance:r", "/grant:r", "*" + windows_user_sid() + ":F", "*S-1-5-18:F"],
+        [
+            "icacls.exe",
+            str(path),
+            "/inheritance:r",
+            "/grant:r",
+            "*" + windows_user_sid() + ":F",
+            "*S-1-5-18:F",
+        ],
         capture_output=True,
         timeout=15,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -45,7 +52,11 @@ def managed_handler(base, server, registry):
                     {
                         "ok": True,
                         "instance": instance,
-                        "result": {"running": True, "stopping": stopping.is_set(), "managed": True},
+                        "result": {
+                            "running": True,
+                            "stopping": stopping.is_set(),
+                            "managed": True,
+                        },
                     },
                 )
             if self.command != "POST" or self.path != "/desktop/stop" or self.headers.get("Origin") != origin:

@@ -6,12 +6,12 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from account_identity import approve_delegate, generate_identity
-from app_bridge import AppBridge, MCP_DELEGATE_SCOPES
-from collaboration_store import Store
-from common import write_json
-from mcp_adapter import HarnessMcpBackend
-from panel import handler_for
+from agent_harness.account_identity import approve_delegate, generate_identity
+from agent_harness.app_bridge import AppBridge, MCP_DELEGATE_SCOPES
+from agent_harness.collaboration_store import Store
+from agent_harness.common import write_json
+from agent_harness.mcp_adapter import HarnessMcpBackend
+from agent_harness.panel import handler_for
 
 
 class QuietBridge(AppBridge):
@@ -65,7 +65,10 @@ class McpAdapterTests(unittest.TestCase):
         self.assertEqual(status["unavailable_services"], [])
         projects = self.backend.call("harness_projects_list", {})["projects"]
         self.assertEqual(projects[0]["id"], self.project)
-        sent = self.backend.call("harness_message_send", {"project": self.project, "body": "Hello from normal Codex"})
+        sent = self.backend.call(
+            "harness_message_send",
+            {"project": self.project, "body": "Hello from normal Codex"},
+        )
         view = self.backend.call("harness_project_read", {"project": self.project, "after_message_id": 0})
         self.assertEqual(view["messages"][-1]["id"], sent["id"])
         self.assertEqual(view["messages"][-1]["body"], "Hello from normal Codex")
@@ -77,7 +80,17 @@ class McpAdapterTests(unittest.TestCase):
         with Store(self.state).connect() as db:
             db.execute(
                 "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) VALUES(?,?,?,?,?,?,?,?,?)",
-                ("agent-owned", self.project, "Owned worker", account, node, "backend", "model", "medium", 120),
+                (
+                    "agent-owned",
+                    self.project,
+                    "Owned worker",
+                    account,
+                    node,
+                    "backend",
+                    "model",
+                    "medium",
+                    120,
+                ),
             )
         task = self.backend.call(
             "harness_task_assign",
@@ -101,7 +114,12 @@ class McpAdapterTests(unittest.TestCase):
             self.backend.call("harness_project_read", {"project": "missing"})
         with self.assertRaises(ValueError):
             self.backend.call(
-                "harness_message_send", {"project": self.project, "body": "x", "client_message_id": "not-a-uuid"}
+                "harness_message_send",
+                {
+                    "project": self.project,
+                    "body": "x",
+                    "client_message_id": "not-a-uuid",
+                },
             )
 
     def test_desktop_enable_and_disable_use_named_codex_entry(self):
@@ -114,13 +132,19 @@ class McpAdapterTests(unittest.TestCase):
             if action == "get":
                 value = configured.get(name)
                 return SimpleNamespace(
-                    returncode=0 if value else 1, stdout=__import__("json").dumps(value) if value else "", stderr=""
+                    returncode=0 if value else 1,
+                    stdout=__import__("json").dumps(value) if value else "",
+                    stderr="",
                 )
             if action == "add":
                 launch = list(arguments[3:])
                 configured[name] = {
                     "name": name,
-                    "transport": {"type": "stdio", "command": launch[0], "args": launch[1:]},
+                    "transport": {
+                        "type": "stdio",
+                        "command": launch[0],
+                        "args": launch[1:],
+                    },
                 }
             if action == "remove":
                 configured.pop(name, None)
@@ -159,13 +183,19 @@ class McpAdapterTests(unittest.TestCase):
             if action == "get":
                 value = configured.get(name)
                 return SimpleNamespace(
-                    returncode=0 if value else 1, stdout=__import__("json").dumps(value) if value else "", stderr=""
+                    returncode=0 if value else 1,
+                    stdout=__import__("json").dumps(value) if value else "",
+                    stderr="",
                 )
             if action == "add":
                 launch = list(arguments[3:])
                 configured[name] = {
                     "name": name,
-                    "transport": {"type": "stdio", "command": launch[0], "args": launch[1:]},
+                    "transport": {
+                        "type": "stdio",
+                        "command": launch[0],
+                        "args": launch[1:],
+                    },
                 }
             if action == "remove":
                 configured.pop(name, None)
@@ -203,13 +233,19 @@ class McpAdapterTests(unittest.TestCase):
             if action == "get":
                 value = configured.get(name)
                 return SimpleNamespace(
-                    returncode=0 if value else 1, stdout=__import__("json").dumps(value) if value else "", stderr=""
+                    returncode=0 if value else 1,
+                    stdout=__import__("json").dumps(value) if value else "",
+                    stderr="",
                 )
             if action == "add":
                 launch = list(arguments[3:])
                 configured[name] = {
                     "name": name,
-                    "transport": {"type": "stdio", "command": launch[0], "args": launch[1:]},
+                    "transport": {
+                        "type": "stdio",
+                        "command": launch[0],
+                        "args": launch[1:],
+                    },
                 }
             if action == "remove":
                 configured.pop(name, None)
@@ -233,14 +269,20 @@ class McpAdapterTests(unittest.TestCase):
             self.assertNotEqual(first_public, second_public)
             self.bridge._disable_mcp()
             entries = __import__("json").loads(self.bridge._mcp_revocation_path().read_text())["entries"]
-            self.assertEqual({entry["public_key"] for entry in entries}, {first_public, second_public})
+            self.assertEqual(
+                {entry["public_key"] for entry in entries},
+                {first_public, second_public},
+            )
             offline["value"] = False
             self.assertEqual(self.bridge._retry_mcp_revocations(), [])
             self.assertEqual(set(revoked), {first_public, second_public})
             self.assertFalse(self.bridge._mcp_revocation_path().exists())
 
     def test_profile_specific_name_does_not_replace_foreign_entry(self):
-        foreign = {"name": self.bridge._mcp_name(), "transport": {"type": "stdio", "command": "other.exe", "args": []}}
+        foreign = {
+            "name": self.bridge._mcp_name(),
+            "transport": {"type": "stdio", "command": "other.exe", "args": []},
+        }
 
         def codex(*arguments, check=True):
             if arguments[0] == "get":

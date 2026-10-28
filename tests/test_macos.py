@@ -7,17 +7,21 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from runtime_paths import application_home
-from service_install import application_bundle, install_bundle, runtime_python
-import worker
-from app_bridge import AppBridge
+from agent_harness.runtime_paths import application_home
+from agent_harness.service_install import (
+    application_bundle,
+    install_bundle,
+    runtime_python,
+)
+from agent_harness import worker
+from agent_harness.app_bridge import AppBridge
 
 
 @unittest.skipUnless(sys.platform == "darwin", "macOS packaging")
 class MacPackagingTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX directory access permissions")
     def test_private_directory_can_still_create_and_lock_service_files(self):
-        from common import lock
+        from agent_harness.common import lock
 
         with tempfile.TemporaryDirectory() as directory:
             bridge = AppBridge(Path(directory) / "data")
@@ -33,15 +37,24 @@ class MacPackagingTests(unittest.TestCase):
             self.assertEqual(private.stat().st_mode & 0o777, 0o600)
 
     def test_application_data_lives_outside_bundle(self):
-        with mock.patch.dict(os.environ, {}, clear=True), mock.patch("sys.platform", "darwin"):
-            self.assertEqual(application_home(), Path.home() / "Library/Application Support/AgentHarness")
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("sys.platform", "darwin"),
+        ):
+            self.assertEqual(
+                application_home(),
+                Path.home() / "Library/Application Support/AgentHarness",
+            )
 
     def test_bundle_resources_are_found_from_native_launcher(self):
         with (
             mock.patch("sys.platform", "darwin"),
             mock.patch("sys.executable", "/tmp/Test.app/Contents/MacOS/AgentHarness"),
         ):
-            self.assertEqual(application_bundle(), Path("/tmp/Test.app/Contents/Resources/service-bundle").resolve())
+            self.assertEqual(
+                application_bundle(),
+                Path("/tmp/Test.app/Contents/Resources/service-bundle").resolve(),
+            )
 
     def test_installed_runtime_keeps_execute_permission(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -65,7 +78,9 @@ class MacPackagingTests(unittest.TestCase):
             mock.patch("shutil.which", return_value=None),
             mock.patch.object(Path, "is_file", return_value=True),
             mock.patch.object(
-                worker, "codex_version", side_effect=lambda path: (1, 2, 3) if str(path) == expected else None
+                worker,
+                "codex_version",
+                side_effect=lambda path: (1, 2, 3) if str(path) == expected else None,
             ),
         ):
             result = worker.cli_status(directory)

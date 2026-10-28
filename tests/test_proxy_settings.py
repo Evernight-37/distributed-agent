@@ -3,10 +3,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app_bridge import AppBridge
-from common import apply_local_proxy, read_json, validate_local_proxy, write_json
-from worker import codex_login_status, executor_environment
-import warm_worker
+from agent_harness.app_bridge import AppBridge
+from agent_harness.common import (
+    apply_local_proxy,
+    read_json,
+    validate_local_proxy,
+    write_json,
+)
+from agent_harness.worker import codex_login_status, executor_environment
+from agent_harness import warm_worker
 
 
 class ProxySettingsTests(unittest.TestCase):
@@ -17,7 +22,11 @@ class ProxySettingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_local_proxy({"enabled": True, "port": 7897, "host": "example.com"})
 
-        original = {"HTTPS_PROXY": "http://old:1", "all_proxy": "http://old:2", "OTHER": "keep"}
+        original = {
+            "HTTPS_PROXY": "http://old:1",
+            "all_proxy": "http://old:2",
+            "OTHER": "keep",
+        }
         enabled = apply_local_proxy(original, {"enabled": True, "port": 7897})
         self.assertEqual(enabled["HTTPS_PROXY"], "http://127.0.0.1:7897")
         self.assertEqual(enabled["HTTP_PROXY"], "http://127.0.0.1:7897")
@@ -36,7 +45,7 @@ class ProxySettingsTests(unittest.TestCase):
             self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:7897")
             with patch.object(warm_worker, "ROOT", root):
                 self.assertEqual(warm_worker.local_env()["HTTPS_PROXY"], "http://127.0.0.1:7897")
-            with patch("worker.subprocess.run") as run:
+            with patch("agent_harness.worker.subprocess.run") as run:
                 run.return_value.returncode = 0
                 run.return_value.stdout = "Logged in using ChatGPT"
                 run.return_value.stderr = ""
@@ -76,8 +85,14 @@ class ProxySettingsTests(unittest.TestCase):
             self.assertEqual(executor["cli_path"], "C:/Codex/codex.exe")
             self.assertEqual(executor["network_env"], {"OTHER": "keep"})
             self.assertEqual(read_json(root / "codex-proxy.json"), executor["proxy"])
-            self.assertEqual(bridge.invoke("proxy-save", {"enabled": False, "port": None})["ok"], True)
-            self.assertEqual(read_json(receiver / "executor.json")["proxy"], {"enabled": False, "port": None})
+            self.assertEqual(
+                bridge.invoke("proxy-save", {"enabled": False, "port": None})["ok"],
+                True,
+            )
+            self.assertEqual(
+                read_json(receiver / "executor.json")["proxy"],
+                {"enabled": False, "port": None},
+            )
             self.assertFalse(bridge.invoke("proxy-save", {"enabled": True, "port": 0})["ok"])
 
 

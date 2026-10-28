@@ -1,3 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-harness"
+description = "Self-hosted distributed Agent collaboration runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+dynamic = ["version"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "agent_harness.release_info.__version__"}
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120

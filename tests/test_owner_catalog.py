@@ -1,12 +1,11 @@
-import importlib.util
-import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from collaboration_store import Store
-from common import read_json, write_json
+from agent_harness import owner_backend as backend
+from agent_harness import owner_worker as worker
+from agent_harness.collaboration_store import Store
+from agent_harness.common import read_json, write_json
 
 
 # These tests isolate catalog/control behavior. Signature cryptography is exercised
@@ -14,21 +13,6 @@ from common import read_json, write_json
 def verify(envelope, expected_account):
     if envelope.get("signed_by") != expected_account:
         raise PermissionError("bad signature")
-
-
-def load(name):
-    spec = importlib.util.spec_from_file_location(
-        name, Path(__file__).resolve().parents[1] / "src" / "agent_harness" / (name + ".py")
-    )
-    module = importlib.util.module_from_spec(spec)
-    with patch.dict(sys.modules, {"account_identity": types.SimpleNamespace(verify_owner_command=verify)}):
-        spec.loader.exec_module(module)
-    return module
-
-
-backend = load("owner_backend")
-with patch.dict(sys.modules, {"owner_backend": backend}):
-    worker = load("owner_worker")
 
 
 class FakeConnector:
@@ -48,24 +32,31 @@ class FakeConnector:
     def executor(self, r):
         self.calls.append(r)
         if r["action"] == "register":
-            write_json(self.root / "projects" / r["project"]["name"] / "project.json", r["project"])
+            write_json(
+                self.root / "projects" / r["project"]["name"] / "project.json",
+                r["project"],
+            )
         elif r["action"] == "configure":
             path = self.root / "projects" / r["project"] / "project.json"
             p = read_json(path)
-            p.update({k: r[k] for k in ("model", "effort", "timeout")})
+            p.update({k: r[k] for k in ("model", "effort", "timeout", "strict_worktree")})
             write_json(path, p)
         return {}
 
 
 class OwnerTests(unittest.TestCase):
     def setUp(self):
+        self.backend_verifier = patch.object(backend, "verify_owner_command", verify)
+        self.worker_verifier = patch.object(worker, "verify_owner_command", verify)
+        self.backend_verifier.start()
+        self.worker_verifier.start()
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
         self.store = Store(self.root / "store")
         self.backend = backend.OwnerBackend(self.store)
         with self.store.connect() as db:
-            db.execute("INSERT INTO users VALUES('u1','one','s','p')")
-            db.execute("INSERT INTO users VALUES('u2','two','s','p')")
+            db.execute("INSERT INTO users(id,username) VALUES('u1','one')")
+            db.execute("INSERT INTO users(id,username) VALUES('u2','two')")
             db.execute("INSERT INTO nodes VALUES('n1','u1')")
             db.execute("INSERT INTO nodes VALUES('n2','u2')")
             db.execute("INSERT INTO projects(id,name,owner_id) VALUES('p1','One','u1')")
@@ -78,6 +69,8 @@ class OwnerTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+        self.worker_verifier.stop()
+        self.backend_verifier.stop()
 
     def envelope(self, action, data, target="n1", owner="u1", cid=None):
         self.counter += 1
@@ -107,10 +100,46 @@ class OwnerTests(unittest.TestCase):
                         "model": "gpt-5.6-sol",
                         "effort": "high",
                         "enabled": True,
+                        "strict_worktree": True,
                     },
                 },
             )
         )
+
+    def test_strict_worktree_setting_propagates_to_binding_and_registration(self):
+        self.create()
+        result = self.configure()
+        self.assertTrue(result["result"]["settings"]["strict_worktree"])
+        dispatched = self.control.apply(self.envelope("dispatch", {"id": "e1", "project_id": "p1"}))
+        self.assertTrue(dispatched["result"]["enabled"])
+        self.assertTrue(self.connector.saved[0]["strict_worktree"])
+        registered = read_json(
+            self.root / "device" / "projects" / self.connector.saved[0]["backend_project"] / "project.json"
+        )
+        self.assertTrue(registered["strict_worktree"])
+
+    def test_strict_worktree_setting_updates_an_existing_registration(self):
+        self.create()
+        self.configure()
+        self.control.apply(self.envelope("dispatch", {"id": "e1", "project_id": "p1"}))
+        update = self.envelope(
+            "configure",
+            {
+                "id": "e1",
+                "settings": {
+                    "remote_path": str(self.workspace),
+                    "model": "gpt-5.6-sol",
+                    "effort": "high",
+                    "enabled": True,
+                    "strict_worktree": False,
+                },
+            },
+        )
+        self.assertEqual(self.control.apply(update)["state"], "applied")
+        project = read_json(
+            self.root / "device" / "projects" / self.connector.saved[0]["backend_project"] / "project.json"
+        )
+        self.assertFalse(project["strict_worktree"])
 
     def test_ownership_and_ack(self):
         env = self.envelope("create", {"id": "e1", "name": "Employee"})
@@ -122,16 +151,38 @@ class OwnerTests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertEqual(len(self.backend.poll(db, {"node": "n1", "owner_id": "u1"})), 1)
             with self.assertRaises(PermissionError):
-                self.backend.report(db, {"node": "n2", "owner_id": "u2"}, env["body"]["id"], "applied", {})
+                self.backend.report(
+                    db,
+                    {"node": "n2", "owner_id": "u2"},
+                    env["body"]["id"],
+                    "applied",
+                    {},
+                )
             result = {"settings": {"enabled": False}, "name": "Employee"}
-            self.backend.report(db, {"node": "n1", "owner_id": "u1"}, env["body"]["id"], "applied", result)
+            self.backend.report(
+                db,
+                {"node": "n1", "owner_id": "u1"},
+                env["body"]["id"],
+                "applied",
+                result,
+            )
             self.assertTrue(
-                self.backend.report(db, {"node": "n1", "owner_id": "u1"}, env["body"]["id"], "applied", result)[
-                    "duplicate"
-                ]
+                self.backend.report(
+                    db,
+                    {"node": "n1", "owner_id": "u1"},
+                    env["body"]["id"],
+                    "applied",
+                    result,
+                )["duplicate"]
             )
             with self.assertRaises(ValueError):
-                self.backend.report(db, {"node": "n1", "owner_id": "u1"}, env["body"]["id"], "failed", {})
+                self.backend.report(
+                    db,
+                    {"node": "n1", "owner_id": "u1"},
+                    env["body"]["id"],
+                    "failed",
+                    {},
+                )
         self.assertEqual(self.backend.snapshot("u1")["employees"][0]["revision"], 1)
 
     def test_membership_and_no_execution_settings(self):
@@ -170,7 +221,10 @@ class OwnerTests(unittest.TestCase):
         self.assertEqual(second["state"], "applied")
         self.assertNotEqual(first["result"]["backend_project"], second["result"]["backend_project"])
         backend_name = first["result"]["backend_project"]
-        write_json(self.connector.root / "projects" / backend_name / "active.json", {"job": "running"})
+        write_json(
+            self.connector.root / "projects" / backend_name / "active.json",
+            {"job": "running"},
+        )
         self.assertEqual(self.configure()["state"], "failed")
         withdrawn = self.control.apply(self.envelope("withdraw", {"id": "e1", "project_id": "p1"}))
         self.assertEqual(withdrawn["state"], "applied")
@@ -212,7 +266,10 @@ class OwnerTests(unittest.TestCase):
             self.backend.report(db, {"node": "n1", "owner_id": "u1"}, delete["body"]["id"], **response)
         self.assertEqual(self.backend.snapshot("u1")["employees"], [])
         with self.store.connect() as db:
-            self.assertEqual(db.execute("SELECT enabled FROM agents WHERE id='delete-test-agent'").fetchone()[0], 0)
+            self.assertEqual(
+                db.execute("SELECT enabled FROM agents WHERE id='delete-test-agent'").fetchone()[0],
+                0,
+            )
             self.assertIsNone(db.execute("SELECT admin_agent_id FROM projects WHERE id='p1'").fetchone()[0])
         self.assertEqual(work.read_text(), "research")
         self.assertTrue(all(not b["enabled"] and not b["assigned"] for b in self.connector.bindings()))
@@ -235,10 +292,19 @@ class OwnerTests(unittest.TestCase):
         (self.workspace / "folder").mkdir()
         (self.workspace / "secret.txt").write_text("not disclosed")
         response = self.control.apply(self.envelope("browse", {"path": str(self.workspace)}))
-        self.assertEqual(response["result"]["children"], [{"name": "folder", "path": str(self.workspace / "folder")}])
+        self.assertEqual(
+            response["result"]["children"],
+            [{"name": "folder", "path": str(self.workspace / "folder")}],
+        )
         env = self.envelope("browse", {"path": str(self.workspace)})
         receipt = self.connector.root / "owner-receipts" / (worker.key(env["body"]["id"]) + ".json")
-        write_json(receipt, {"fingerprint": worker.key(worker.canonical(env["body"])), "phase": "started"})
+        write_json(
+            receipt,
+            {
+                "fingerprint": worker.key(worker.canonical(env["body"])),
+                "phase": "started",
+            },
+        )
         self.assertEqual(self.control.apply(env)["state"], "failed")
 
 

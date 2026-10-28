@@ -10,9 +10,9 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-import warm_worker
-import worker
-from common import read_json, write_json
+from agent_harness import warm_worker
+from agent_harness import worker
+from agent_harness.common import read_json, write_json
 
 
 class WarmWorkerLifecycleTests(unittest.TestCase):
@@ -50,7 +50,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
         manager.attach_thread(server, settings, "group-thread")
         manager.attach_thread(server, settings, "private-thread")
         manager.attach_thread(server, settings, "group-thread")
-        self.assertEqual([item[1]["threadId"] for item in server.calls], ["group-thread", "private-thread"])
+        self.assertEqual(
+            [item[1]["threadId"] for item in server.calls],
+            ["group-thread", "private-thread"],
+        )
 
     def test_active_writer_conflict_starts_fresh_session(self):
         class Server:
@@ -95,7 +98,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                     raise subprocess.TimeoutExpired("child", timeout)
 
             runtime = worker.ManagedRuntime(root)
-            runtime._children = {"idle-generation": Child(), "active-generation": Child()}
+            runtime._children = {
+                "idle-generation": Child(),
+                "active-generation": Child(),
+            }
             write_json(idle / "warm.json", {"generation": "idle-generation", "pid": 101})
             write_json(active / "warm.json", {"generation": "active-generation", "pid": 101})
             self.assertEqual(runtime.retire_idle_workers(), 1)
@@ -188,7 +194,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                 ready = worker._await_ready(root / "projects" / "project", child, token, generation, 8)
                 self.assertEqual(Path(ready["root"]), root.resolve())
                 self.assertIsNone(child.poll())
-                write_json(root / "projects" / "project" / "warm.json", dict(ready, token=token, generation=generation))
+                write_json(
+                    root / "projects" / "project" / "warm.json",
+                    dict(ready, token=token, generation=generation),
+                )
                 write_json(root / "projects" / "project" / "launch.json", None)
                 time.sleep(0.15)
                 self.assertIsNone(child.poll(), "ACKed child must outlive the launching call")
@@ -207,9 +216,18 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                 "local_control": True,
             }
             write_json(root / "projects" / "project" / "project.json", project)
-            write_json(root / "projects" / "project" / "memory.json", {"revision": 0, "entries": []})
-            write_json(root / "projects" / "project" / "channels" / "group.json", {"thread_id": None})
-            write_json(root / "executor.json", {"warm_idle_seconds": 300, "cli_path": str(root / "missing-codex.exe")})
+            write_json(
+                root / "projects" / "project" / "memory.json",
+                {"revision": 0, "entries": []},
+            )
+            write_json(
+                root / "projects" / "project" / "channels" / "group.json",
+                {"thread_id": None},
+            )
+            write_json(
+                root / "executor.json",
+                {"warm_idle_seconds": 300, "cli_path": str(root / "missing-codex.exe")},
+            )
             runtime = worker.ManagedRuntime(root)
             result = runtime.rpc(
                 {
@@ -224,7 +242,8 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             try:
                 self.assertEqual(result["supervisor_pid"], warm["pid"])
                 self.assertEqual(
-                    warm["generation"], read_json(root / "projects" / "project" / "active.json")["generation"]
+                    warm["generation"],
+                    read_json(root / "projects" / "project" / "active.json")["generation"],
                 )
                 self.assertIsNone(runtime.child(warm["generation"]).poll())
             finally:
@@ -254,7 +273,12 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             stamp = worker.process_stamp(pid)
             write_json(
                 directory / "warm.json",
-                {"pid": pid, "stamp": stamp, "token": uuid.uuid4().hex, "generation": generation},
+                {
+                    "pid": pid,
+                    "stamp": stamp,
+                    "token": uuid.uuid4().hex,
+                    "generation": generation,
+                },
             )
 
             class ExistingWarmRuntime:
@@ -274,13 +298,24 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
 
             active = read_json(directory / "active.json")
             self.assertEqual(result["status"], "starting")
-            self.assertEqual(active, {"job": "second-turn", "pid": pid, "stamp": stamp, "generation": generation})
+            self.assertEqual(
+                active,
+                {
+                    "job": "second-turn",
+                    "pid": pid,
+                    "stamp": stamp,
+                    "generation": generation,
+                },
+            )
             fetched = worker.rpc({"action": "fetch", "job": "second-turn"})
             self.assertEqual(fetched["status"], "starting")
             self.assertNotEqual(fetched["status"], "interrupted")
 
     def test_external_script_imports_worker_from_receiver_root(self):
-        with tempfile.TemporaryDirectory() as state, tempfile.TemporaryDirectory() as external:
+        with (
+            tempfile.TemporaryDirectory() as state,
+            tempfile.TemporaryDirectory() as external,
+        ):
             root = self.runtime_root(state)
             token = uuid.uuid4().hex
             generation = uuid.uuid4().hex
@@ -294,7 +329,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                 "release_info.py",
                 "jobrunner.py",
             ):
-                shutil.copyfile(Path(__file__).parents[1] / "src" / "agent_harness" / name, Path(external) / name)
+                shutil.copyfile(
+                    Path(__file__).parents[1] / "src" / "agent_harness" / name,
+                    Path(external) / name,
+                )
             shutil.copyfile(Path(__file__).parents[1] / "VERSION", Path(external) / "VERSION")
             output = (root / "projects" / "project" / "external.log").open("wb")
             child = subprocess.Popen(
@@ -319,7 +357,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                 ready = worker._await_ready(root / "projects" / "project", child, token, generation, 8)
                 self.assertEqual(Path(ready["root"]), root.resolve())
                 self.assertIsNone(child.poll())
-                write_json(root / "projects" / "project" / "warm.json", dict(ready, token=token, generation=generation))
+                write_json(
+                    root / "projects" / "project" / "warm.json",
+                    dict(ready, token=token, generation=generation),
+                )
                 write_json(root / "projects" / "project" / "launch.json", None)
             finally:
                 if child.poll() is None:
@@ -371,9 +412,18 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             job.mkdir(parents=True)
             worker.set_root(root)
             generation = "generation"
-            write_json(job / "state.json", {"job": "job", "project": "project", "status": "starting"})
-            write_json(project / "active.json", {"job": "job", "pid": 123, "stamp": "x", "generation": generation})
-            write_json(project / "warm.json", {"pid": 123, "stamp": "x", "generation": generation})
+            write_json(
+                job / "state.json",
+                {"job": "job", "project": "project", "status": "starting"},
+            )
+            write_json(
+                project / "active.json",
+                {"job": "job", "pid": 123, "stamp": "x", "generation": generation},
+            )
+            write_json(
+                project / "warm.json",
+                {"pid": 123, "stamp": "x", "generation": generation},
+            )
 
             class Child:
                 pid = 123
@@ -397,11 +447,22 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             job.mkdir(parents=True)
             worker.set_root(root)
             generation = "generation"
-            write_json(job / "state.json", {"job": "job", "project": "project", "status": "running"})
-            write_json(project / "active.json", {"job": "job", "pid": 123, "stamp": "x", "generation": generation})
+            write_json(
+                job / "state.json",
+                {"job": "job", "project": "project", "status": "running"},
+            )
+            write_json(
+                project / "active.json",
+                {"job": "job", "pid": 123, "stamp": "x", "generation": generation},
+            )
             write_json(
                 project / "worker-self-exit.json",
-                {"generation": generation, "pid": 123, "reason": "exception", "error": "specific worker failure"},
+                {
+                    "generation": generation,
+                    "pid": 123,
+                    "reason": "exception",
+                    "error": "specific worker failure",
+                },
             )
 
             class Child:
@@ -414,7 +475,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             runtime._watch("project", generation, Child(), open(os.devnull, "wb"))
             state = read_json(job / "state.json")
             self.assertEqual(state["error"], "specific worker failure")
-            self.assertEqual(read_json(project / "worker-exit.json")["error"], "specific worker failure")
+            self.assertEqual(
+                read_json(project / "worker-exit.json")["error"],
+                "specific worker failure",
+            )
 
     def test_post_ready_persistence_failure_cleans_only_failed_generation(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -428,8 +492,14 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                 "local_control": True,
             }
             write_json(root / "projects" / "project" / "project.json", project)
-            write_json(root / "projects" / "project" / "memory.json", {"revision": 0, "entries": []})
-            write_json(root / "projects" / "project" / "channels" / "group.json", {"thread_id": None})
+            write_json(
+                root / "projects" / "project" / "memory.json",
+                {"revision": 0, "entries": []},
+            )
+            write_json(
+                root / "projects" / "project" / "channels" / "group.json",
+                {"thread_id": None},
+            )
             runtime = worker.ManagedRuntime(root)
             original = worker.write_json
             failed = []
@@ -469,15 +539,23 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                         break
                 time.sleep(0.02)
 
-    def test_reconcile_requires_two_missing_observations_without_guardian_evidence(self):
-        with tempfile.TemporaryDirectory() as folder, patch.object(worker, "process_stamp", return_value=None):
+    def test_reconcile_requires_two_missing_observations_without_guardian_evidence(
+        self,
+    ):
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            patch.object(worker, "process_stamp", return_value=None),
+        ):
             root = Path(folder)
             worker.set_root(root)
             project = root / "projects" / "project"
             job = root / "jobs" / "job"
             project.mkdir(parents=True)
             job.mkdir(parents=True)
-            write_json(job / "state.json", {"job": "job", "project": "project", "status": "starting"})
+            write_json(
+                job / "state.json",
+                {"job": "job", "project": "project", "status": "starting"},
+            )
             active = {"job": "job", "pid": 999, "stamp": "x", "generation": "old"}
             first = worker.reconcile(active)
             self.assertEqual(first["unknown_observations"], 1)
@@ -497,7 +575,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             job = root / "jobs" / "job"
             project.mkdir(parents=True)
             job.mkdir(parents=True)
-            write_json(job / "state.json", {"job": "job", "project": "project", "status": "failed"})
+            write_json(
+                job / "state.json",
+                {"job": "job", "project": "project", "status": "failed"},
+            )
             write_json(job / "request.json", {"managed_turn": True})
             (project / "app-server-stderr.log").write_text("a" * 40000, encoding="utf-8")
             (project / "warm-supervisor.log").write_text("b" * 40000, encoding="utf-8")
@@ -513,7 +594,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             job = root / "jobs" / "orphan"
             project.mkdir(parents=True)
             job.mkdir(parents=True)
-            write_json(job / "state.json", {"job": "orphan", "project": "project", "status": "starting"})
+            write_json(
+                job / "state.json",
+                {"job": "orphan", "project": "project", "status": "starting"},
+            )
             write_json(project / "active.json", None)
 
             result = worker.rpc({"action": "fetch", "job": "orphan"})
@@ -521,7 +605,9 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             self.assertEqual(result["status"], "interrupted")
             self.assertIn("No active worker owns", result["error"])
 
-    def test_timeout_without_turn_completed_has_bounded_terminal_state_and_closes_server(self):
+    def test_timeout_without_turn_completed_has_bounded_terminal_state_and_closes_server(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as folder:
             root = self.runtime_root(folder)
             worker.set_root(root)
@@ -546,7 +632,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                     "thread_id": None,
                 },
             )
-            write_json(job / "state.json", {"job": "job", "project": "project", "status": "starting"})
+            write_json(
+                job / "state.json",
+                {"job": "job", "project": "project", "status": "starting"},
+            )
             write_json(root / "executor.json", {"interrupt_grace_seconds": 1})
 
             class Process:
@@ -617,7 +706,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                     "thread_id": None,
                 },
             )
-            write_json(job / "state.json", {"job": "job", "project": "project", "status": "starting"})
+            write_json(
+                job / "state.json",
+                {"job": "job", "project": "project", "status": "starting"},
+            )
 
             class Process:
                 pid = 456
@@ -666,12 +758,25 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             job = root / "jobs" / "job"
             project.mkdir(parents=True)
             job.mkdir(parents=True)
-            write_json(job / "state.json", {"job": "job", "project": "project", "status": "running"})
+            write_json(
+                job / "state.json",
+                {"job": "job", "project": "project", "status": "running"},
+            )
             write_json(
                 project / "worker-self-exit.json",
-                {"generation": "generation", "pid": 123, "reason": "exception", "error": "bounded failure"},
+                {
+                    "generation": "generation",
+                    "pid": 123,
+                    "reason": "exception",
+                    "error": "bounded failure",
+                },
             )
-            active = {"job": "job", "pid": 123, "stamp": "old", "generation": "generation"}
+            active = {
+                "job": "job",
+                "pid": 123,
+                "stamp": "old",
+                "generation": "generation",
+            }
 
             self.assertIsNone(worker.reconcile(active))
             state = read_json(job / "state.json")

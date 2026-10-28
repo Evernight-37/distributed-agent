@@ -4,15 +4,18 @@ import json
 import os
 from pathlib import Path
 from unittest.mock import patch
-from collaboration_store import Store
-from broker import PullBackend
-from panel import action
-import worker
+from agent_harness.broker import PullBackend
+from agent_harness import worker
 
 
 class BoundaryTests(unittest.TestCase):
-    def test_owner_selected_workspace_accepts_implementation_without_linked_worktree(self):
-        with tempfile.TemporaryDirectory() as folder, patch.object(worker, "ROOT", Path(folder)):
+    def test_owner_selected_workspace_accepts_implementation_without_linked_worktree(
+        self,
+    ):
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            patch.object(worker, "ROOT", Path(folder)),
+        ):
             workspace = Path(folder) / "workspace"
             workspace.mkdir()
             worker.rpc(
@@ -44,26 +47,21 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(config["project"]["remote_path"], str(workspace.resolve()))
 
     def test_default_panel_and_coordinator_never_construct_ssh_adapter(self):
-        from panel import handler_for
-        from coordinator import Coordinator
+        from agent_harness.panel import handler_for
+        from agent_harness.coordinator import Coordinator
 
         with tempfile.TemporaryDirectory() as root:
             handler = handler_for(root)
             self.assertIsInstance(handler.backend, PullBackend)
             self.assertIsInstance(Coordinator(handler.store).backend, PullBackend)
 
-    def test_central_configuration_rejected_before_reserving_agent(self):
-        with tempfile.TemporaryDirectory() as root:
-            store = Store(root)
-            owner = store.signup("owner", "", bootstrap=True)
-            backend = PullBackend(store)
-            with self.assertRaises(PermissionError):
-                action(store, owner, {"action": "configure-agent", "agent": "unknown"}, backend)
-            with self.assertRaises(PermissionError):
-                action(store, owner, {"action": "add-agent"}, backend)
-
     def test_inspection_keeps_read_only_sandbox_and_implementation_uses_workspace(self):
-        p = {"model": "gpt-5.6-sol", "effort": "medium", "remote_path": "D:/project", "local_control": True}
+        p = {
+            "model": "gpt-5.6-sol",
+            "effort": "medium",
+            "remote_path": "D:/project",
+            "local_control": True,
+        }
         args = worker.build_command("codex.exe", p, None)
         self.assertNotIn("--approve-for-me", args)
         self.assertIn('approval_policy="never"', args)

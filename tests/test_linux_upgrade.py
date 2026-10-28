@@ -5,10 +5,10 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-import linux_upgrade
-from common import read_json
+from agent_harness import linux_upgrade
+from agent_harness.common import read_json
 
 
 def make_tar(path, members):
@@ -42,7 +42,27 @@ def valid_members(version="1.1.0"):
     ]
 
 
+def standalone_members(version="1.2.0"):
+    return [
+        ("AgentHarness-linux/", b""),
+        ("AgentHarness-linux/VERSION", version.encode()),
+        ("AgentHarness-linux/harness", b"#!/bin/sh\n"),
+    ]
+
+
 class LinuxUpgradeTests(unittest.TestCase):
+    def test_release_retention_preserves_current_previous_and_one_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            releases = Path(directory)
+            paths = []
+            for version in ("1.0.0", "1.1.0", "1.2.0", "1.3.0"):
+                path = releases / version
+                path.mkdir()
+                paths.append(path)
+            linux_upgrade._prune_releases(releases, {paths[-1], paths[-2]}, limit=3)
+            remaining = {path.name for path in releases.iterdir()}
+            self.assertEqual(remaining, {"1.1.0", "1.2.0", "1.3.0"})
+
     @staticmethod
     def make_runtime(release):
         release = Path(release)
@@ -72,7 +92,10 @@ class LinuxUpgradeTests(unittest.TestCase):
         for label, value in cases:
             with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
                 bundle = Path(directory) / "bundle.tar.gz"
-                make_tar(bundle, [(label, value)] if isinstance(value, tarfile.TarInfo) else [(label, value)])
+                make_tar(
+                    bundle,
+                    [(label, value)] if isinstance(value, tarfile.TarInfo) else [(label, value)],
+                )
                 with tempfile.TemporaryDirectory() as destination:
                     with self.assertRaises(ValueError):
                         linux_upgrade._extract(bundle, destination)
@@ -140,6 +163,37 @@ class LinuxUpgradeTests(unittest.TestCase):
             self.assertNotIn("device_token", encoded)
             self.assertEqual(refresh.call_count, 1)
             self.assertFalse(result["reused"])
+
+    def test_standalone_bundle_needs_no_python_installer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "data"
+            root.mkdir(parents=True)
+            bundle = Path(directory) / "bundle.tar.gz"
+            make_tar(bundle, standalone_members())
+            digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+            managers = []
+
+            class FakeManager:
+                def __init__(self, *args):
+                    self.args = args
+                    managers.append(self)
+
+                def install(self):
+                    pass
+
+            refresh = MagicMock()
+            with (
+                patch.object(linux_upgrade, "ServiceManager", FakeManager),
+                patch.object(linux_upgrade.subprocess, "run") as installer,
+            ):
+                result = linux_upgrade.upgrade(root, bundle, digest, refresh)
+            installer.assert_not_called()
+            self.assertEqual(result["version"], "1.2.0")
+            self.assertIsNone(managers[0].args[2])
+            self.assertTrue(refresh.call_args.kwargs["standalone"])
+            state = read_json(root.parent / "install-state.json")
+            self.assertEqual(state["current"]["kind"], "standalone")
+            self.assertIsNone(state["current"]["script"])
 
     def test_recorded_current_runtime_is_previous_for_consecutive_upgrade(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -274,7 +328,11 @@ class LinuxUpgradeTests(unittest.TestCase):
                 json.dumps(
                     {
                         "current": {"release": "new"},
-                        "previous": {"release": "old", "python": "/missing/python", "script": "/missing/script"},
+                        "previous": {
+                            "release": "old",
+                            "python": "/missing/python",
+                            "script": "/missing/script",
+                        },
                     }
                 ),
                 encoding="utf-8",

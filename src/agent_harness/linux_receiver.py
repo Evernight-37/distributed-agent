@@ -16,12 +16,13 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from app_bridge import AppBridge
-from broker_transport import broker_opener
-from common import lock, read_json, validate_local_proxy, write_json
-from desktop_runtime import DesktopRuntime
-from linux_service import ServiceManager
-from worker import cli_status, codex_login_status, codex_version
+from agent_harness.app_bridge import AppBridge
+from agent_harness.broker_transport import broker_opener
+from agent_harness.common import lock, read_json, validate_local_proxy, write_json
+from agent_harness.desktop_runtime import DesktopRuntime
+from agent_harness.health import HealthCode, component, report
+from agent_harness.linux_service import ServiceManager
+from agent_harness.worker import cli_status, codex_login_status, codex_version
 
 
 def invoke(bridge, action, payload=None):
@@ -46,18 +47,25 @@ def _private_json(path, value):
     path.chmod(0o600)
 
 
-def _write_launcher(root, profile_id, python=None, adapter=None):
+def _write_launcher(root, profile_id, python=None, adapter=None, standalone=None):
     """Refresh one stable MCP launcher without exposing its private grant."""
     root = Path(root).resolve()
     directory = root / "mcp"
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory.chmod(0o700)
     launcher = directory / f"launch-{profile_id}.sh"
-    command = [
-        str(Path(python or sys.executable).resolve()),
-        "-X",
-        "utf8",
-        str(Path(adapter or (Path(__file__).resolve().parent / "mcp_adapter.py")).resolve()),
+    executable = str(Path(python or sys.executable).resolve())
+    standalone = bool(getattr(sys, "frozen", False)) if standalone is None else bool(standalone)
+    if standalone:
+        command = [executable, "mcp-stdio"]
+    else:
+        command = [
+            executable,
+            "-X",
+            "utf8",
+            str(Path(adapter or (Path(__file__).resolve().parent / "mcp_adapter.py")).resolve()),
+        ]
+    command += [
         "--grant",
         str(directory / f"grant-{profile_id}.json"),
         "--network",
@@ -70,13 +78,23 @@ def _write_launcher(root, profile_id, python=None, adapter=None):
     return launcher
 
 
-def refresh_mcp_launchers(root, python=None, adapter=None):
+def refresh_mcp_launchers(root, python=None, adapter=None, standalone=None):
     bridge = AppBridge(root)
     refreshed = []
     for profile in bridge._profiles():
         profile_id = profile.get("id") if isinstance(profile, dict) else None
         if isinstance(profile_id, str) and profile_id:
-            refreshed.append(str(_write_launcher(bridge.root, profile_id, python=python, adapter=adapter)))
+            refreshed.append(
+                str(
+                    _write_launcher(
+                        bridge.root,
+                        profile_id,
+                        python=python,
+                        adapter=adapter,
+                        standalone=standalone,
+                    )
+                )
+            )
     return refreshed
 
 
@@ -107,7 +125,11 @@ def status(root):
         item["codex"] = codex
         item["receiver"] = path.name
         receivers.append(item)
-    return {"root": str(bridge.root), "profiles": invoke(bridge, "local-status")["profiles"], "receivers": receivers}
+    return {
+        "root": str(bridge.root),
+        "profiles": invoke(bridge, "local-status")["profiles"],
+        "receivers": receivers,
+    }
 
 
 def link(args):
@@ -124,8 +146,15 @@ def link(args):
             raise ValueError("请选择可运行的 Codex CLI")
         _private_json(bridge.root / "codex-cli.json", {"path": str(path), "mode": "manual"})
     password = "" if args.no_password else getpass.getpass("为服务器上的本机身份设置解锁密码：")
-    request = invoke(bridge, "device-request", {"server": args.server, "name": args.name, "password": password})
-    print("在任一已登录的 Harness 控制台账户页输入关联码，核对并批准这台 Linux 服务器：", flush=True)
+    request = invoke(
+        bridge,
+        "device-request",
+        {"server": args.server, "name": args.name, "password": password},
+    )
+    print(
+        "在任一已登录的 Harness 控制台账户页输入关联码，核对并批准这台 Linux 服务器：",
+        flush=True,
+    )
     print(request["code"], flush=True)
     print("设备名称：" + args.name, flush=True)
     deadline = time.monotonic() + min(request.get("expires_in", 600), 600)
@@ -133,7 +162,10 @@ def link(args):
         result = invoke(bridge, "device-claim")
         if result.get("status") == "approved":
             refresh_mcp_launchers(bridge.root)
-            print("关联成功。现在可在 Windows 或 macOS 控制台为这台服务器添加员工并派入项目。", flush=True)
+            print(
+                "关联成功。现在可在 Windows 或 macOS 控制台为这台服务器添加员工并派入项目。",
+                flush=True,
+            )
             return
         time.sleep(2)
     raise RuntimeError("关联码已过期，请重新执行 link")
@@ -280,7 +312,10 @@ def network_status(root):
     broker = read_json(Path(root) / "broker-network.json", {})
     codex = read_json(Path(root) / "codex-proxy.json", {"enabled": False, "port": None})
     return {
-        "broker_proxy": {"enabled": bool(broker.get("proxy")), "address": broker.get("proxy")},
+        "broker_proxy": {
+            "enabled": bool(broker.get("proxy")),
+            "address": broker.get("proxy"),
+        },
         "codex_proxy": validate_local_proxy(codex),
     }
 
@@ -336,7 +371,11 @@ def _gpu_status():
         return {"available": False}
     try:
         result = subprocess.run(
-            [executable, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+            [
+                executable,
+                "--query-gpu=name,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -347,7 +386,10 @@ def _gpu_status():
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"available": False, "error": type(exc).__name__}
     if result.returncode:
-        return {"available": False, "error": (result.stderr or "nvidia-smi failed").strip()[:500]}
+        return {
+            "available": False,
+            "error": (result.stderr or "nvidia-smi failed").strip()[:500],
+        }
     devices = []
     for line in result.stdout.splitlines()[:16]:
         name, separator, memory = line.rpartition(",")
@@ -363,7 +405,7 @@ def doctor(root):
     codex_address = None
     if network["codex_proxy"]["enabled"]:
         codex_address = f"http://127.0.0.1:{network['codex_proxy']['port']}"
-    service = ServiceManager(root, sys.executable, __file__)
+    service = _service_manager(root)
     try:
         service_state = service.status()
     except RuntimeError as exc:
@@ -386,11 +428,72 @@ def doctor(root):
             "codex": _proxy_reachable(codex_address),
         },
     )
+    components = [
+        component(
+            "storage",
+            "healthy" if result["private_root"] else "degraded",
+            HealthCode.OK if result["private_root"] else HealthCode.STORAGE_ERROR,
+            "数据目录权限已收紧" if result["private_root"] else "数据目录权限需要检查",
+            False,
+        ),
+        component(
+            "receiver-service",
+            "healthy" if bool(service_state.get("active")) else "degraded",
+            HealthCode.OK if bool(service_state.get("active")) else HealthCode.OFFLINE,
+            "Linux 接收服务正在运行" if service_state.get("active") else "Linux 接收服务未运行",
+            not bool(service_state.get("active")),
+        ),
+    ]
+    for index, receiver in enumerate(result["receivers"], 1):
+        running = bool(receiver.get("running"))
+        components.append(
+            component(
+                f"receiver:{index}",
+                "healthy" if running else "degraded",
+                HealthCode.OK if running else HealthCode.OFFLINE,
+                "接收进程正在运行" if running else "接收进程未运行",
+                not running,
+            )
+        )
+        codex = receiver.get("codex", {})
+        if not codex.get("found"):
+            codex_state, codex_code, codex_message = "degraded", HealthCode.CLI_NOT_FOUND, "未找到 Codex CLI"
+        elif not codex.get("logged_in"):
+            codex_state, codex_code, codex_message = (
+                "degraded",
+                HealthCode.CLI_NOT_LOGGED_IN,
+                "Codex CLI 尚未登录",
+            )
+        else:
+            codex_state, codex_code, codex_message = "healthy", HealthCode.OK, "Codex CLI 可用"
+        components.append(
+            component(
+                f"codex:{index}",
+                codex_state,
+                codex_code,
+                codex_message,
+                codex_code != HealthCode.OK,
+            )
+        )
+    for name, reachable in result["proxy_reachability"].items():
+        if reachable is not False:
+            continue
+        components.append(
+            component(
+                "proxy:" + name,
+                "degraded",
+                HealthCode.PROXY_UNREACHABLE,
+                "已配置的本机代理无法连接",
+                True,
+            )
+        )
+    result["health"] = report(components)
     return result
 
 
 def _service_manager(root):
-    return ServiceManager(root, sys.executable, Path(__file__).resolve())
+    script = None if getattr(sys, "frozen", False) else Path(__file__).resolve()
+    return ServiceManager(root, sys.executable, script)
 
 
 def service_command(root, args):
@@ -416,7 +519,10 @@ def service_command(root, args):
         return result
     if args.service_action == "logs":
         if args.follow:
-            print("正在跟随 systemd journal；接收端文件日志请另开终端运行不带 --follow 的命令。", flush=True)
+            print(
+                "正在跟随 systemd journal；接收端文件日志请另开终端运行不带 --follow 的命令。",
+                flush=True,
+            )
         completed = manager.logs(args.lines, args.follow)
         if not args.follow:
             if completed.stdout:
@@ -442,18 +548,28 @@ def build_parser():
     pairing.add_argument("--name", default=socket.gethostname() + " · Linux")
     pairing.add_argument("--codex", help="Absolute Codex CLI path, including a VS Code bundled CLI")
     pairing.add_argument("--broker-proxy", help="Explicit local HTTP proxy, e.g. userspace Tailscale")
-    pairing.add_argument("--no-password", action="store_true", help="Use OS file permissions for unattended identity")
+    pairing.add_argument(
+        "--no-password",
+        action="store_true",
+        help="Use OS file permissions for unattended identity",
+    )
     commands.add_parser("status")
     commands.add_parser("doctor")
+    commands.add_parser("diagnostics", help="Print an allowlist-only support snapshot safe to share")
     commands.add_parser("run", help="Foreground supervisor; prefer `service install` for persistence")
     commands.add_parser("stop")
     upgrade = commands.add_parser("upgrade", help="Install a verified Linux receiver bundle side by side")
     upgrade.add_argument("--bundle", type=Path, required=True)
     upgrade.add_argument("--sha256", required=True)
     upgrade.add_argument(
-        "--retry", action="store_true", help="Retry activation of an already installed verified release"
+        "--retry",
+        action="store_true",
+        help="Retry activation of an already installed verified release",
     )
     commands.add_parser("rollback", help="Return to the previous installed Linux receiver")
+    internal_mcp = commands.add_parser("mcp-stdio", help="Internal MCP bridge; managed automatically")
+    internal_mcp.add_argument("--grant", required=True)
+    internal_mcp.add_argument("--network")
     codex = commands.add_parser("codex", help="Connect the interactive Codex CLI to Harness")
     codex_actions = codex.add_subparsers(dest="codex_action", required=True)
     for name in ("connect", "status", "disconnect"):
@@ -502,6 +618,17 @@ def main(argv=None):
         result = status(args.root)
     elif args.command == "doctor":
         result = doctor(args.root)
+    elif args.command == "diagnostics":
+        from agent_harness.diagnostics import build_support_snapshot, validate_public_snapshot
+
+        detailed = doctor(args.root)
+        result = build_support_snapshot(
+            detailed["health"],
+            app_version=detailed["version"],
+            capabilities={"linux_receiver": True, "event_cursor": True},
+            counts={"receivers": len(detailed["receivers"])},
+        )
+        validate_public_snapshot(result)
     elif args.command == "run":
         run(args.root)
     elif args.command == "stop":
@@ -510,13 +637,21 @@ def main(argv=None):
             DesktopRuntime(path).stop_and_wait()
         result = {"stopping": True}
     elif args.command == "upgrade":
-        from linux_upgrade import upgrade
+        from agent_harness.linux_upgrade import upgrade
 
         result = upgrade(args.root, args.bundle, args.sha256, refresh_mcp_launchers, retry=args.retry)
     elif args.command == "rollback":
-        from linux_upgrade import rollback
+        from agent_harness.linux_upgrade import rollback
 
         result = rollback(args.root, refresh_mcp_launchers)
+    elif args.command == "mcp-stdio":
+        from agent_harness.mcp_adapter import main as mcp_main
+
+        forwarded = ["--grant", args.grant]
+        if args.network:
+            forwarded.extend(["--network", args.network])
+        mcp_main(forwarded)
+        return
     elif args.command == "codex":
         if args.codex_action == "path":
             result = codex_path_command(args.root, args.path_action, getattr(args, "path", None))
@@ -529,7 +664,10 @@ def main(argv=None):
     elif args.network_action == "broker-proxy":
         result = _set_broker_proxy(args.root, args.address if args.proxy_action == "set" else None)
     else:
-        setting = {"enabled": args.proxy_action == "set", "port": args.port if args.proxy_action == "set" else None}
+        setting = {
+            "enabled": args.proxy_action == "set",
+            "port": args.port if args.proxy_action == "set" else None,
+        }
         result = _set_codex_proxy(args.root, setting)
     if result is not None:
         print(json.dumps(result, ensure_ascii=False, indent=2))

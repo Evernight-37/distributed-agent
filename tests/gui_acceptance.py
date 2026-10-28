@@ -1,11 +1,14 @@
-import json, sys, tempfile, time, threading
+import json
+import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent_harness"))
 from http.server import ThreadingHTTPServer
-from panel import handler_for
-from app_bridge import AppBridge
-from collaboration_store import Store
+from agent_harness.panel import handler_for
+from agent_harness.app_bridge import AppBridge
+from agent_harness.collaboration_store import Store
 import webview
 
 with tempfile.TemporaryDirectory() as td:
@@ -40,7 +43,12 @@ with tempfile.TemporaryDirectory() as td:
 
     def validate():
         try:
-            wait("document.querySelectorAll('.auth-choice').length===3")
+            wait("document.querySelectorAll('.auth-choice').length===4")
+            report["recovery_entry"] = bool(
+                window.evaluate_js(
+                    "Array.from(document.querySelectorAll('.auth-choice')).some(b=>b.textContent.includes('从恢复包恢复'))"
+                )
+            )
             window.evaluate_js(
                 "Array.from(document.querySelectorAll('.auth-choice')).find(b=>b.querySelector('strong').textContent==='创建账户').click()"
             )
@@ -144,6 +152,14 @@ with tempfile.TemporaryDirectory() as td:
             window.evaluate_js("document.querySelector('#accountNav').click()")
             wait("document.querySelector('#content h1')?.textContent==='账户'")
             report["account_page"] = True
+            window.evaluate_js(
+                "Array.from(document.querySelectorAll('#content button')).find(b=>b.textContent==='添加 Linux 服务器').click()"
+            )
+            wait("document.querySelector('#modalBody')?.textContent.includes('先在设置 → 协作服务中创建团队入口')")
+            report["linux_ai_setup_entry"] = True
+            window.evaluate_js(
+                "Array.from(document.querySelectorAll('#modalActions button')).find(b=>b.textContent==='关闭').click()"
+            )
             window.evaluate_js("document.querySelector('#settingsNav').click()")
             wait("document.querySelector('#teamServiceCard')?.textContent.includes('协作服务')")
             window.evaluate_js(
@@ -173,7 +189,9 @@ with tempfile.TemporaryDirectory() as td:
                     time.sleep(0.1)
             except Exception:
                 pass
-            Path("build/gui-flow-report.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+            report_path = Path("build/gui-flow-report.json")
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
             window.destroy()
 
     window.events.loaded += validate

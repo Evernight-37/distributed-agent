@@ -42,8 +42,12 @@ def build_unit(python, script, root):
     """Return a complete user unit for the foreground receiver supervisor."""
 
     python = _unit_quote(python, "python")
-    script = _unit_quote(script, "script")
     root = _unit_quote(root, "data root")
+    command = (
+        f"{python} --root {root} run"
+        if script is None
+        else f"{python} -X utf8 {_unit_quote(script, 'script')} --root {root} run"
+    )
     return (
         "[Unit]\n"
         "Description=Agent Harness Linux receiver\n"
@@ -51,7 +55,7 @@ def build_unit(python, script, root):
         "After=network-online.target\n\n"
         "[Service]\n"
         "Type=simple\n"
-        f"ExecStart={python} -X utf8 {script} --root {root} run\n"
+        f"ExecStart={command}\n"
         "Restart=on-failure\n"
         "RestartSec=5\n"
         "TimeoutStopSec=75\n"
@@ -68,7 +72,7 @@ class ServiceManager:
     def __init__(self, root, python, script, home=None):
         self.root = _path(root, "data root")
         self.python = _path(python, "python")
-        self.script = _path(script, "script")
+        self.script = _path(script, "script") if script is not None else None
         self.home = Path.home() if home is None else _path(home, "home")
         self.path = unit_path(self.home)
 
@@ -118,7 +122,10 @@ class ServiceManager:
 
     def status(self):
         result = self._command("is-active", UNIT_NAME)
-        return {"active": result.returncode == 0 and result.stdout.strip() == "active", "output": result.stdout.strip()}
+        return {
+            "active": result.returncode == 0 and result.stdout.strip() == "active",
+            "output": result.stdout.strip(),
+        }
 
     def logs(self, lines=100, follow=False):
         if not isinstance(lines, int) or isinstance(lines, bool) or not 1 <= lines <= 10000:
@@ -189,4 +196,7 @@ class ServiceManager:
             check=False,
         )
         value = result.stdout.strip().lower()
-        return {"available": result.returncode == 0, "enabled": value == "yes" if result.returncode == 0 else None}
+        return {
+            "available": result.returncode == 0,
+            "enabled": value == "yes" if result.returncode == 0 else None,
+        }

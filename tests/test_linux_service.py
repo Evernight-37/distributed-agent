@@ -4,10 +4,17 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from linux_service import ServiceManager, build_unit, unit_path
+from agent_harness.linux_service import ServiceManager, build_unit, unit_path
 
 
 class LinuxServiceTests(unittest.TestCase):
+    def test_standalone_unit_uses_binary_directly(self):
+        content = build_unit("/opt/Agent Harness/harness", None, "/srv/harness data")
+        self.assertIn("ExecStart=", content)
+        self.assertIn(" --root ", content)
+        self.assertIn(" run\n", content)
+        self.assertNotIn("-X utf8", content)
+
     def test_unit_quotes_paths_and_escapes_percent(self):
         unit = build_unit("/tmp/py %bin/python", "/tmp/a b/receiver.py", "/tmp/data root")
         self.assertIn("ExecStart=", unit)
@@ -20,8 +27,8 @@ class LinuxServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_unit("/tmp/python\n", "/tmp/receiver.py", "/tmp/data")
 
-    @patch("linux_service.shutil.which", return_value="/usr/bin/systemctl")
-    @patch("linux_service.subprocess.run")
+    @patch("agent_harness.linux_service.shutil.which", return_value="/usr/bin/systemctl")
+    @patch("agent_harness.linux_service.subprocess.run")
     def test_install_writes_unit_and_preserves_data(self, run, _which):
         run.return_value.returncode = 0
         run.return_value.stdout = "active\n"
@@ -39,11 +46,17 @@ class LinuxServiceTests(unittest.TestCase):
             if os.name != "nt":
                 self.assertEqual(manager.path.stat().st_mode & 0o777, 0o600)
             commands = [call.args[0] for call in run.call_args_list]
-            self.assertIn(["systemctl", "--user", "enable", "agent-harness-receiver.service"], commands)
-            self.assertIn(["systemctl", "--user", "restart", "agent-harness-receiver.service"], commands)
+            self.assertIn(
+                ["systemctl", "--user", "enable", "agent-harness-receiver.service"],
+                commands,
+            )
+            self.assertIn(
+                ["systemctl", "--user", "restart", "agent-harness-receiver.service"],
+                commands,
+            )
 
-    @patch("linux_service.shutil.which", return_value="/usr/bin/systemctl")
-    @patch("linux_service.subprocess.run")
+    @patch("agent_harness.linux_service.shutil.which", return_value="/usr/bin/systemctl")
+    @patch("agent_harness.linux_service.subprocess.run")
     def test_uninstall_removes_only_unit(self, run, _which):
         run.return_value.returncode = 0
         run.return_value.stdout = ""
@@ -61,14 +74,19 @@ class LinuxServiceTests(unittest.TestCase):
             self.assertTrue((root / "keep.txt").exists())
             self.assertEqual(result["data_root"], str(root.resolve()))
 
-    @patch("linux_service.shutil.which", return_value="/usr/bin/systemctl")
-    @patch("linux_service.subprocess.run")
+    @patch("agent_harness.linux_service.shutil.which", return_value="/usr/bin/systemctl")
+    @patch("agent_harness.linux_service.subprocess.run")
     def test_service_commands_are_user_scoped(self, run, _which):
         run.return_value.returncode = 0
         run.return_value.stdout = "active\n"
         run.return_value.stderr = ""
         with tempfile.TemporaryDirectory() as directory:
-            manager = ServiceManager(Path(directory) / "data", "/usr/bin/python3", "/opt/receiver.py", home=directory)
+            manager = ServiceManager(
+                Path(directory) / "data",
+                "/usr/bin/python3",
+                "/opt/receiver.py",
+                home=directory,
+            )
             manager.start()
             manager.restart()
             manager.stop()
@@ -77,7 +95,12 @@ class LinuxServiceTests(unittest.TestCase):
                 commands,
                 [
                     ["systemctl", "--user", "start", "agent-harness-receiver.service"],
-                    ["systemctl", "--user", "restart", "agent-harness-receiver.service"],
+                    [
+                        "systemctl",
+                        "--user",
+                        "restart",
+                        "agent-harness-receiver.service",
+                    ],
                     ["systemctl", "--user", "stop", "agent-harness-receiver.service"],
                 ],
             )

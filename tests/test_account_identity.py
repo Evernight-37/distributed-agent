@@ -1,8 +1,10 @@
 import copy
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
-from account_identity import (
+from agent_harness.account_identity import (
     generate_identity,
     sign_envelope,
     verify_envelope,
@@ -11,10 +13,11 @@ from account_identity import (
     approve_delegate,
     encrypt_identity,
     decrypt_identity,
+    encrypt_profile,
 )
-from account_backend import AccountBackend
-from collaboration_store import Store
-from broker import PullBackend
+from agent_harness.account_backend import AccountBackend
+from agent_harness.collaboration_store import Store
+from agent_harness.broker import PullBackend
 
 
 class IdentityTests(unittest.TestCase):
@@ -32,12 +35,22 @@ class IdentityTests(unittest.TestCase):
         nonce = self.api.api({"action": "challenge", "public_key": identity["public_key"]})["nonce"]
         env = sign_envelope(
             identity,
-            {"domain": "harness-account-request-v1", "nonce": nonce, "operation": operation, "payload": payload},
+            {
+                "domain": "harness-account-request-v1",
+                "nonce": nonce,
+                "operation": operation,
+                "payload": payload,
+            },
         )
         return self.api.api({"action": action, "envelope": env})
 
     def register(self, identity=None):
-        return self.call(identity or self.root, "register", {"name": "Test", "device_name": "Laptop"}, "register")
+        return self.call(
+            identity or self.root,
+            "register",
+            {"name": "Test", "device_name": "Laptop"},
+            "register",
+        )
 
     def test_encryption(self):
         blob = encrypt_identity(self.root, "")
@@ -46,9 +59,57 @@ class IdentityTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             decrypt_identity(blob, "wrong")
         bad = copy.deepcopy(blob)
-        bad["ciphertext"] = bad["ciphertext"][:-5] + "AAAAA"
+        target = bad["protected"] if bad.get("version") == 2 else bad
+        field = "payload" if bad.get("version") == 2 else "ciphertext"
+        target[field] = target[field][:-5] + "AAAAA"
         with self.assertRaises(PermissionError):
             decrypt_identity(bad, "")
+
+    def test_legacy_v1_identity_remains_compatible(self):
+        legacy = encrypt_profile(self.root, "legacy-password")
+        self.assertEqual(legacy["version"], 1)
+        self.assertEqual(decrypt_identity(legacy, "legacy-password"), self.root)
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI only")
+    def test_windows_identity_is_bound_to_dpapi_envelope(self):
+        first = encrypt_identity(self.root, "password")
+        second = encrypt_identity(self.root, "password")
+        self.assertEqual(first["version"], 2)
+        self.assertEqual(first["protected"]["backend"], "windows-dpapi")
+        self.assertNotEqual(first["protected"]["payload"], second["protected"]["payload"])
+        self.assertEqual(decrypt_identity(first, "password"), self.root)
+
+    def test_ephemeral_account_requests_are_cleaned_and_bounded(self):
+        child = generate_identity()
+        with self.store.connect() as db:
+            db.execute(
+                "INSERT INTO account_challenges VALUES('expired',? ,?)",
+                (child["public_key"], time.time() - 1),
+            )
+            db.execute(
+                "INSERT INTO account_requests(id,code_hash,public_key,name,expires) VALUES('old','old',?,'old',?)",
+                (child["public_key"], time.time() - 1),
+            )
+        self.api.api({"action": "challenge", "public_key": child["public_key"]})
+        with self.store.connect() as db:
+            self.assertFalse(db.execute("SELECT 1 FROM account_challenges WHERE nonce='expired'").fetchone())
+            self.assertFalse(db.execute("SELECT 1 FROM account_requests WHERE id='old'").fetchone())
+        for _ in range(5):
+            self.api.api(
+                {
+                    "action": "request-device",
+                    "public_key": child["public_key"],
+                    "name": "Desktop",
+                }
+            )
+        with self.assertRaisesRegex(RuntimeError, "过多待处理"):
+            self.api.api(
+                {
+                    "action": "request-device",
+                    "public_key": child["public_key"],
+                    "name": "Desktop",
+                }
+            )
 
     def test_signature_and_chain(self):
         child = generate_identity()
@@ -92,7 +153,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(result["employees"], [])
         with self.store.connect() as db:
             row = db.execute("SELECT * FROM users WHERE id=?", (self.root["account_id"],)).fetchone()
-            self.assertEqual(len(row["password_hash"]), 128)
+            self.assertEqual(set(row.keys()), {"id", "username"})
 
     def test_existing_root_identity_accepts_invite_on_another_service(self):
         with tempfile.TemporaryDirectory() as other_dir:
@@ -117,14 +178,24 @@ class IdentityTests(unittest.TestCase):
             invoke(host, "register", {"name": "Host"}, "register")
             project = invoke(host, "create-project", {"name": "Shared"}, "rpc")["id"]
             invite = invoke(host, "invite", {"project": project}, "rpc")["invite"]
-            payload = {"invite": invite, "name": "My existing identity", "device_name": "My laptop"}
+            payload = {
+                "invite": invite,
+                "name": "My existing identity",
+                "device_name": "My laptop",
+            }
             result = invoke(self.root, "accept-project-invite", payload, "accept-project-invite")
-            self.assertEqual((result["account_id"], result["project"]), (self.root["account_id"], project))
+            self.assertEqual(
+                (result["account_id"], result["project"]),
+                (self.root["account_id"], project),
+            )
             view = invoke(self.root, "project", {"id": project}, "rpc")
             self.assertEqual(view["project"]["id"], project)
             with self.assertRaises(PermissionError):
                 invoke(self.root, "accept-project-invite", payload, "accept-project-invite")
-            self.assertEqual(invoke(self.root, "dashboard", {}, "rpc")["user"]["id"], self.root["account_id"])
+            self.assertEqual(
+                invoke(self.root, "dashboard", {}, "rpc")["user"]["id"],
+                self.root["account_id"],
+            )
 
     def test_child_identity_can_join_another_service_with_same_account_id(self):
         with tempfile.TemporaryDirectory() as other_dir:
@@ -159,26 +230,47 @@ class IdentityTests(unittest.TestCase):
             result = invoke(
                 child,
                 "accept-project-invite",
-                {"invite": invite, "name": "Existing", "device_name": "Second computer"},
+                {
+                    "invite": invite,
+                    "name": "Existing",
+                    "device_name": "Second computer",
+                },
                 "accept-project-invite",
             )
             self.assertEqual(result["account_id"], self.root["account_id"])
-            self.assertEqual(invoke(child, "dashboard", {}, "rpc")["user"]["id"], self.root["account_id"])
+            self.assertEqual(
+                invoke(child, "dashboard", {}, "rpc")["user"]["id"],
+                self.root["account_id"],
+            )
             with other_store.connect() as db:
                 rows = db.execute(
-                    "SELECT public_key FROM account_devices WHERE account_id=?", (self.root["account_id"],)
+                    "SELECT public_key FROM account_devices WHERE account_id=?",
+                    (self.root["account_id"],),
                 ).fetchall()
-            self.assertEqual({row["public_key"] for row in rows}, {self.root["public_key"], child["public_key"]})
+            self.assertEqual(
+                {row["public_key"] for row in rows},
+                {self.root["public_key"], child["public_key"]},
+            )
 
     def test_device_approval_and_revocation(self):
         self.register()
         child = generate_identity()
-        request = self.api.api({"action": "request-device", "public_key": child["public_key"], "name": "Desktop"})
+        request = self.api.api(
+            {
+                "action": "request-device",
+                "public_key": child["public_key"],
+                "name": "Desktop",
+            }
+        )
         self.assertEqual(self.api.api({"action": "claim-device", **request})["state"], "pending")
         details = self.call(self.root, "inspect-device", {"code": request["code"]})
         self.assertEqual(details["public_key"], child["public_key"])
         chain = approve_certificate(self.root, child["public_key"])
-        self.call(self.root, "approve-device", {"request_id": request["request_id"], "chain": chain})
+        self.call(
+            self.root,
+            "approve-device",
+            {"request_id": request["request_id"], "chain": chain},
+        )
         claim = self.api.api({"action": "claim-device", **request})
         child.update(account_id=claim["account_id"], chain=claim["chain"])
         self.assertEqual(len(self.call(child, "dashboard", {})["devices"]), 2)
@@ -194,12 +286,17 @@ class IdentityTests(unittest.TestCase):
         delegate = generate_identity()
         scopes = ["collaboration.message", "collaboration.read", "collaboration.task"]
         delegate.update(
-            account_id=self.root["account_id"], chain=approve_delegate(self.root, delegate["public_key"], scopes)
+            account_id=self.root["account_id"],
+            chain=approve_delegate(self.root, delegate["public_key"], scopes),
         )
         activated = self.call(delegate, "activate-device", {"device_name": "Codex MCP"}, "activate-device")
         self.assertEqual(activated["account_id"], self.root["account_id"])
         self.assertEqual(self.call(delegate, "dashboard", {})["projects"][0]["id"], project)
-        sent = self.call(delegate, "message", {"project": project, "body": "Sent from Codex delegate"})
+        sent = self.call(
+            delegate,
+            "message",
+            {"project": project, "body": "Sent from Codex delegate"},
+        )
         self.assertIsInstance(sent["id"], int)
         view = self.call(delegate, "project", {"project": project})
         self.assertEqual(view["messages"][-1]["sender_client"], "codex")
@@ -247,19 +344,28 @@ class IdentityTests(unittest.TestCase):
 
     def approve_child(self, parent):
         child = generate_identity()
-        request = self.api.api({"action": "request-device", "public_key": child["public_key"], "name": "Child"})
+        request = self.api.api(
+            {
+                "action": "request-device",
+                "public_key": child["public_key"],
+                "name": "Child",
+            }
+        )
         self.call(
             parent,
             "approve-device",
-            {"request_id": request["request_id"], "chain": approve_certificate(parent, child["public_key"])},
+            {
+                "request_id": request["request_id"],
+                "chain": approve_certificate(parent, child["public_key"]),
+            },
         )
         claim = self.api.api({"action": "claim-device", **request})
         child.update(account_id=claim["account_id"], chain=claim["chain"])
         return child
 
     def test_root_revoke_and_descendant_cascade(self):
-        from account_backend import device_node
-        from collaboration_store import digest
+        from agent_harness.account_backend import device_node
+        from agent_harness.collaboration_store import digest
 
         self.register()
         child = self.approve_child(self.root)
@@ -276,7 +382,11 @@ class IdentityTests(unittest.TestCase):
         with self.store.connect() as db:
             db.execute(
                 "INSERT INTO pull_devices VALUES(?,?,?)",
-                (device_node(grandchild["public_key"]), digest("synthetic-token-only"), 0),
+                (
+                    device_node(grandchild["public_key"]),
+                    digest("synthetic-token-only"),
+                    0,
+                ),
             )
         command = sign_envelope(
             self.root,
@@ -296,18 +406,20 @@ class IdentityTests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertFalse(
                 db.execute(
-                    "SELECT 1 FROM pull_devices WHERE node=?", (device_node(grandchild["public_key"]),)
+                    "SELECT 1 FROM pull_devices WHERE node=?",
+                    (device_node(grandchild["public_key"]),),
                 ).fetchone()
             )
             self.assertEqual(
-                db.execute("SELECT state FROM owner_commands WHERE id='cascade-command'").fetchone()["state"], "failed"
+                db.execute("SELECT state FROM owner_commands WHERE id='cascade-command'").fetchone()["state"],
+                "failed",
             )
         self.assertEqual(len(self.call(self.root, "dashboard", {})["devices"]), 1)
 
     def test_withdraw_filters_without_deleting_history(self):
         import json
-        from account_backend import device_node
-        from owner_worker import execution_project
+        from agent_harness.account_backend import device_node
+        from agent_harness.owner_worker import execution_project
 
         self.register()
         project = self.call(self.root, "create-project", {"name": "Project"})["id"]
@@ -316,16 +428,38 @@ class IdentityTests(unittest.TestCase):
         backend = execution_project("employee", project)
         with self.store.connect() as db:
             db.execute(
-                "INSERT INTO employees VALUES(?,?,?,?,?,?,?)", ("employee", "Employee", user, node, "{}", "idle", 0)
+                "INSERT INTO employees VALUES(?,?,?,?,?,?,?)",
+                ("employee", "Employee", user, node, "{}", "idle", 0),
             )
             db.execute(
                 "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) VALUES(?,?,?,?,?,?,?,?,?)",
-                ("agent", project, "Employee", user, node, backend, "model", "medium", 120),
+                (
+                    "agent",
+                    project,
+                    "Employee",
+                    user,
+                    node,
+                    backend,
+                    "model",
+                    "medium",
+                    120,
+                ),
             )
-            body = {"action": "withdraw", "data": {"id": "employee", "project_id": project}}
+            body = {
+                "action": "withdraw",
+                "data": {"id": "employee", "project_id": project},
+            }
             db.execute(
                 "INSERT INTO owner_commands VALUES(?,?,?,?,?,?,?)",
-                ("withdraw", user, node, json.dumps({"body": body}), "applied", "{}", 1),
+                (
+                    "withdraw",
+                    user,
+                    node,
+                    json.dumps({"body": body}),
+                    "applied",
+                    "{}",
+                    1,
+                ),
             )
         self.assertEqual(self.call(self.root, "project", {"id": project})["members"], [])
         with self.store.connect() as db:
@@ -336,12 +470,21 @@ class IdentityTests(unittest.TestCase):
         other = generate_identity()
         self.register(other)
         child = generate_identity()
-        request = self.api.api({"action": "request-device", "public_key": child["public_key"], "name": "Desktop"})
+        request = self.api.api(
+            {
+                "action": "request-device",
+                "public_key": child["public_key"],
+                "name": "Desktop",
+            }
+        )
         with self.assertRaises(PermissionError):
             self.call(
                 other,
                 "approve-device",
-                {"request_id": request["request_id"], "chain": approve_certificate(self.root, child["public_key"])},
+                {
+                    "request_id": request["request_id"],
+                    "chain": approve_certificate(self.root, child["public_key"]),
+                },
             )
 
 

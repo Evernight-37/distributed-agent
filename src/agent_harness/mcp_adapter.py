@@ -14,11 +14,12 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from account_identity import sign_envelope
-from common import read_json
-from pull_worker import validate_server
-from broker_transport import broker_opener
-from mcp_server import run_stdio
+from agent_harness.account_identity import sign_envelope
+from agent_harness.common import read_json
+from agent_harness.pull_worker import validate_server
+from agent_harness.broker_transport import broker_opener
+from agent_harness.mcp_server import run_stdio
+from agent_harness.protocol import ensure_hub_compatible
 
 
 class HarnessMcpBackend:
@@ -43,7 +44,14 @@ class HarnessMcpBackend:
 
     def _load_grant(self):
         value = read_json(self.grant_path)
-        required = {"version", "identity", "profile_id", "username", "servers", "scopes"}
+        required = {
+            "version",
+            "identity",
+            "profile_id",
+            "username",
+            "servers",
+            "scopes",
+        }
         if not isinstance(value, dict) or value.get("version") != 1 or not required.issubset(value):
             raise PermissionError("Agent Harness Codex integration is not enabled for this account")
         identity = value.get("identity")
@@ -87,11 +95,18 @@ class HarnessMcpBackend:
             raise RuntimeError("协作服务返回无效数据")
         if result.get("error"):
             raise RuntimeError(result["error"])
-        return result.get("result", result) if result.get("ok") is True else result
+        value = result.get("result", result) if result.get("ok") is True else result
+        if data.get("action") == "challenge":
+            ensure_hub_compatible(value)
+        return value
 
     def _rpc(self, server, operation, payload=None, timeout=12):
         identity = self.grant["identity"]
-        challenge = self._post(server, {"action": "challenge", "public_key": identity["public_key"]}, timeout)
+        challenge = self._post(
+            server,
+            {"action": "challenge", "public_key": identity["public_key"]},
+            timeout,
+        )
         features = set(challenge.get("features", []))
         if "codex_mcp_v1" not in features:
             raise RuntimeError("协作服务版本过旧，尚未启用 Codex MCP 权限边界")
@@ -211,7 +226,10 @@ class HarnessMcpBackend:
                         "agent": {"type": "string"},
                         "title": {"type": "string"},
                         "instructions": {"type": "string"},
-                        "stage": {"type": "string", "enum": ["discuss", "review", "implement"]},
+                        "stage": {
+                            "type": "string",
+                            "enum": ["discuss", "review", "implement"],
+                        },
                         "allowed_files": {
                             "type": "string",
                             "description": "声明的修改范围；这是任务合同，不是文件系统 ACL。实现任务仍可写机器所有者登记的整个项目工作区。",
@@ -219,7 +237,14 @@ class HarnessMcpBackend:
                         "acceptance": {"type": "string"},
                         "validation": {"type": "string"},
                     },
-                    required=["project", "agent", "title", "instructions", "acceptance", "validation"],
+                    required=[
+                        "project",
+                        "agent",
+                        "title",
+                        "instructions",
+                        "acceptance",
+                        "validation",
+                    ],
                 ),
             },
             {
@@ -227,7 +252,10 @@ class HarnessMcpBackend:
                 "description": "读取异步任务的当前状态、结果或错误。",
                 "inputSchema": dict(
                     obj,
-                    properties={"project": {"type": "string"}, "task": {"type": "string"}},
+                    properties={
+                        "project": {"type": "string"},
+                        "task": {"type": "string"},
+                    },
                     required=["project", "task"],
                 ),
             },
@@ -252,7 +280,14 @@ class HarnessMcpBackend:
                     projects.append(
                         {
                             key: project.get(key)
-                            for key in ("id", "name", "owner_id", "admin_agent_id", "paused", "last_entered")
+                            for key in (
+                                "id",
+                                "name",
+                                "owner_id",
+                                "admin_agent_id",
+                                "paused",
+                                "last_entered",
+                            )
                         }
                         | {"server": item["server"]}
                     )
@@ -278,7 +313,13 @@ class HarnessMcpBackend:
             project = arguments["project"]
             payload = {
                 key: arguments[key]
-                for key in ("project", "body", "conversation_id", "recipient_id", "mention_agent_id")
+                for key in (
+                    "project",
+                    "body",
+                    "conversation_id",
+                    "recipient_id",
+                    "mention_agent_id",
+                )
                 if key in arguments
             }
             message_id = arguments.get("client_message_id") or str(uuid.uuid4())
@@ -298,7 +339,11 @@ class HarnessMcpBackend:
             return {"project": project, **result}
         if name == "harness_task_get":
             project = arguments["project"]
-            return self._rpc(self._project_server(project), "task-status", {"task": arguments["task"]})
+            return self._rpc(
+                self._project_server(project),
+                "task-status",
+                {"task": arguments["task"]},
+            )
         raise ValueError("Unknown Harness tool")
 
 

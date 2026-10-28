@@ -55,9 +55,13 @@ class Attachments:
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self.store.require_member(db, project, user)
-            db.execute("DELETE FROM attachments WHERE message_id IS NULL AND created_at<?", (time.time() - 86400,))
+            db.execute(
+                "DELETE FROM attachments WHERE message_id IS NULL AND created_at<?",
+                (time.time() - 86400,),
+            )
             used = db.execute(
-                "SELECT COALESCE(SUM(size),0) FROM attachments WHERE project_id=?", (project,)
+                "SELECT COALESCE(SUM(size),0) FROM attachments WHERE project_id=?",
+                (project,),
             ).fetchone()[0]
             if used + len(data) > PROJECT_QUOTA:
                 raise ValueError("本项目附件已达到 512 MB 试用容量")
@@ -95,7 +99,10 @@ class Attachments:
     def metadata(self, db, message):
         return [
             dict(row)
-            for row in db.execute(f"SELECT {METADATA} FROM attachments WHERE message_id=? ORDER BY rowid", (message,))
+            for row in db.execute(
+                f"SELECT {METADATA} FROM attachments WHERE message_id=? ORDER BY rowid",
+                (message,),
+            )
         ]
 
     def download(self, user, project, aid):
@@ -108,7 +115,10 @@ class Attachments:
                 if row["owner_id"] != user:
                     raise PermissionError("附件尚未发送")
             else:
-                message = db.execute("SELECT conversation_id FROM messages WHERE id=?", (row["message_id"],)).fetchone()
+                message = db.execute(
+                    "SELECT conversation_id FROM messages WHERE id=?",
+                    (row["message_id"],),
+                ).fetchone()
                 if not message or not message["conversation_id"]:
                     raise PermissionError("附件会话不可用")
                 self.store._conversation_access(db, project, user, message["conversation_id"])

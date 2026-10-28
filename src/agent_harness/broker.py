@@ -5,9 +5,19 @@ import json
 import re
 import secrets
 import time
-from collaboration_store import uid, digest
+from agent_harness.collaboration_store import uid, digest
+from agent_harness.protocol import hub_advertisement
+from agent_harness.common import read_json, write_json
+from agent_harness.health import report as health_report
 
-TERMINAL = {"needs_review", "completed", "failed", "cancelled", "timed_out", "interrupted"}
+TERMINAL = {
+    "needs_review",
+    "completed",
+    "failed",
+    "cancelled",
+    "timed_out",
+    "interrupted",
+}
 
 
 class PullBackend:
@@ -15,13 +25,6 @@ class PullBackend:
 
     def __init__(self, store, node=None):
         self.store, self.node = store, node
-        with store.connect() as db:
-            db.executescript("""
-            CREATE TABLE IF NOT EXISTS pull_devices(node TEXT PRIMARY KEY,token_hash TEXT UNIQUE NOT NULL,last_seen REAL NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS pull_pairs(hash TEXT PRIMARY KEY,node TEXT NOT NULL,owner_id TEXT NOT NULL,expires REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS pull_bindings(agent_id TEXT PRIMARY KEY,stages TEXT NOT NULL,templates TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS pull_jobs(id TEXT PRIMARY KEY,node TEXT NOT NULL,agent_id TEXT NOT NULL,kind TEXT NOT NULL,request TEXT NOT NULL,state TEXT NOT NULL,lease_id TEXT NOT NULL,result TEXT,created_at REAL NOT NULL,cancel_requested INTEGER NOT NULL DEFAULT 0);
-            """)
 
     def for_node(self, node):
         return PullBackend(self.store, node)
@@ -39,7 +42,10 @@ class PullBackend:
                 raise PermissionError("机器属于其他人")
             db.execute("INSERT OR IGNORE INTO nodes(name,owner_id) VALUES(?,?)", (node, user))
             db.execute("DELETE FROM pull_pairs WHERE node=? OR expires<?", (node, time.time()))
-            db.execute("INSERT INTO pull_pairs VALUES(?,?,?,?)", (digest(code), node, user, time.time() + 600))
+            db.execute(
+                "INSERT INTO pull_pairs VALUES(?,?,?,?)",
+                (digest(code), node, user, time.time() + 600),
+            )
             self.store.log(db, user, "create_device_pair", {"node": node})
         return {"pair_code": code, "node": node, "expires_in": 600}
 
@@ -62,6 +68,94 @@ class PullBackend:
                 (device["owner_id"],),
             )
         ]
+
+    def _poll_snapshot(self, db, device):
+        rows = db.execute(
+            "SELECT * FROM pull_jobs WHERE node=? AND state NOT IN "
+            "('needs_review','completed','failed','cancelled','timed_out','interrupted') "
+            "ORDER BY created_at LIMIT 20",
+            (device["node"],),
+        ).fetchall()
+        jobs = []
+        for row in rows:
+            if row["state"] == "queued":
+                db.execute(
+                    "UPDATE pull_jobs SET state='claimed' WHERE id=? AND state='queued'",
+                    (row["id"],),
+                )
+            jobs.append(
+                {
+                    "id": row["id"],
+                    "job_id": row["id"],
+                    "lease_id": row["lease_id"],
+                    "kind": row["kind"],
+                    "agent_id": row["agent_id"],
+                    **self._job_binding(db, row),
+                    "request": json.loads(row["request"]),
+                }
+            )
+        from agent_harness.owner_backend import OwnerBackend
+
+        controls = OwnerBackend.__new__(OwnerBackend)
+        controls.store = self.store
+        commands = (
+            controls.poll(db, device)
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='owner_commands'").fetchone()
+            else []
+        )
+        return {
+            "protocol": hub_advertisement(),
+            "owner_commands": commands,
+            "node": device["node"],
+            "projects": self._projects(db, device),
+            "jobs": jobs,
+            "cancellations": [row["id"] for row in rows if row["cancel_requested"]],
+        }
+
+    def _poll(self, data, bearer):
+        wait_seconds = data.get("wait_seconds", 0)
+        if isinstance(wait_seconds, bool) or not isinstance(wait_seconds, (int, float)) or not 0 <= wait_seconds <= 10:
+            raise ValueError("wait_seconds must be between 0 and 10")
+        deadline = time.monotonic() + wait_seconds
+        first = True
+        while True:
+            with self.store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                device = self._device(db, bearer)
+                if first:
+                    db.execute(
+                        "UPDATE pull_devices SET last_seen=? WHERE node=?",
+                        (time.time(), device["node"]),
+                    )
+                    if "bindings" in data:
+                        self._advertise(db, device, data["bindings"])
+                    self._record_health(device, data.get("health"))
+                result = self._poll_snapshot(db, device)
+            if result["jobs"] or result["owner_commands"] or result["cancellations"] or time.monotonic() >= deadline:
+                return result
+            first = False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return result
+            time.sleep(min(0.25, remaining))
+
+    def _record_health(self, device, value):
+        """Persist only the bounded health-v1 allowlist, never raw diagnostics."""
+        if not isinstance(value, dict):
+            return
+        components = value.get("components")
+        if not isinstance(components, list) or len(components) > 16:
+            return
+        try:
+            safe = health_report(components, value.get("generated_at"))
+        except (TypeError, ValueError):
+            return
+        path = self.store.root / "nodes" / (device["node"] + ".json")
+        current = read_json(path, {})
+        if not isinstance(current, dict):
+            current = {}
+        current["health"] = safe
+        write_json(path, current)
 
     def device_api(self, path, data, bearer=None):
         if not isinstance(data, dict):
@@ -92,60 +186,27 @@ class PullBackend:
                 db.execute("DELETE FROM pull_pairs WHERE node=?", (node,))
                 self.store.log(db, pair["owner_id"], "device_enrolled", {"node": node})
                 return {"node": node, "owner_id": pair["owner_id"]}
+        if path == "/api/device/poll":
+            return self._poll(data, bearer)
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             device = self._device(db, bearer)
-            db.execute("UPDATE pull_devices SET last_seen=? WHERE node=?", (time.time(), device["node"]))
+            db.execute(
+                "UPDATE pull_devices SET last_seen=? WHERE node=?",
+                (time.time(), device["node"]),
+            )
             if path == "/api/device/projects":
                 return {"projects": self._projects(db, device), "node": device["node"]}
-            if path == "/api/device/poll":
-                if "bindings" in data:
-                    self._advertise(db, device, data["bindings"])
-                rows = db.execute(
-                    "SELECT * FROM pull_jobs WHERE node=? AND state NOT IN ('needs_review','completed','failed','cancelled','timed_out','interrupted') ORDER BY created_at LIMIT 20",
-                    (device["node"],),
-                ).fetchall()
-                jobs = []
-                for row in rows:
-                    if row["state"] == "queued":
-                        db.execute("UPDATE pull_jobs SET state='claimed' WHERE id=? AND state='queued'", (row["id"],))
-                    jobs.append(
-                        {
-                            "id": row["id"],
-                            "job_id": row["id"],
-                            "lease_id": row["lease_id"],
-                            "kind": row["kind"],
-                            "agent_id": row["agent_id"],
-                            **self._job_binding(db, row),
-                            "request": json.loads(row["request"]),
-                        }
-                    )
-                from owner_backend import OwnerBackend
-
-                # Tables are initialized by the native account backend before polling.
-                controls = OwnerBackend.__new__(OwnerBackend)
-                controls.store = self.store
-                commands = (
-                    controls.poll(db, device)
-                    if db.execute("SELECT 1 FROM sqlite_master WHERE name='owner_commands'").fetchone()
-                    else []
-                )
-                return {
-                    "owner_commands": commands,
-                    "node": device["node"],
-                    "projects": self._projects(db, device),
-                    "jobs": jobs,
-                    "cancellations": [r["id"] for r in rows if r["cancel_requested"]],
-                }
             if path == "/api/device/owner-report":
-                from owner_backend import OwnerBackend
+                from agent_harness.owner_backend import OwnerBackend
 
                 controls = OwnerBackend.__new__(OwnerBackend)
                 controls.store = self.store
                 return controls.report(db, device, data["id"], data["state"], data["result"])
             if path == "/api/device/report":
                 row = db.execute(
-                    "SELECT * FROM pull_jobs WHERE id=?", (data.get("job_id", data.get("job")),)
+                    "SELECT * FROM pull_jobs WHERE id=?",
+                    (data.get("job_id", data.get("job")),),
                 ).fetchone()
                 if (
                     not row
@@ -213,7 +274,10 @@ class PullBackend:
                         raise ValueError("已结束的任务结果不可覆写")
                     return {"ok": True, "duplicate": True}
                 # A device is responsible for stopping its processes before reporting cancellation.
-                db.execute("UPDATE pull_jobs SET state=?,result=? WHERE id=?", (state, serialized, row["id"]))
+                db.execute(
+                    "UPDATE pull_jobs SET state=?,result=? WHERE id=?",
+                    (state, serialized, row["id"]),
+                )
                 return {"ok": True}
             raise ValueError("未知机器接口")
 
@@ -255,13 +319,38 @@ class PullBackend:
             ):
                 raise ValueError("无效的本机设置摘要")
             old = db.execute(
-                "SELECT * FROM agents WHERE node=? AND backend_project=?", (device["node"], backend)
+                "SELECT * FROM agents WHERE node=? AND backend_project=?",
+                (device["node"], backend),
             ).fetchone()
             if old and (old["owner_id"] != device["owner_id"] or old["project_id"] != project):
                 raise PermissionError("执行项目已经绑定其他工作群；不可复用会话")
-            prepared.append((b, old, project, backend, name, model, effort, timeout, stages, templates))
+            prepared.append(
+                (
+                    b,
+                    old,
+                    project,
+                    backend,
+                    name,
+                    model,
+                    effort,
+                    timeout,
+                    stages,
+                    templates,
+                )
+            )
         db.execute("UPDATE agents SET enabled=0 WHERE node=?", (device["node"],))
-        for b, old, project, backend, name, model, effort, timeout, stages, templates in prepared:
+        for (
+            b,
+            old,
+            project,
+            backend,
+            name,
+            model,
+            effort,
+            timeout,
+            stages,
+            templates,
+        ) in prepared:
             agent = old["id"] if old else uid("agent")
             enabled = int(bool(b.get("enabled", False)))
             if old:
@@ -291,7 +380,10 @@ class PullBackend:
             )
 
     def _job_binding(self, db, row):
-        a = db.execute("SELECT project_id,backend_project FROM agents WHERE id=?", (row["agent_id"],)).fetchone()
+        a = db.execute(
+            "SELECT project_id,backend_project FROM agents WHERE id=?",
+            (row["agent_id"],),
+        ).fetchone()
         if not a:
             raise ValueError("任务绑定不存在")
         return dict(a)
@@ -309,14 +401,36 @@ class PullBackend:
             raise PermissionError("机器所有者未启用本机授权")
         db.execute(
             "INSERT INTO pull_jobs(id,node,agent_id,kind,request,state,lease_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
-            (job, agent["node"], agent["id"], kind, serialized, "queued", secrets.token_urlsafe(24), time.time()),
+            (
+                job,
+                agent["node"],
+                agent["id"],
+                kind,
+                serialized,
+                "queued",
+                secrets.token_urlsafe(24),
+                time.time(),
+            ),
         )
 
-    def submit(self, project, prompt, stage, scope, acceptance, validation, job_id=None, session_channel=None):
+    def submit(
+        self,
+        project,
+        prompt,
+        stage,
+        scope,
+        acceptance,
+        validation,
+        job_id=None,
+        session_channel=None,
+    ):
         context = json.loads(prompt)
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            agent = db.execute("SELECT * FROM agents WHERE id=?", (context.get("identity", {}).get("id"),)).fetchone()
+            agent = db.execute(
+                "SELECT * FROM agents WHERE id=?",
+                (context.get("identity", {}).get("id"),),
+            ).fetchone()
             if not agent or agent["backend_project"] != project or self.node and agent["node"] != self.node:
                 raise PermissionError("无效任务绑定")
             binding = db.execute("SELECT * FROM pull_bindings WHERE agent_id=?", (agent["id"],)).fetchone()
@@ -368,11 +482,24 @@ class PullBackend:
                 ):
                     raise PermissionError("无效的执行绑定")
                 agent = db.execute("SELECT * FROM agents WHERE id=?", (execution["agent_id"],)).fetchone()
-                binding = db.execute("SELECT templates FROM pull_bindings WHERE agent_id=?", (agent["id"],)).fetchone()
+                binding = db.execute(
+                    "SELECT templates FROM pull_bindings WHERE agent_id=?",
+                    (agent["id"],),
+                ).fetchone()
                 if not binding or data["template"] not in json.loads(binding["templates"]):
                     raise PermissionError("本机未登记这个命令模板")
-                self._enqueue(db, execution["id"], agent, "execution", {"template": data["template"]})
-            return {"execution": execution["id"], "status": "running", "local_status": "waiting_local_approval"}
+                self._enqueue(
+                    db,
+                    execution["id"],
+                    agent,
+                    "execution",
+                    {"template": data["template"]},
+                )
+            return {
+                "execution": execution["id"],
+                "status": "running",
+                "local_status": "waiting_local_approval",
+            }
         if action in {"cancel", "execution_cancel"}:
             job = data.get("job", data.get("execution"))
             with self.store.connect() as db:

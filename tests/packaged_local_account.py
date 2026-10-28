@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -12,14 +13,27 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("app", type=Path)
+    parser.add_argument("--runtime-probe", action="store_true")
     args = parser.parse_args()
     bundle = args.app.resolve() / "Contents/Resources/service-bundle"
-    sys.path.insert(0, str(bundle / "client"))
-    sys.dont_write_bytecode = True
+    if not args.runtime_probe:
+        runtime = bundle / "runtime/bin/python3"
+        result = subprocess.run(
+            [str(runtime), "-B", str(Path(__file__).resolve()), str(args.app.resolve()), "--runtime-probe"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        if result.returncode:
+            raise RuntimeError("packaged account probe failed: " + result.stderr[-1000:])
+        print(result.stdout.strip())
+        return
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-    from app_bridge import AppBridge
-    from app_lifecycle import Lifecycle
-    import service_install
+    from agent_harness.app_bridge import AppBridge
+    from agent_harness.app_lifecycle import Lifecycle
+    from agent_harness import service_install
 
     # Never attach this test to an existing real collaboration service.
     with socket.socket() as probe:
@@ -42,7 +56,15 @@ def main():
             if not dashboard.get("ok"):
                 raise RuntimeError(dashboard.get("error", "Dashboard failed"))
             assert state.stat().st_mode & 0o777 == 0o700
-            print(json.dumps({"registered": True, "dashboard": True, "private_directory_mode": "700"}))
+            print(
+                json.dumps(
+                    {
+                        "registered": True,
+                        "dashboard": True,
+                        "private_directory_mode": "700",
+                    }
+                )
+            )
         finally:
             Lifecycle(bridge.root, host_root=bridge._host_state_root()).stop()
 

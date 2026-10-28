@@ -1,15 +1,20 @@
 """Project groups, identities, ownership and recipient-filtered durable messages."""
 
 import hashlib
-import hmac
 import json
-import re
 import secrets
 import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+
+from agent_harness.storage import migrate_database
+from agent_harness.health import HealthCode, component, normalize_exception, report
+
+
+MAX_EVENTS_PER_ACCOUNT = 512
+MAX_EVENT_WAIT_SECONDS = 20
 
 
 def uid(prefix):
@@ -20,40 +25,27 @@ def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def password_hash(password, salt):
-    if not isinstance(password, str):
-        raise ValueError("密码必须为文本")
-    return hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1).hex()
-
-
 class Store:
     def __init__(self, root):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.database = self.root / "collaboration.sqlite3"
+        self.migration = migrate_database(self.database, self.root / "backups")
+        self.housekeep()
+
+    def housekeep(self, now=None):
+        """Remove only expired or unbound ephemeral records."""
+
+        now = time.time() if now is None else now
         with self.connect() as db:
-            db.executescript("""
-            CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,username TEXT UNIQUE NOT NULL,salt TEXT NOT NULL,password_hash TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,user_id TEXT,csrf TEXT NOT NULL,expires REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,name TEXT NOT NULL,owner_id TEXT NOT NULL,admin_agent_id TEXT,paused INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS project_users(project_id TEXT,user_id TEXT,PRIMARY KEY(project_id,user_id));
-            CREATE TABLE IF NOT EXISTS nodes(name TEXT PRIMARY KEY,owner_id TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS agents(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,name TEXT NOT NULL,owner_id TEXT NOT NULL,node TEXT NOT NULL,backend_project TEXT NOT NULL,model TEXT NOT NULL,effort TEXT NOT NULL,timeout INTEGER NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,last_message INTEGER NOT NULL DEFAULT 0,configuring INTEGER NOT NULL DEFAULT 0,UNIQUE(node,backend_project));
-            CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT NOT NULL,sender_id TEXT NOT NULL,sender_type TEXT NOT NULL,recipient_id TEXT,body TEXT NOT NULL,created_at REAL NOT NULL,causal_task TEXT,mention_agent_id TEXT,conversation_id TEXT,client_message_id TEXT,sender_client TEXT);
-            CREATE TABLE IF NOT EXISTS conversation_reads(project_id TEXT NOT NULL,user_id TEXT NOT NULL,conversation_id TEXT NOT NULL,last_message INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(project_id,user_id,conversation_id));
-            CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,agent_id TEXT NOT NULL,title TEXT NOT NULL,contract TEXT NOT NULL,state TEXT NOT NULL,job TEXT,report TEXT,created_at REAL NOT NULL,cutoff INTEGER NOT NULL DEFAULT 0,error TEXT,processed INTEGER NOT NULL DEFAULT 0,cancel_requested INTEGER NOT NULL DEFAULT 0);
-            CREATE UNIQUE INDEX IF NOT EXISTS one_active_task ON tasks(agent_id) WHERE state IN ('queued','starting','running','unknown');
-            CREATE TABLE IF NOT EXISTS executions(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,agent_id TEXT NOT NULL,template TEXT NOT NULL,state TEXT NOT NULL,result TEXT,created_at REAL NOT NULL,notified INTEGER NOT NULL DEFAULT 0,reply_to TEXT,cancel_requested INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS invitations(hash TEXT PRIMARY KEY,project_id TEXT NOT NULL,expires REAL NOT NULL,used INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT,action TEXT,details TEXT,created_at REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS agent_cursors(agent_id TEXT,channel TEXT,last_message INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(agent_id,channel));
-            CREATE TABLE IF NOT EXISTS attachments(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,owner_id TEXT NOT NULL,name TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,sha256 TEXT NOT NULL,content BLOB NOT NULL,created_at REAL NOT NULL,message_id INTEGER REFERENCES messages(id));
-            CREATE INDEX IF NOT EXISTS attachments_message ON attachments(message_id);
-            CREATE TABLE IF NOT EXISTS service_host(id INTEGER PRIMARY KEY CHECK(id=1),owner_account_id TEXT NOT NULL,host_node TEXT);
-            CREATE TABLE IF NOT EXISTS service_metadata(id INTEGER PRIMARY KEY CHECK(id=1),service_id TEXT NOT NULL);
-            CREATE UNIQUE INDEX IF NOT EXISTS one_human_message_submission ON messages(project_id,sender_id,client_message_id) WHERE client_message_id IS NOT NULL;
-            """)
-            db.execute("INSERT OR IGNORE INTO service_metadata(id,service_id) VALUES(1,?)", (uid("service"),))
+            db.execute("DELETE FROM invitations WHERE expires<?", (now,))
+            db.execute("DELETE FROM account_challenges WHERE expires<?", (now,))
+            db.execute("DELETE FROM account_requests WHERE expires<?", (now,))
+            db.execute("DELETE FROM pull_pairs WHERE expires<?", (now,))
+            db.execute(
+                "DELETE FROM attachments WHERE message_id IS NULL AND created_at<?",
+                (now - 86400,),
+            )
 
     @contextmanager
     def connect(self):
@@ -76,6 +68,123 @@ class Store:
             (actor, action, json.dumps(details, ensure_ascii=False), time.time()),
         )
 
+    def _emit_accounts(self, db, accounts, project, kind):
+        """Advance private per-account wake cursors without storing user content."""
+
+        if not isinstance(project, str) or not project:
+            raise ValueError("事件必须属于项目")
+        if not isinstance(kind, str) or not 1 <= len(kind) <= 40:
+            raise ValueError("事件类别无效")
+        now = time.time()
+        for account in sorted(set(accounts)):
+            if not isinstance(account, str) or not account:
+                continue
+            db.execute(
+                "INSERT INTO account_event_sequences(account_id,cursor) VALUES(?,1) "
+                "ON CONFLICT(account_id) DO UPDATE SET cursor=cursor+1",
+                (account,),
+            )
+            cursor = db.execute(
+                "SELECT cursor FROM account_event_sequences WHERE account_id=?",
+                (account,),
+            ).fetchone()[0]
+            db.execute(
+                "INSERT INTO account_events(account_id,cursor,project_id,kind,created_at) VALUES(?,?,?,?,?)",
+                (account, cursor, project, kind, now),
+            )
+            db.execute(
+                "DELETE FROM account_events WHERE account_id=? AND cursor<=?",
+                (account, cursor - MAX_EVENTS_PER_ACCOUNT),
+            )
+
+    def emit_project_event(self, db, project, kind):
+        accounts = [
+            row[0]
+            for row in db.execute(
+                "SELECT user_id FROM project_users WHERE project_id=?",
+                (project,),
+            )
+        ]
+        self._emit_accounts(db, accounts, project, kind)
+
+    def emit_conversation_event(self, db, project, conversation, kind="message"):
+        """Wake exactly the humans allowed to observe one conversation."""
+
+        if conversation == self.group_conversation(project) or (
+            isinstance(conversation, str) and conversation.startswith("agent_agent:")
+        ):
+            return self.emit_project_event(db, project, kind)
+        parts = conversation.split(":") if isinstance(conversation, str) else []
+        if len(parts) != 3:
+            return None
+        channel, first, second = parts
+        if channel == "human_agent":
+            accounts = [first]
+        elif channel == "human_human":
+            accounts = [first, second]
+        else:
+            return None
+        members = {
+            row[0]
+            for row in db.execute(
+                "SELECT user_id FROM project_users WHERE project_id=? AND user_id IN (?,?)",
+                (project, first, second),
+            )
+        }
+        self._emit_accounts(db, (account for account in accounts if account in members), project, kind)
+
+    def emit_task_event(self, db, task, kind="task"):
+        accounts = [
+            row[0]
+            for row in db.execute(
+                "SELECT user_id FROM project_users WHERE project_id=?",
+                (task["project_id"],),
+            )
+            if self.task_visible_to_human(db, task, row[0])
+        ]
+        self._emit_accounts(db, accounts, task["project_id"], kind)
+
+    def emit_execution_event(self, db, execution, kind="execution"):
+        recipient = execution["reply_to"]
+        if (
+            recipient is None
+            or db.execute(
+                "SELECT 1 FROM agents WHERE id=? AND project_id=?",
+                (recipient, execution["project_id"]),
+            ).fetchone()
+        ):
+            return self.emit_project_event(db, execution["project_id"], kind)
+        self._emit_accounts(db, [recipient], execution["project_id"], kind)
+
+    def event_cursor(self, user):
+        with self.connect() as db:
+            if not db.execute("SELECT 1 FROM users WHERE id=?", (user,)).fetchone():
+                raise PermissionError("账户未加入此协作服务")
+            row = db.execute(
+                "SELECT cursor FROM account_event_sequences WHERE account_id=?",
+                (user,),
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    def events_wait(self, user, after=0, wait_seconds=0):
+        if isinstance(after, bool) or not isinstance(after, int) or not 0 <= after <= 2**63 - 1:
+            raise ValueError("事件游标无效")
+        if (
+            isinstance(wait_seconds, bool)
+            or not isinstance(wait_seconds, (int, float))
+            or not 0 <= wait_seconds <= MAX_EVENT_WAIT_SECONDS
+        ):
+            raise ValueError("事件等待时间无效")
+        deadline = time.monotonic() + float(wait_seconds)
+        while True:
+            cursor = self.event_cursor(user)
+            if cursor > after:
+                return {"cursor": cursor, "changed": True}
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {"cursor": cursor, "changed": False}
+            time.sleep(min(0.1, remaining))
+
     def host_owner(self):
         with self.connect() as db:
             row = db.execute("SELECT owner_account_id,host_node FROM service_host WHERE id=1").fetchone()
@@ -84,6 +193,27 @@ class Store:
     def service_id(self):
         with self.connect() as db:
             return db.execute("SELECT service_id FROM service_metadata WHERE id=1").fetchone()["service_id"]
+
+    def health_status(self):
+        try:
+            with self.connect() as db:
+                result = db.execute("PRAGMA quick_check").fetchone()
+                if not result or result[0] != "ok":
+                    raise RuntimeError("database integrity check failed")
+            storage = component("storage", "healthy", HealthCode.OK, "协作数据库完整")
+        except Exception as exc:
+            storage = normalize_exception(
+                "storage",
+                exc,
+                code=HealthCode.STORAGE_ERROR,
+                message="协作数据库状态异常；请由托管者在本机检查",
+            )
+        return report(
+            [
+                component("hub", "healthy", HealthCode.OK, "协作服务可响应"),
+                storage,
+            ]
+        )
 
     def claim_local_host(self, account_id, host_node=None):
         """Local filesystem authority only; never expose as an HTTP operation."""
@@ -96,11 +226,15 @@ class Store:
                 raise PermissionError("这台机器的协作服务已属于其他账户")
             if not row:
                 db.execute(
-                    "INSERT INTO service_host(id,owner_account_id,host_node) VALUES(1,?,?)", (account_id, host_node)
+                    "INSERT INTO service_host(id,owner_account_id,host_node) VALUES(1,?,?)",
+                    (account_id, host_node),
                 )
             elif host_node and not row["host_node"]:
                 db.execute("UPDATE service_host SET host_node=? WHERE id=1", (host_node,))
-            return {"owner_account_id": account_id, "host_node": host_node or (row["host_node"] if row else None)}
+            return {
+                "owner_account_id": account_id,
+                "host_node": host_node or (row["host_node"] if row else None),
+            }
 
     @staticmethod
     def group_conversation(project):
@@ -122,7 +256,8 @@ class Store:
             return None  # Directed system diagnostics are not a human conversation.
         agent = db.execute("SELECT id FROM agents WHERE id=? AND project_id=?", (recipient, project)).fetchone()
         human = db.execute(
-            "SELECT user_id FROM project_users WHERE user_id=? AND project_id=?", (recipient, project)
+            "SELECT user_id FROM project_users WHERE user_id=? AND project_id=?",
+            (recipient, project),
         ).fetchone()
         if kind == "human" and agent:
             return self._pair_conversation("human_agent", sender, recipient)
@@ -144,87 +279,33 @@ class Store:
         kind, first, second = parts
         if kind == "human_agent" and first == user:
             if db.execute(
-                "SELECT 1 FROM agents WHERE id=? AND project_id=? AND owner_id=?", (second, project, user)
+                "SELECT 1 FROM agents WHERE id=? AND project_id=? AND owner_id=?",
+                (second, project, user),
             ).fetchone():
                 return kind, second
         elif kind == "human_human" and user in {first, second} and first < second:
             partner = second if first == user else first
             if db.execute(
-                "SELECT 1 FROM project_users WHERE user_id=? AND project_id=?", (partner, project)
+                "SELECT 1 FROM project_users WHERE user_id=? AND project_id=?",
+                (partner, project),
             ).fetchone():
                 return kind, partner
         elif kind == "agent_agent" and first < second:
             found = db.execute(
-                "SELECT COUNT(*) FROM agents WHERE project_id=? AND id IN (?,?)", (project, first, second)
+                "SELECT COUNT(*) FROM agents WHERE project_id=? AND id IN (?,?)",
+                (project, first, second),
             ).fetchone()[0]
             if found == 2:
                 return kind, None
         raise PermissionError("无权访问此会话")
-
-    def bootstrap_required(self):
-        with self.connect() as db:
-            return not db.execute("SELECT 1 FROM users LIMIT 1").fetchone()
-
-    def session(self, token=None):
-        with self.connect() as db:
-            row = db.execute(
-                "SELECT * FROM sessions WHERE id=? AND expires>?", (digest(token or ""), time.time())
-            ).fetchone()
-            if row:
-                user = db.execute("SELECT id,username FROM users WHERE id=?", (row["user_id"],)).fetchone()
-                return token, row["csrf"], dict(user) if user else None
-            token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-            db.execute("DELETE FROM sessions WHERE expires<?", (time.time(),))
-            db.execute("INSERT INTO sessions VALUES(?,?,?,?)", (digest(token), None, csrf, time.time() + 86400))
-            return token, csrf, None
-
-    def authenticate(self, username, password, token):
-        with self.connect() as db:
-            user = db.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-            salt = user["salt"] if user else "00" * 16
-            calculated = password_hash(password, salt)
-            if not user or not hmac.compare_digest(calculated, user["password_hash"]):
-                raise PermissionError("用户名或密码错误")
-            db.execute("DELETE FROM sessions WHERE id=?", (digest(token),))
-            fresh, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-            db.execute("INSERT INTO sessions VALUES(?,?,?,?)", (digest(fresh), user["id"], csrf, time.time() + 86400))
-            return fresh, csrf, {"id": user["id"], "username": user["username"]}
-
-    def signup(self, username, password, bootstrap=False, invite=None):
-        if not re.fullmatch(r"[A-Za-z0-9_\-]{1,40}", username or ""):
-            raise ValueError("用户名使用 1–40 个字母、数字、下划线或连字符")
-        salt = secrets.token_hex(16)
-        hashed = password_hash(password, salt)
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            project = None
-            if bootstrap:
-                if db.execute("SELECT 1 FROM users").fetchone():
-                    raise PermissionError("初始账户已创建")
-            else:
-                invitation = db.execute(
-                    "SELECT * FROM invitations WHERE hash=? AND used=0 AND expires>?",
-                    (digest(invite or ""), time.time()),
-                ).fetchone()
-                if not invitation:
-                    raise PermissionError("需要有效的项目邀请")
-                project = invitation["project_id"]
-            user_id = uid("user")
-            db.execute("INSERT INTO users VALUES(?,?,?,?)", (user_id, username, salt, hashed))
-            if bootstrap:
-                db.execute("INSERT OR IGNORE INTO service_host(id,owner_account_id) VALUES(1,?)", (user_id,))
-            if project:
-                db.execute("INSERT INTO project_users VALUES(?,?)", (project, user_id))
-                db.execute("UPDATE invitations SET used=1 WHERE hash=?", (digest(invite),))
-            self.log(db, user_id, "signup", {"bootstrap": bootstrap})
-            return {"id": user_id, "username": username}
 
     def require_member(self, db, project, user):
         row = db.execute("SELECT * FROM projects WHERE id=?", (project,)).fetchone()
         if (
             not row
             or not db.execute(
-                "SELECT 1 FROM project_users WHERE project_id=? AND user_id=?", (project, user)
+                "SELECT 1 FROM project_users WHERE project_id=? AND user_id=?",
+                (project, user),
             ).fetchone()
         ):
             raise PermissionError("无权访问这个项目")
@@ -245,8 +326,12 @@ class Store:
             if not host or host["owner_account_id"] != user:
                 raise PermissionError("只有这台协作服务所属账户可以在此创建项目")
             project = uid("project")
-            db.execute("INSERT INTO projects(id,name,owner_id) VALUES(?,?,?)", (project, name.strip(), user))
+            db.execute(
+                "INSERT INTO projects(id,name,owner_id) VALUES(?,?,?)",
+                (project, name.strip(), user),
+            )
             db.execute("INSERT INTO project_users VALUES(?,?)", (project, user))
+            self.emit_project_event(db, project, "project")
             self.log(db, user, "project_create", {"project": project})
             return {"id": project, "name": name.strip()}
 
@@ -256,7 +341,10 @@ class Store:
             row = self.require_member(db, project, user)
             if row["owner_id"] != user:
                 raise PermissionError("只有群主可以邀请成员")
-            db.execute("INSERT INTO invitations VALUES(?,?,?,0)", (digest(token), project, time.time() + 86400))
+            db.execute(
+                "INSERT INTO invitations VALUES(?,?,?,0)",
+                (digest(token), project, time.time() + 86400),
+            )
             self.log(db, user, "invite", {"project": project})
         return {"invite": token, "expires_in": 86400}
 
@@ -264,16 +352,21 @@ class Store:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             invitation = db.execute(
-                "SELECT * FROM invitations WHERE hash=? AND used=0 AND expires>?", (digest(token), time.time())
+                "SELECT * FROM invitations WHERE hash=? AND used=0 AND expires>?",
+                (digest(token), time.time()),
             ).fetchone()
             if not invitation:
                 raise PermissionError("邀请无效或已使用")
-            db.execute("INSERT OR IGNORE INTO project_users VALUES(?,?)", (invitation["project_id"], user))
+            db.execute(
+                "INSERT OR IGNORE INTO project_users VALUES(?,?)",
+                (invitation["project_id"], user),
+            )
             db.execute("UPDATE invitations SET used=1 WHERE hash=?", (digest(token),))
+            self.emit_project_event(db, invitation["project_id"], "membership")
             return {"project": invitation["project_id"]}
 
     def add_agent(self, user, data, backend):
-        from common import identifier
+        from agent_harness.common import identifier
 
         identifier(data["backend_project"])
         identifier(data["node"])
@@ -286,7 +379,8 @@ class Store:
             if not node or node["owner_id"] != user:
                 raise PermissionError("只能接入自己的机器")
             if db.execute(
-                "SELECT 1 FROM agents WHERE node=? AND backend_project=?", (data["node"], data["backend_project"])
+                "SELECT 1 FROM agents WHERE node=? AND backend_project=?",
+                (data["node"], data["backend_project"]),
             ).fetchone():
                 raise ValueError("执行会话已接入，不能在项目间共用私聊历史")
         # Existing registered projects are intentional user-selected worktrees; never guess paths.
@@ -309,14 +403,21 @@ class Store:
                     int(data["timeout"]),
                 ),
             )
+            self.emit_project_event(db, data["project"], "agent")
             self.log(db, user, "add_agent", {"agent": agent, "project": data["project"]})
         try:
-            backend.configure(data["backend_project"], data["model"], data["effort"], int(data["timeout"]))
+            backend.configure(
+                data["backend_project"],
+                data["model"],
+                data["effort"],
+                int(data["timeout"]),
+            )
         except Exception:
             # Preserve the mapping when the remote outcome is uncertain; never reuse its history.
             raise
         with self.connect() as db:
             db.execute("UPDATE agents SET configuring=0 WHERE id=?", (agent,))
+            self.emit_project_event(db, data["project"], "agent")
         return {"id": agent}
 
     def set_admin(self, user, project, agent):
@@ -327,6 +428,7 @@ class Store:
             if not db.execute("SELECT 1 FROM agents WHERE id=? AND project_id=?", (agent, project)).fetchone():
                 raise ValueError("agent 不在本项目")
             db.execute("UPDATE projects SET admin_agent_id=? WHERE id=?", (agent, project))
+            self.emit_project_event(db, project, "project")
             self.log(db, user, "set_admin", {"project": project, "agent": agent})
 
     def configure_agent(self, user, data, backend):
@@ -339,14 +441,34 @@ class Store:
             ).fetchone():
                 raise ValueError("请先等 agent 本轮结束；可暂停项目阻止新轮次")
             db.execute("UPDATE agents SET configuring=1 WHERE id=?", (agent["id"],))
-        backend.configure(agent["backend_project"], data["model"], data["effort"], int(data["timeout"]))
+            self.emit_project_event(db, agent["project_id"], "agent")
+        backend.configure(
+            agent["backend_project"],
+            data["model"],
+            data["effort"],
+            int(data["timeout"]),
+        )
         with self.connect() as db:
             db.execute(
                 "UPDATE agents SET model=?,effort=?,timeout=?,enabled=?,configuring=0 WHERE id=?",
-                (data["model"], data["effort"], int(data["timeout"]), int(bool(data["enabled"])), agent["id"]),
+                (
+                    data["model"],
+                    data["effort"],
+                    int(data["timeout"]),
+                    int(bool(data["enabled"])),
+                    agent["id"],
+                ),
             )
+            self.emit_project_event(db, agent["project_id"], "agent")
             self.log(
-                db, user, "configure_agent", {"agent": agent["id"], "model": data["model"], "effort": data["effort"]}
+                db,
+                user,
+                "configure_agent",
+                {
+                    "agent": agent["id"],
+                    "model": data["model"],
+                    "effort": data["effort"],
+                },
             )
         return {"updated": agent["id"]}
 
@@ -362,7 +484,7 @@ class Store:
         sender_client=None,
         attachment_ids=None,
     ):
-        from attachments import Attachments
+        from agent_harness.attachments import Attachments
 
         attachments = Attachments(self)
         attachment_ids = attachments.ids(attachment_ids if attachment_ids is not None else [])
@@ -380,7 +502,8 @@ class Store:
                 raise ValueError("不能给自己发送私聊")
             if recipient:
                 agent = db.execute(
-                    "SELECT owner_id FROM agents WHERE id=? AND project_id=?", (recipient, project)
+                    "SELECT owner_id FROM agents WHERE id=? AND project_id=?",
+                    (recipient, project),
                 ).fetchone()
                 if agent and agent["owner_id"] != user:
                     raise PermissionError("只能私聊你自己的 Agent")
@@ -406,7 +529,11 @@ class Store:
                         or sorted(a["id"] for a in attachments.metadata(db, existing["id"])) != sorted(attachment_ids)
                     ):
                         raise ValueError("消息幂等标识已用于其他内容")
-                    return {"id": existing["id"], "conversation_id": existing["conversation_id"], "duplicate": True}
+                    return {
+                        "id": existing["id"],
+                        "conversation_id": existing["conversation_id"],
+                        "duplicate": True,
+                    }
                 client_message_id = client_message_id.lower()
             result = self._message(
                 db,
@@ -440,7 +567,8 @@ class Store:
         if recipient and not (
             db.execute("SELECT 1 FROM agents WHERE id=? AND project_id=?", (recipient, project)).fetchone()
             or db.execute(
-                "SELECT 1 FROM project_users WHERE user_id=? AND project_id=?", (recipient, project)
+                "SELECT 1 FROM project_users WHERE user_id=? AND project_id=?",
+                (recipient, project),
             ).fetchone()
         ):
             raise ValueError("收件人必须在本项目")
@@ -455,7 +583,13 @@ class Store:
             ).fetchone():
                 raise ValueError("要呼叫的 Agent 不在项目中或尚未启用")
         conversation = self._conversation_for_message(
-            db, {"project_id": project, "sender_id": sender, "sender_type": kind, "recipient_id": recipient}
+            db,
+            {
+                "project_id": project,
+                "sender_id": sender,
+                "sender_type": kind,
+                "recipient_id": recipient,
+            },
         )
         cursor = db.execute(
             "INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task,mention_agent_id,conversation_id,client_message_id,sender_client) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -473,6 +607,7 @@ class Store:
                 sender_client,
             ),
         )
+        self.emit_conversation_event(db, project, conversation)
         return {"id": cursor.lastrowid, "conversation_id": conversation}
 
     def draft_message(self, db, project, sender, body, recipient, task_id):
@@ -484,24 +619,40 @@ class Store:
             return row["id"] if row else None
         if row:
             conversation = self._conversation_for_message(
-                db, {"project_id": project, "sender_id": sender, "sender_type": "agent", "recipient_id": recipient}
+                db,
+                {
+                    "project_id": project,
+                    "sender_id": sender,
+                    "sender_type": "agent",
+                    "recipient_id": recipient,
+                },
             )
             db.execute(
                 "UPDATE messages SET body=?,recipient_id=?,conversation_id=? WHERE id=?",
                 (body.strip(), recipient, conversation, row["id"]),
             )
+            self.emit_conversation_event(db, project, conversation, "draft")
             return row["id"]
         return self._message(db, project, sender, "agent", body, recipient, key)["id"]
 
     def clear_draft(self, db, task_id):
+        row = db.execute(
+            "SELECT project_id,conversation_id FROM messages WHERE causal_task=?",
+            ("draft:" + task_id,),
+        ).fetchone()
         db.execute("DELETE FROM messages WHERE causal_task=?", ("draft:" + task_id,))
+        if row:
+            self.emit_conversation_event(db, row["project_id"], row["conversation_id"], "draft")
 
     def finalize_draft(self, db, task_id, body, recipient):
         row = db.execute("SELECT id FROM messages WHERE causal_task=?", ("draft:" + task_id,)).fetchone()
         if not row:
             return False
         if not body:
+            message = db.execute("SELECT project_id,conversation_id FROM messages WHERE id=?", (row["id"],)).fetchone()
             db.execute("DELETE FROM messages WHERE id=?", (row["id"],))
+            if message:
+                self.emit_conversation_event(db, message["project_id"], message["conversation_id"], "draft")
         else:
             message = db.execute("SELECT * FROM messages WHERE id=?", (row["id"],)).fetchone()
             conversation = self._conversation_for_message(
@@ -517,6 +668,7 @@ class Store:
                 "UPDATE messages SET body=?,recipient_id=?,conversation_id=?,causal_task=? WHERE id=?",
                 (body, recipient, conversation, task_id, row["id"]),
             )
+            self.emit_conversation_event(db, message["project_id"], conversation, "message")
         return True
 
     def visible_messages(self, agent, after=0, cutoff=None):
@@ -528,7 +680,15 @@ class Store:
                 dict(x)
                 for x in db.execute(
                     "SELECT * FROM messages WHERE project_id=? AND id>? AND id<=? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (recipient_id IS NULL OR recipient_id=? OR sender_id=?) AND NOT (sender_type='human' AND recipient_id IS NOT NULL AND recipient_id=? AND sender_id<>?) ORDER BY id",
-                    (row["project_id"], after, cutoff or 9223372036854775807, agent, agent, agent, row["owner_id"]),
+                    (
+                        row["project_id"],
+                        after,
+                        cutoff or 9223372036854775807,
+                        agent,
+                        agent,
+                        agent,
+                        row["owner_id"],
+                    ),
                 ).fetchall()
             ]
 
@@ -560,9 +720,10 @@ class Store:
         ).fetchone():
             raise ValueError("这个 agent 已有活动任务")
         task = uid("task")
-        cutoff = db.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=?", (project["id"],)).fetchone()[
-            0
-        ]
+        cutoff = db.execute(
+            "SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=?",
+            (project["id"],),
+        ).fetchone()[0]
         db.execute(
             "INSERT INTO tasks(id,project_id,agent_id,title,contract,state,created_at,cutoff) VALUES(?,?,?,?,?,?,?,?)",
             (
@@ -580,7 +741,12 @@ class Store:
         recipient = data.get("reply_to") if private else None
         conversation = self._conversation_for_message(
             db,
-            {"project_id": project["id"], "sender_id": agent["id"], "sender_type": "agent", "recipient_id": recipient},
+            {
+                "project_id": project["id"],
+                "sender_id": agent["id"],
+                "sender_type": "agent",
+                "recipient_id": recipient,
+            },
         )
         db.execute(
             "INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task,conversation_id) VALUES(?,?,?,?,?,?,?,?)",
@@ -595,23 +761,30 @@ class Store:
                 conversation,
             ),
         )
+        self.emit_conversation_event(db, project["id"], conversation, "task")
         self.log(db, actor, "task", {"task": task, "agent": agent["id"]})
         return {"id": task, "state": "queued"}
 
     def snapshot(self, user):
-        from common import read_json
+        from agent_harness.common import read_json
 
         with self.connect() as db:
             projects = [
                 dict(x)
                 for x in db.execute(
-                    "SELECT p.* FROM projects p JOIN project_users m ON p.id=m.project_id WHERE m.user_id=?", (user,)
+                    "SELECT p.* FROM projects p JOIN project_users m ON p.id=m.project_id WHERE m.user_id=?",
+                    (user,),
                 )
             ]
             nodes = []
             for n in db.execute("SELECT * FROM nodes WHERE owner_id=?", (user,)):
                 config = read_json(self.root / "nodes" / (n["name"] + ".json"), {})
-                nodes.append({**dict(n), **{k: v for k, v in config.items() if k in {"host", "platform"}}})
+                nodes.append(
+                    {
+                        **dict(n),
+                        **{k: v for k, v in config.items() if k in {"host", "platform"}},
+                    }
+                )
             # People cannot enumerate unrelated users/projects.
             people = [
                 dict(x)
@@ -633,6 +806,7 @@ class Store:
                 "INSERT INTO conversation_reads(project_id,user_id,conversation_id,last_message) VALUES(?,?,?,?) ON CONFLICT(project_id,user_id,conversation_id) DO UPDATE SET last_message=MAX(last_message,excluded.last_message)",
                 (project, user, conversation_id, latest),
             )
+            self._emit_accounts(db, [user], project, "read")
             return {"conversation_id": conversation_id, "last_message": latest}
 
     def _human_visible_messages(self, db, project, user):
@@ -644,7 +818,13 @@ class Store:
             (conversation_id=? OR conversation_id LIKE ? OR conversation_id LIKE ?
              OR conversation_id LIKE ? OR conversation_id LIKE 'agent_agent:%')
             ORDER BY id DESC LIMIT 500""",
-            (project, group, "human_agent:" + user + ":%", "human_human:" + user + ":%", "human_human:%:" + user),
+            (
+                project,
+                group,
+                "human_agent:" + user + ":%",
+                "human_human:" + user + ":%",
+                "human_human:%:" + user,
+            ),
         ).fetchall()[::-1]
 
     def _conversation_list(self, db, project, user, messages, members, people):
@@ -657,7 +837,12 @@ class Store:
         for row in db.execute(
             """SELECT DISTINCT conversation_id FROM messages WHERE project_id=? AND
             (conversation_id LIKE ? OR conversation_id LIKE ? OR conversation_id LIKE ? OR conversation_id LIKE 'agent_agent:%')""",
-            (project, "human_agent:" + user + ":%", "human_human:" + user + ":%", "human_human:%:" + user),
+            (
+                project,
+                "human_agent:" + user + ":%",
+                "human_human:" + user + ":%",
+                "human_human:%:" + user,
+            ),
         ):
             if row["conversation_id"]:
                 found.add(row["conversation_id"])
@@ -684,7 +869,8 @@ class Store:
                 participants = [user, partner]
                 title = names.get(partner, "成员")
             last = db.execute(
-                "SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=? AND conversation_id=?", (project, cid)
+                "SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=? AND conversation_id=?",
+                (project, cid),
             ).fetchone()[0]
             unread = db.execute(
                 """SELECT COUNT(*) FROM messages WHERE project_id=? AND conversation_id=? AND id>?
@@ -714,7 +900,10 @@ class Store:
         if recipient == user:
             return True
         return bool(
-            db.execute("SELECT 1 FROM agents WHERE id=? AND project_id=?", (recipient, task["project_id"])).fetchone()
+            db.execute(
+                "SELECT 1 FROM agents WHERE id=? AND project_id=?",
+                (recipient, task["project_id"]),
+            ).fetchone()
         )
 
     def project_view(self, user, project):
@@ -761,7 +950,10 @@ class Store:
                 if not recipient:
                     recipient = db.execute("SELECT username FROM users WHERE id=?", (item["recipient_id"],)).fetchone()
                 mention = (
-                    db.execute("SELECT name FROM agents WHERE id=?", (item["mention_agent_id"],)).fetchone()
+                    db.execute(
+                        "SELECT name FROM agents WHERE id=?",
+                        (item["mention_agent_id"],),
+                    ).fetchone()
                     if item["mention_agent_id"]
                     else None
                 )
@@ -771,14 +963,15 @@ class Store:
                     mention_agent_name=mention[0] if mention else None,
                     channel="direct" if item["recipient_id"] else "group",
                 )
-                from attachments import Attachments
+                from agent_harness.attachments import Attachments
 
                 item["attachments"] = Attachments(self).metadata(db, item["id"])
                 messages.append(item)
             conversations = self._conversation_list(db, project, user, messages, members, people)
             tasks = []
             for row in db.execute(
-                "SELECT * FROM tasks WHERE project_id=? ORDER BY created_at DESC LIMIT 100", (project,)
+                "SELECT * FROM tasks WHERE project_id=? ORDER BY created_at DESC LIMIT 100",
+                (project,),
             ):
                 item = dict(row)
                 if not self.task_visible_to_human(db, item, user):
@@ -802,7 +995,10 @@ class Store:
                     (project, user, project),
                 )
             ]
-            p["owner_name"] = next((x["username"] for x in people if x["id"] == p["owner_id"]), p["owner_id"])
+            p["owner_name"] = next(
+                (x["username"] for x in people if x["id"] == p["owner_id"]),
+                p["owner_id"],
+            )
             p["admin_agent_name"] = next((x["name"] for x in members if x["id"] == p["admin_agent_id"]), None)
             return {
                 "project": p,

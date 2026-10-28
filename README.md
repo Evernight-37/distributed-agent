@@ -4,7 +4,7 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 
 ## 使用应用
 
-当前整合版为 **1.1.1**。Windows 便携包由 [Build Windows release](https://github.com/Evernight-37/distributed-agent/actions/workflows/windows-release.yml) 构建；macOS 可构建原生 `.app`，Linux 服务器可安装 [无界面接收端](docs/LINUX.md)，由 Mac 或 Windows 控制台管理。Linux 安装需要 Python 3.10+ 及其 `venv` 组件。1.1.1 修复 Linux 连续升级、失败重试、Codex 路径更新、代理热加载、日志与健康检查，并默认拒绝 root 运行。
+当前源码版本为 **2.0.0**；尚未打 tag 时仍属于待发布源码，现有已安装稳定版不会被自动替换。Windows 便携包和 Linux 无界面包由统一 release tag 构建；macOS 可构建原生 `.app`；Linux 服务器使用[无界面独立运行包](docs/LINUX.md)，由 Mac 或 Windows 控制台管理。Linux 发布包自带 Harness 运行时，不要求用户安装 Python、pip 或 venv。
 
 从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases) 下载完整 Windows 压缩包，解压后双击 `AgentHarness.exe`。请保留整个目录；应用自带隔离的后台 Python 运行时，不要求用户安装 Python。系统需要 Edge WebView2，并且每台执行 Agent 的电脑需要已有可用的 Codex 登录。
 
@@ -15,6 +15,8 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 3. 群主在应用里创建团队入口，并分享 HTTPS 团队地址和项目邀请码。
 4. 同事凭两项信息加入项目，再把自己的机器和 Agent 接入该服务。
 5. 每个人配置和派遣自己的 Agent；群主选择管理员 Agent。
+
+Linux 服务器不要求用户手工照抄安装命令：桌面应用 **账户 → 添加 Linux 服务器** 可以生成带团队地址的安全配置提示词，直接粘贴给服务器 Codex。Linux 发布包也自带 `交给AI安装.md`；详见 [AI 配置流程](docs/AI-SETUP-LINUX.md)。
 
 同一账户可以关联多台电脑。Windows 数据位于 `%LOCALAPPDATA%\AgentHarness\data`，macOS 数据位于 `~/Library/Application Support/AgentHarness/data`；项目文件、Codex 登录、设备私钥和研究环境不会自动同步。
 
@@ -28,9 +30,19 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 
 项目数据保存在创建项目时选择的协作服务上。托管电脑可在 **设置 → 协作服务 → 创建团队入口** 中建立 Tailscale 私有 HTTPS 地址。同事加入同一 Tailscale 网络后，用该地址和项目邀请码加入项目；不需要为每个团队重新创建账户。Tailscale 显示的 `100.x.x.x` 是机器地址，不是团队服务地址；应用中可分享的地址形如 `https://电脑名.xxxx.ts.net`。
 
-应用不会安装组网软件、开放防火墙或接管 Codex/GitHub 凭据。服务运营者能够读取其数据库中的项目内容，因此成员应信任托管者。
+团队地址是 Desktop 与设备接收端使用的服务入口，不再提供浏览器登录工作台。直接在浏览器打开时只显示迁移说明；人类操作请使用 Agent Harness 应用，Codex 通过本机 MCP 协作。
 
-实现任务中的“声明修改范围”是任务合同，不是文件系统 ACL。执行进程获得机器所有者登记的整个项目工作区写权限；高敏项目应使用专用普通系统用户和独立 Git worktree，不要给 Agent 免密 sudo 或传统 Docker socket。
+项目没有中心云、遥测或维护者账户服务。账户、项目和消息只保存在参与者自己的电脑及项目选定的协作服务上；应用不会安装组网软件、开放防火墙或接管 Codex/GitHub 凭据。协作服务的机器主人能够读取其数据库中的项目内容，因此成员应信任托管者。
+
+服务托管者可在 **设置 → 协作服务** 备份或恢复项目数据库。备份使用 SQLite 一致快照；恢复只接受当前账户拥有且完整性检查通过的 Harness 数据库，并会在替换前自动保存当前数据库。恢复不覆盖各机器上的项目文件、Codex 登录或本机 Agent 设置。
+
+员工设置可启用“实现任务安全模式”。启用后，implement 任务必须使用干净的 linked Git worktree，并按任务中每行一个相对路径的 `allowed_files` 检查 Git 跟踪和普通未跟踪改动；越界或 HEAD 改变会让任务失败，但 Harness 不会擅自 reset 或删除文件。Git ignored 内容不在该轻量门禁内，所以它是防误操作措施，不是文件系统沙箱。未启用时，“声明修改范围”仍只是任务合同，不是文件系统 ACL。高敏项目还应使用专用普通系统用户，不要给 Agent 免密 sudo 或传统 Docker socket。
+
+## 本机身份与恢复
+
+身份先由本地解锁密码加密，再优先使用系统安全存储保护：Windows DPAPI、macOS Keychain、Linux Secret Service；平台服务不可用时保留 Scrypt + AES-GCM 加密文件后备。密钥不会上传到 Harness 中心云（本项目没有中心云）。
+
+根设备可在 **账户 → 创建离线恢复包** 导出加密恢复包。请使用独立密码并离线保存。导入时只在内存中解密根材料，随后为新电脑生成新的子设备身份；恢复包不包含服务地址、项目数据或消息。普通关联电脑不能导出根恢复包。
 
 ## 从源码验证和构建
 
@@ -45,6 +57,8 @@ python -m unittest discover -s tests -t . -v
 npm run format:check
 npm test
 ```
+
+`requirements-dev.txt` 会以 editable 模式安装当前 `agent_harness` 包；测试不依赖手工设置 `PYTHONPATH` 或修改 `sys.path`。
 
 构建 Windows x64 便携包：
 
@@ -61,14 +75,15 @@ python tests/cleanroom_release.py dist/AgentHarness build/cleanroom
 
 若要同时运行便携包接收端集成测试，请把 `AGENT_HARNESS_TEST_BUNDLE` 指向已构建的 `AgentHarness` 目录，再运行 `python -m unittest tests.test_desktop.PackagedReceiverTests -v`。
 
-运行数据、令牌、密钥、日志、构建缓存和发布包均由 `.gitignore` 排除。Windows 可执行文件当前没有代码签名；macOS 构建默认使用 ad-hoc 签名，公开分发仍需开发者证书和公证。
+运行数据、令牌、密钥、日志、构建缓存和发布包均由 `.gitignore` 排除。发布流水线只负责生成并上传 Windows per-user 安装器、Windows 便携包、Linux x64/ARM64 包和 macOS ZIP；项目不包含平台证书、公证或应用内自动更新体系。用户从项目的 GitHub Releases 手动下载和替换程序，持久数据保存在应用目录之外。
 
 ## 源码目录
 
 ```text
-assets/web/          WebView 与浏览器界面
+assets/web/          Desktop WebView、新手教程与团队地址迁移页
 docs/                用户文档与架构说明
 scripts/             构建、打包等维护脚本
+installer/           Windows per-user 安装器定义
 src/agent_harness/   Python 应用与协作运行时源码
 tests/               Python、JavaScript 与发布包测试
 ```

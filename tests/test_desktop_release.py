@@ -6,8 +6,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from build_desktop import application_version, getting_started_text, write_release_metadata
-from production_app import request_close_dialog
+from scripts.build_desktop import (
+    APP_SOURCE,
+    CLIENT_FILES,
+    application_version,
+    getting_started_text,
+    write_release_metadata,
+)
+from agent_harness.production_app import request_close_dialog
 
 
 class NativeCloseTests(unittest.TestCase):
@@ -37,6 +43,12 @@ class NativeCloseTests(unittest.TestCase):
 
 
 class ReleaseMetadataTests(unittest.TestCase):
+    def test_service_bundle_includes_every_production_module(self):
+        expected = {path.name for path in APP_SOURCE.glob("*.py")} - {"__init__.py"}
+        self.assertEqual(set(CLIENT_FILES), expected)
+        self.assertIn("health.py", CLIENT_FILES)
+        self.assertIn("account_recovery.py", CLIENT_FILES)
+
     def test_version_manifest_and_guide_are_driven_by_version_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

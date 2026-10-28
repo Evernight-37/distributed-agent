@@ -1,11 +1,9 @@
 import io
 import json
-import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent_harness"))
-from mcp_server import run_stdio
+from agent_harness.mcp_server import run_stdio
 
 
 class Backend:
@@ -43,20 +41,37 @@ class McpServerTests(unittest.TestCase):
 
     def test_successful_call(self):
         result = run(
-            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "echo", "arguments": {"x": 1}}}
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "echo", "arguments": {"x": 1}},
+            }
         )[0]
         self.assertEqual(result["result"]["structuredContent"]["arguments"], {"x": 1})
         self.assertNotIn("isError", result["result"])
 
     def test_business_failure(self):
         result = run(
-            {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "echo", "arguments": {"fail": True}}}
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "echo", "arguments": {"fail": True}},
+            }
         )[0]
         self.assertTrue(result["result"]["isError"])
         self.assertIn("business failure", result["result"]["content"][0]["text"])
 
     def test_unknown_tool_is_business_failure(self):
-        result = run({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "missing"}})[0]
+        result = run(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "missing"},
+            }
+        )[0]
         self.assertTrue(result["result"]["isError"])
 
     def test_notification_has_no_response(self):

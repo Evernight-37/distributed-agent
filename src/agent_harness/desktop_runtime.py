@@ -10,17 +10,15 @@ import time
 import shutil
 import urllib.request
 import urllib.error
-import webbrowser
 from pathlib import Path
 
-from common import lock, read_json, write_json
-from pull_worker import NoRedirect, deploy_runtime
-from release_info import version_path
+from agent_harness.common import lock, read_json, rotate_log, write_json
+from agent_harness.pull_worker import NoRedirect, deploy_runtime
+from agent_harness.release_info import version_path
 
 SERVICE_RUNTIME_FILES = (
     "broker_transport.py",
     "desktop_service.py",
-    "local_panel.py",
     "pull_worker.py",
     "common.py",
     "worker.py",
@@ -57,9 +55,11 @@ def reconcile_orphaned_turns(root):
 
 def assets():
     if getattr(sys, "frozen", False):
-        from service_install import installed_bundle
+        from agent_harness.service_install import installed_bundle
 
-        return installed_bundle() / "client"
+        client = installed_bundle() / "client"
+        package = client / "agent_harness"
+        return package if package.is_dir() else client
     return Path(__file__).resolve().parent
 
 
@@ -70,7 +70,7 @@ def web_assets():
 
 def python_command():
     if getattr(sys, "frozen", False):
-        from service_install import installed_bundle, runtime_python
+        from agent_harness.service_install import installed_bundle, runtime_python
 
         return str(runtime_python(installed_bundle()))
     return sys.executable
@@ -102,11 +102,18 @@ class DesktopRuntime:
         request = urllib.request.Request(
             info["url"] + "/desktop/" + operation,
             data=None if payload is None else json.dumps(payload).encode(),
-            headers={"X-Desktop-Key": info["key"], "Origin": info["url"], "Content-Type": "application/json"},
+            headers={
+                "X-Desktop-Key": info["key"],
+                "Origin": info["url"],
+                "Content-Type": "application/json",
+            },
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         try:
-            with opener.open(request, timeout=45 if payload is not None and operation == "action" else 3) as response:
+            with opener.open(
+                request,
+                timeout=45 if payload is not None and operation == "action" else 3,
+            ) as response:
                 result = json.load(response)
         except urllib.error.HTTPError as exc:
             try:
@@ -142,8 +149,21 @@ class DesktopRuntime:
             raise ValueError("请填写一次性配对码")
         self.root.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
-            [python_command(), "-X", "utf8", str(assets() / "desktop_service.py"), "pair", str(self.root)],
-            input=json.dumps({"server": server.strip(), "code": code.strip(), "broker_proxy": broker_proxy}),
+            [
+                python_command(),
+                "-X",
+                "utf8",
+                str(assets() / "desktop_service.py"),
+                "pair",
+                str(self.root),
+            ],
+            input=json.dumps(
+                {
+                    "server": server.strip(),
+                    "code": code.strip(),
+                    "broker_proxy": broker_proxy,
+                }
+            ),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -217,12 +237,20 @@ class DesktopRuntime:
             # permits the observer service to restart while an old warm worker
             # is active, without overwriting files that process may use.
             flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS if os.name == "nt" else 0
-            with (
-                (self.root / "desktop-service.stdout.log").open("ab") as out,
-                (self.root / "desktop-service.stderr.log").open("ab") as err,
-            ):
+            stdout_log = self.root / "desktop-service.stdout.log"
+            stderr_log = self.root / "desktop-service.stderr.log"
+            rotate_log(stdout_log)
+            rotate_log(stderr_log)
+            with stdout_log.open("ab") as out, stderr_log.open("ab") as err:
                 process = subprocess.Popen(
-                    [python_command(), "-X", "utf8", str(snapshot / "desktop_service.py"), "serve", str(self.root)],
+                    [
+                        python_command(),
+                        "-X",
+                        "utf8",
+                        str(snapshot / "desktop_service.py"),
+                        "serve",
+                        str(self.root),
+                    ],
                     cwd=snapshot,
                     stdin=subprocess.DEVNULL,
                     stdout=out,
@@ -259,28 +287,6 @@ class DesktopRuntime:
             pass
         return {"stopped": True}
 
-    def fetch_state(self):
-        return self._control("state")
-
-    def register_project(self, name, path, model, effort):
-        return self._control(
-            "action", {"action": "register", "name": name, "path": path, "model": model, "effort": effort}
-        )
-
-    def save_binding(self, data):
-        return self._control("action", dict(data, action="binding"))
-
-    def open_panel(self):
-        ticket = self._control("browser", {})["ticket"]
-        webbrowser.open(read_json(self.root / "desktop-service.json")["url"] + "/launch/" + ticket)
-
-    def open_workbench(self, server=None):
-        from pull_worker import validate_server
-
-        server = server or self.status()["server"]
-        validate_server(server)
-        webbrowser.open(server)
-
     def start_workbench(self, open_browser=True, state_root=None):
         """Host an ordinary loopback workbench, without changing network access."""
         url = "http://127.0.0.1:8765"
@@ -288,9 +294,9 @@ class DesktopRuntime:
 
         def ready():
             try:
-                with opener.open(url + "/api/session", timeout=1) as response:
+                with opener.open(url + "/healthz", timeout=1) as response:
                     value = json.load(response)
-                return "bootstrap_required" in value and "csrf" in value
+                return value.get("ok") is True and value.get("service") == "agent-harness-hub"
             except (OSError, ValueError):
                 return False
 
@@ -302,7 +308,11 @@ class DesktopRuntime:
             with lock(state / "desktop-host-start.lock"):
                 if not ready():
                     flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS if os.name == "nt" else 0
-                    with (state / "panel.stdout.log").open("ab") as out, (state / "panel.stderr.log").open("ab") as err:
+                    stdout_log = state / "panel.stdout.log"
+                    stderr_log = state / "panel.stderr.log"
+                    rotate_log(stdout_log)
+                    rotate_log(stderr_log)
+                    with stdout_log.open("ab") as out, stderr_log.open("ab") as err:
                         process = subprocess.Popen(
                             [
                                 python_command(),
@@ -327,5 +337,7 @@ class DesktopRuntime:
                             raise RuntimeError("无法启动工作台，8765 端口可能被其他软件使用")
                         time.sleep(0.15)
         if open_browser:
+            import webbrowser
+
             webbrowser.open(url)
         return url

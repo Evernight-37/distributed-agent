@@ -7,12 +7,13 @@ import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from app_bridge import AppBridge
-from broker import PullBackend
-from collaboration_store import Store
-from coordinator import Coordinator
-from panel import action, handler_for
+from agent_harness.app_bridge import AppBridge
+from agent_harness.broker import PullBackend
+from agent_harness.collaboration_store import Store
+from agent_harness.coordinator import Coordinator
+from agent_harness.panel import handler_for
 from tests import test_collaboration as fixtures
+from tests.helpers import provision_account
 
 
 class ConversationPrivacyTests(unittest.TestCase):
@@ -21,8 +22,10 @@ class ConversationPrivacyTests(unittest.TestCase):
     add_agent = fixtures.CollaborationTests.add_agent
 
     def people_and_agents(self):
-        third = self.store.signup(
-            "third", "password", invite=self.store.invite(self.owner["id"], self.project)["invite"]
+        third = provision_account(
+            self.store,
+            "third",
+            invite=self.store.invite(self.owner["id"], self.project)["invite"],
         )
         first = self.add_agent(self.owner["id"], "backend-a", "First")
         second = self.add_agent(self.owner["id"], "backend-b", "Second")
@@ -40,21 +43,35 @@ class ConversationPrivacyTests(unittest.TestCase):
         with self.store.connect() as db:
             aa = self.store._message(db, self.project, first, "agent", "internal agent note", second)
         self.assertEqual(
-            self.bodies(owner), ["public", "human agent secret", "human human secret", "internal agent note"]
+            self.bodies(owner),
+            [
+                "public",
+                "human agent secret",
+                "human human secret",
+                "internal agent note",
+            ],
         )
         self.assertEqual(self.bodies(other), ["public", "human human secret", "internal agent note"])
         self.assertEqual(self.bodies(third), ["public", "internal agent note"])
-        self.assertEqual([m["body"] for m in self.store.visible_messages(second)], ["public", "internal agent note"])
-        self.assertNotIn("human human secret", [m["body"] for m in self.store.visible_messages(first)])
+        self.assertEqual(
+            [m["body"] for m in self.store.visible_messages(second)],
+            ["public", "internal agent note"],
+        )
+        self.assertNotIn(
+            "human human secret",
+            [m["body"] for m in self.store.visible_messages(first)],
+        )
         own = self.store.project_view(owner, self.project)
         self.assertEqual(ha["conversation_id"], "human_agent:" + owner + ":" + first)
         self.assertEqual(hh["conversation_id"], "human_human:" + ":".join(sorted((owner, other))))
         self.assertEqual(aa["conversation_id"], "agent_agent:" + ":".join(sorted((first, second))))
         self.assertEqual(
-            {c["kind"] for c in own["conversations"]}, {"group", "human_agent", "human_human", "agent_agent"}
+            {c["kind"] for c in own["conversations"]},
+            {"group", "human_agent", "human_human", "agent_agent"},
         )
         self.assertEqual(
-            {c["kind"] for c in self.store.project_view(third, self.project)["conversations"]}, {"group", "agent_agent"}
+            {c["kind"] for c in self.store.project_view(third, self.project)["conversations"]},
+            {"group", "agent_agent"},
         )
 
     def test_conversation_id_cannot_override_recipient_or_impersonate_agent(self):
@@ -65,10 +82,19 @@ class ConversationPrivacyTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.store.message(other, self.project, "intrusion", conversation_id=private)
         with self.assertRaises(ValueError):
-            self.store.message(owner, self.project, "mismatch", recipient=second, conversation_id=private)
+            self.store.message(
+                owner,
+                self.project,
+                "mismatch",
+                recipient=second,
+                conversation_id=private,
+            )
         with self.assertRaises(PermissionError):
             self.store.message(
-                owner, self.project, "impersonation", conversation_id="agent_agent:" + ":".join(sorted((first, second)))
+                owner,
+                self.project,
+                "impersonation",
+                conversation_id="agent_agent:" + ":".join(sorted((first, second))),
             )
         with self.assertRaises(ValueError):
             self.store.message(owner, self.project, "self", recipient=owner)
@@ -101,7 +127,15 @@ class ConversationPrivacyTests(unittest.TestCase):
         with self.store.connect() as db:
             db.execute(
                 "INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,conversation_id) VALUES(?,?,?,?,?,?,?)",
-                (self.project, self.owner["id"], "human", foreign, "forbidden row", 1, forged),
+                (
+                    self.project,
+                    self.owner["id"],
+                    "human",
+                    foreign,
+                    "forbidden row",
+                    1,
+                    forged,
+                ),
             )
         self.assertNotIn("forbidden row", [m["body"] for m in self.store.visible_messages(foreign)])
         Coordinator(self.store, self.backend).wake_messages()
@@ -127,13 +161,17 @@ class ConversationPrivacyTests(unittest.TestCase):
             },
         )["id"]
         with self.store.connect() as db:
-            db.execute("UPDATE tasks SET report=? WHERE id=?", (json.dumps({"reply": "PRIVATE REPORT"}), task))
+            db.execute(
+                "UPDATE tasks SET report=? WHERE id=?",
+                (json.dumps({"reply": "PRIVATE REPORT"}), task),
+            )
         other_view = self.store.project_view(other, self.project)
         self.assertEqual(other_view["tasks"], [])
         self.assertEqual(other_view["messages"], [])
         self.assertEqual(len(self.store.project_view(owner, self.project)["tasks"]), 1)
-        with self.assertRaises(PermissionError):
-            action(self.store, {"id": other}, {"action": "refresh-task", "task": task}, self.backend)
+        with self.store.connect() as db:
+            row = db.execute("SELECT * FROM tasks WHERE id=?", (task,)).fetchone()
+            self.assertFalse(self.store.task_visible_to_human(db, row, other))
 
     def test_read_cursor_is_per_conversation_and_authorized(self):
         _, first, _ = self.people_and_agents()
@@ -181,7 +219,11 @@ class SignedConversationApiTests(unittest.TestCase):
 
             try:
                 for bridge, name in ((a, "alice"), (b, "bob"), (c, "charlie")):
-                    call(bridge, "register", {"username": name, "password": "pw", "server": address})
+                    call(
+                        bridge,
+                        "register",
+                        {"username": name, "password": "pw", "server": address},
+                    )
                 Store(root / "service").claim_local_host(a.identity["account_id"], a.profile["node"])
                 project = call(a, "new-project", {"name": "private test"})["id"]
                 for bridge in (b, c):
@@ -190,17 +232,27 @@ class SignedConversationApiTests(unittest.TestCase):
                 sent = call(
                     a,
                     "message",
-                    {"project": project, "body": "Alice and Bob only", "recipient_id": b.identity["account_id"]},
+                    {
+                        "project": project,
+                        "body": "Alice and Bob only",
+                        "recipient_id": b.identity["account_id"],
+                    },
                 )
                 self.assertTrue(sent["conversation_id"].startswith("human_human:"))
                 self.assertEqual(
-                    [m["body"] for m in call(b, "project", {"id": project})["messages"]], ["Alice and Bob only"]
+                    [m["body"] for m in call(b, "project", {"id": project})["messages"]],
+                    ["Alice and Bob only"],
                 )
                 charlie = call(c, "project", {"id": project})
                 self.assertEqual(charlie["messages"], [])
                 self.assertEqual([x["kind"] for x in charlie["conversations"]], ["group"])
                 response = c.invoke(
-                    "message", {"project": project, "body": "forge", "conversation_id": sent["conversation_id"]}
+                    "message",
+                    {
+                        "project": project,
+                        "body": "forge",
+                        "conversation_id": sent["conversation_id"],
+                    },
                 )
                 self.assertFalse(response["ok"])
                 self.assertEqual(call(c, "project", {"id": project})["messages"], [])

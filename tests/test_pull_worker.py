@@ -10,10 +10,15 @@ from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import pull_worker
-from common import read_json, write_json
-from local_panel import handler_for
-from pull_worker import Connector, deploy_runtime, validate_server, api, enroll
+from agent_harness import pull_worker
+from agent_harness.common import read_json, write_json
+from agent_harness.pull_worker import (
+    Connector,
+    deploy_runtime,
+    validate_server,
+    api,
+    enroll,
+)
 
 
 class PullWorkerTests(unittest.TestCase):
@@ -32,11 +37,21 @@ class PullWorkerTests(unittest.TestCase):
         self.config = self.root / "config.json"
         write_json(
             self.config,
-            {"root": str(self.root), "server": "http://localhost", "device_token": "private-device-token-value"},
+            {
+                "root": str(self.root),
+                "server": "http://localhost",
+                "device_token": "private-device-token-value",
+            },
         )
         write_json(
             self.root / "projects" / "local" / "project.json",
-            {"name": "local", "model": "owner-model", "effort": "high", "timeout": 120, "remote_path": str(self.root)},
+            {
+                "name": "local",
+                "model": "owner-model",
+                "effort": "high",
+                "timeout": 120,
+                "remote_path": str(self.root),
+            },
         )
         self.calls = []
         self.reports = []
@@ -55,7 +70,11 @@ class PullWorkerTests(unittest.TestCase):
 
         def transport(config, operation, payload):
             if operation == "poll":
-                return {"jobs": self.jobs, "projects": [], "cancellations": self.cancellations}
+                return {
+                    "jobs": self.jobs,
+                    "projects": [],
+                    "cancellations": self.cancellations,
+                }
             if self.fail_report:
                 raise OSError("offline")
             self.reports.append(payload)
@@ -93,6 +112,56 @@ class PullWorkerTests(unittest.TestCase):
     def starts(self, action="start"):
         return [r for r in self.calls if r["action"] == action]
 
+    def test_old_reported_local_results_are_pruned_without_touching_active_work(self):
+        old_id = "pull-" + "a" * 48
+        active_id = "pull-" + "b" * 48
+        old_receipt = self.connector.receipt_path("old")
+        active_receipt = self.connector.receipt_path("active")
+        write_json(
+            old_receipt,
+            {
+                "job": {"kind": "task"},
+                "local_id": old_id,
+                "reported_terminal": True,
+                "finished_at": 1,
+            },
+        )
+        write_json(
+            active_receipt,
+            {
+                "job": {"kind": "task"},
+                "local_id": active_id,
+                "reported_terminal": False,
+                "finished_at": 1,
+            },
+        )
+        (self.root / "jobs" / old_id).mkdir(parents=True)
+        (self.root / "jobs" / active_id).mkdir(parents=True)
+        removed = self.connector.prune_local_results(now=pull_worker.LOCAL_RESULT_RETENTION_SECONDS + 2)
+        self.assertEqual(removed, 1)
+        self.assertFalse(old_receipt.exists())
+        self.assertFalse((self.root / "jobs" / old_id).exists())
+        self.assertTrue(active_receipt.exists())
+        self.assertTrue((self.root / "jobs" / active_id).exists())
+
+    def test_poll_rejects_incompatible_hub_before_starting_work(self):
+        self.jobs = [self.job("turn")]
+
+        def incompatible(_config, operation, _payload):
+            if operation == "poll":
+                return {
+                    "protocol": {"hub": 0, "minimum_client": 99},
+                    "jobs": self.jobs,
+                    "projects": [],
+                    "cancellations": [],
+                }
+            return {}
+
+        self.connector.transport = incompatible
+        with self.assertRaisesRegex(RuntimeError, "升级"):
+            self.connector.cycle()
+        self.assertFalse(self.starts())
+
     def test_local_settings_and_duplicate_assignment(self):
         self.jobs = [self.job("turn")]
         for _ in range(4):
@@ -108,7 +177,10 @@ class PullWorkerTests(unittest.TestCase):
             [
                 {"model": "remote-model", "argv": ["evil"]},
                 {"stage": "implement", "prompt": "{}"},
-                {"stage": "discuss", "prompt": json.dumps({"identity": {"id": "wrong"}, "project": {"id": "p1"}})},
+                {
+                    "stage": "discuss",
+                    "prompt": json.dumps({"identity": {"id": "wrong"}, "project": {"id": "p1"}}),
+                },
             ]
         ):
             self.jobs = [self.job("bad" + str(index), request=request)]
@@ -124,9 +196,15 @@ class PullWorkerTests(unittest.TestCase):
     def test_failed_credential_acl_removes_new_token_file(self):
         root = self.root / "enrollment"
         with (
-            patch("pull_worker.api", return_value={"node": "local"}),
-            patch("pull_worker.subprocess.check_output", return_value='"user","S-1-5-21-123"'),
-            patch("pull_worker.subprocess.run", return_value=SimpleNamespace(returncode=1)),
+            patch("agent_harness.pull_worker.api", return_value={"node": "local"}),
+            patch(
+                "agent_harness.pull_worker.subprocess.check_output",
+                return_value='"user","S-1-5-21-123"',
+            ),
+            patch(
+                "agent_harness.pull_worker.subprocess.run",
+                return_value=SimpleNamespace(returncode=1),
+            ),
         ):
             with self.assertRaises(RuntimeError):
                 enroll("https://example.com", "one-time-code", root)
@@ -246,7 +324,12 @@ class PullWorkerTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 validate_server(url)
-        for url in ("https://example.com", "http://127.0.0.1:18876", "http://localhost:8765", "http://[::1]:8765"):
+        for url in (
+            "https://example.com",
+            "http://127.0.0.1:18876",
+            "http://localhost:8765",
+            "http://[::1]:8765",
+        ):
             validate_server(url)
 
     def test_broker_redirect_is_rejected_without_following_it(self):
@@ -268,8 +351,19 @@ class PullWorkerTests(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        with self.assertRaises(urllib.error.HTTPError):
-            api({"server": f"http://127.0.0.1:{server.server_port}", "device_token": "test-token"}, "poll", {})
+        # urllib normally surfaces the rejected 307 as HTTPError. Windows may
+        # instead report a local connection abort while the server closes the
+        # rejected response; in both cases the security property is that the
+        # credential-bearing POST is never replayed to the Location target.
+        with self.assertRaises((urllib.error.HTTPError, ConnectionError)):
+            api(
+                {
+                    "server": f"http://127.0.0.1:{server.server_port}",
+                    "device_token": "test-token",
+                },
+                "poll",
+                {},
+            )
         self.assertEqual(calls, ["/api/device/poll"])
 
     def test_real_worker_registration_configuration(self):
@@ -280,27 +374,6 @@ class PullWorkerTests(unittest.TestCase):
         self.assertEqual(project["model"], "owner-model")
         self.assertEqual(project["effort"], "high")
         self.assertTrue(project["local_control"])
-
-    def test_local_console_rejects_foreign_host_and_forged_csrf(self):
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self.connector, 0))
-        port = server.server_port
-        server.RequestHandlerClass = handler_for(self.connector, port)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        url = f"http://127.0.0.1:{port}"
-        with urllib.request.urlopen(url + "/api/state") as response:
-            body = response.read().decode()
-        self.assertNotIn("private-device-token-value", body)
-        for headers in ({"Host": "attacker.example"}, {"Origin": url, "X-CSRF": "forged"}):
-            request = urllib.request.Request(
-                url + ("/api/state" if "Host" in headers else "/api/action"),
-                headers=headers,
-                data=None if "Host" in headers else b'{"action":"approve"}',
-            )
-            with self.assertRaises(urllib.error.HTTPError) as result:
-                urllib.request.urlopen(request)
-            self.assertEqual(result.exception.code, 403)
 
 
 if __name__ == "__main__":

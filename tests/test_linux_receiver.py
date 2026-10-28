@@ -7,9 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import linux_receiver
-import mcp_adapter
-from common import read_json, write_json
+from agent_harness import linux_receiver
+from agent_harness import mcp_adapter
+from agent_harness.common import read_json, write_json
 
 
 class LinuxReceiverTests(unittest.TestCase):
@@ -27,6 +27,16 @@ class LinuxReceiverTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(first.read_text(encoding="utf-8"), content)
 
+    def test_standalone_mcp_launcher_uses_binary_subcommand(self):
+        with tempfile.TemporaryDirectory() as folder:
+            binary = Path(folder) / "harness"
+            binary.write_text("binary", encoding="utf-8")
+            launcher = linux_receiver._write_launcher(folder, "profile-one", python=binary, standalone=True)
+            content = launcher.read_text(encoding="utf-8")
+            self.assertIn(str(binary.resolve()), content)
+            self.assertIn(" mcp-stdio ", content)
+            self.assertNotIn("mcp_adapter.py", content)
+
     def test_unlock_uses_empty_password_without_prompt(self):
         bridge = MagicMock()
         bridge._profiles.return_value = [{"id": "profile-one"}]
@@ -42,7 +52,10 @@ class LinuxReceiverTests(unittest.TestCase):
     def test_unlock_prompts_only_after_local_unlock_failure(self):
         bridge = MagicMock()
         bridge._profiles.return_value = [{"id": "profile-one"}]
-        calls = [RuntimeError("Unable to unlock local account"), {"ok": True, "result": {}}]
+        calls = [
+            RuntimeError("Unable to unlock local account"),
+            {"ok": True, "result": {}},
+        ]
 
         def invoke_side_effect(*args):
             value = calls.pop(0)
@@ -62,13 +75,22 @@ class LinuxReceiverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             receiver = root / "receivers" / "device-one"
-            write_json(receiver / "pull-config.json", {"server": "https://team", "device_token": "keep"})
-            write_json(receiver / "executor.json", {"cli_path": "/opt/codex", "warm_idle_seconds": 120})
+            write_json(
+                receiver / "pull-config.json",
+                {"server": "https://team", "device_token": "keep"},
+            )
+            write_json(
+                receiver / "executor.json",
+                {"cli_path": "/opt/codex", "warm_idle_seconds": 120},
+            )
             with patch.object(linux_receiver, "broker_opener") as opener:
                 linux_receiver._set_broker_proxy(root, "http://127.0.0.1:18766")
             opener.assert_called_once_with("http://127.0.0.1:18766")
             self.assertEqual(read_json(receiver / "pull-config.json")["device_token"], "keep")
-            self.assertEqual(read_json(receiver / "pull-config.json")["broker_proxy"], "http://127.0.0.1:18766")
+            self.assertEqual(
+                read_json(receiver / "pull-config.json")["broker_proxy"],
+                "http://127.0.0.1:18766",
+            )
             runtime = MagicMock()
             runtime.status.return_value = {"running": True}
             with (
@@ -93,11 +115,18 @@ class LinuxReceiverTests(unittest.TestCase):
             fake_runtime.status.side_effect = [{"running": True}, {"running": False}]
             with (
                 patch.object(linux_receiver, "DesktopRuntime", return_value=fake_runtime),
-                patch.object(linux_receiver, "cli_status", side_effect=[{"found": False}, {"found": False}]) as cli,
+                patch.object(
+                    linux_receiver,
+                    "cli_status",
+                    side_effect=[{"found": False}, {"found": False}],
+                ) as cli,
                 patch.object(linux_receiver, "invoke", return_value={"profiles": []}),
             ):
                 result = linux_receiver.status(root)
-            self.assertEqual([item["receiver"] for item in result["receivers"]], ["device-one", "device-two"])
+            self.assertEqual(
+                [item["receiver"] for item in result["receivers"]],
+                ["device-one", "device-two"],
+            )
             self.assertEqual(cli.call_count, 2)
 
     def test_parser_exposes_management_commands(self):
@@ -112,7 +141,14 @@ class LinuxReceiverTests(unittest.TestCase):
             ["network", "broker-proxy", "set", "http://127.0.0.1:1"],
             ["network", "codex-proxy", "set", "--port", "7897"],
             ["doctor"],
-            ["upgrade", "--bundle", "/tmp/release.tar.gz", "--sha256", "0" * 64, "--retry"],
+            [
+                "upgrade",
+                "--bundle",
+                "/tmp/release.tar.gz",
+                "--sha256",
+                "0" * 64,
+                "--retry",
+            ],
         ):
             with self.subTest(argv=argv):
                 self.assertEqual(parser.parse_args(argv).command, argv[0])
@@ -123,9 +159,16 @@ class LinuxReceiverTests(unittest.TestCase):
             root.chmod(0o700)
             fake_service = MagicMock()
             fake_service.status.return_value = {"active": False}
-            fake_service.linger_status.return_value = {"available": False, "enabled": None}
+            fake_service.linger_status.return_value = {
+                "available": False,
+                "enabled": None,
+            }
             with (
-                patch.object(linux_receiver, "status", return_value={"profiles": [], "receivers": []}),
+                patch.object(
+                    linux_receiver,
+                    "status",
+                    return_value={"profiles": [], "receivers": []},
+                ),
                 patch.object(
                     linux_receiver,
                     "network_status",
@@ -169,7 +212,12 @@ class LinuxReceiverTests(unittest.TestCase):
                 patch.object(
                     linux_receiver,
                     "cli_status",
-                    return_value={"found": True, "configured": False, "path": str(detected), "version": "2.0.0"},
+                    return_value={
+                        "found": True,
+                        "configured": False,
+                        "path": str(detected),
+                        "version": "2.0.0",
+                    },
                 ),
                 patch.object(linux_receiver, "AppBridge", return_value=bridge),
             ):
@@ -224,10 +272,17 @@ class LinuxReceiverTests(unittest.TestCase):
             write_json(receiver / "projects/local/project.json", {"remote_path": str(project)})
             fake_service = MagicMock()
             fake_service.status.return_value = {"active": False}
-            fake_service.linger_status.return_value = {"available": True, "enabled": False}
+            fake_service.linger_status.return_value = {
+                "available": True,
+                "enabled": False,
+            }
             completed = MagicMock(returncode=0, stdout="NVIDIA Test, 24564\n", stderr="")
             with (
-                patch.object(linux_receiver, "status", return_value={"profiles": [], "receivers": []}),
+                patch.object(
+                    linux_receiver,
+                    "status",
+                    return_value={"profiles": [], "receivers": []},
+                ),
                 patch.object(
                     linux_receiver,
                     "network_status",
@@ -256,11 +311,19 @@ class LinuxReceiverTests(unittest.TestCase):
                 grant,
                 {
                     "version": 1,
-                    "identity": {"private_key": "local", "public_key": "public", "account_id": "account"},
+                    "identity": {
+                        "private_key": "local",
+                        "public_key": "public",
+                        "account_id": "account",
+                    },
                     "profile_id": "profile",
                     "username": "owner",
                     "servers": ["https://team.example"],
-                    "scopes": ["collaboration.read", "collaboration.message", "collaboration.task"],
+                    "scopes": [
+                        "collaboration.read",
+                        "collaboration.message",
+                        "collaboration.task",
+                    ],
                 },
             )
             network = root / "network.json"

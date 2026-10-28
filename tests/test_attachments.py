@@ -8,10 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from attachments import Attachments, MAX_FILE_BYTES
-from collaboration_store import Store
-from app_bridge import AppBridge
-from panel import handler_for
+from agent_harness.attachments import Attachments, MAX_FILE_BYTES
+from agent_harness.collaboration_store import Store
+from agent_harness.app_bridge import AppBridge
+from agent_harness.panel import handler_for
 
 
 class AttachmentTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class AttachmentTests(unittest.TestCase):
         self.files = Attachments(self.store)
         with self.store.connect() as db:
             for user in ("a", "b", "c", "outsider"):
-                db.execute("INSERT INTO users VALUES(?,?,?,?)", (user, user, "s", "h"))
+                db.execute("INSERT INTO users(id,username) VALUES(?,?)", (user, user))
             db.execute("INSERT INTO projects(id,name,owner_id) VALUES('p','project','a')")
             for user in ("a", "b", "c"):
                 db.execute("INSERT INTO project_users VALUES('p',?)", (user,))
@@ -39,7 +39,10 @@ class AttachmentTests(unittest.TestCase):
         self.assertEqual(view["messages"][-1]["attachments"], [file])
         self.assertNotIn("base64", file)
         self.assertNotIn("/", file["name"])
-        self.assertEqual(base64.b64decode(self.files.download("b", "p", file["id"])["base64"]), b"hello")
+        self.assertEqual(
+            base64.b64decode(self.files.download("b", "p", file["id"])["base64"]),
+            b"hello",
+        )
         self.assertIsInstance(result["id"], int)
         with self.assertRaises(PermissionError):
             self.files.download("outsider", "p", file["id"])
@@ -81,7 +84,7 @@ class AttachmentTests(unittest.TestCase):
             self.files.upload("a", "p", "bad", "###")
         with self.assertRaises(ValueError):
             self.store.message("a", "p", "many", attachment_ids=[file["id"]] * 6)
-        with patch("attachments.PROJECT_QUOTA", 1):
+        with patch("agent_harness.attachments.PROJECT_QUOTA", 1):
             with self.assertRaises(ValueError):
                 self.upload()
 
@@ -93,7 +96,7 @@ class AttachmentTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.files.download("b", "p", file["id"])
         pending = self.upload()
-        with patch("attachments.time.time", return_value=99999999999):
+        with patch("agent_harness.attachments.time.time", return_value=99999999999):
             self.upload()
         with self.assertRaises(PermissionError):
             self.files.download("a", "p", pending["id"])
@@ -122,21 +125,37 @@ class AttachmentHttpTests(unittest.TestCase):
                 content = b"example-file\n" * 50000
                 file = bridge.invoke(
                     "attachment-upload",
-                    {"project": project, "name": "report.txt", "base64": base64.b64encode(content).decode()},
+                    {
+                        "project": project,
+                        "name": "report.txt",
+                        "base64": base64.b64encode(content).decode(),
+                    },
                 )
                 self.assertTrue(file["ok"], file)
                 metadata = file["result"]
                 sent = bridge.invoke(
-                    "message", {"project": project, "body": "file", "attachment_ids": [metadata["id"]]}
+                    "message",
+                    {
+                        "project": project,
+                        "body": "file",
+                        "attachment_ids": [metadata["id"]],
+                    },
                 )
                 self.assertTrue(sent["ok"], sent)
                 bridge.window = SimpleNamespace(create_file_dialog=lambda *a, **kw: str(root / "saved.txt"))
-                with patch.dict("sys.modules", {"webview": SimpleNamespace(FileDialog=SimpleNamespace(SAVE="save"))}):
+                with patch.dict(
+                    "sys.modules",
+                    {"webview": SimpleNamespace(FileDialog=SimpleNamespace(SAVE="save"))},
+                ):
                     result = bridge.invoke("attachment-save", {"project": project, "id": metadata["id"]})
                 self.assertTrue(result["result"]["saved"], result)
                 self.assertEqual((root / "saved.txt").read_bytes(), content)
                 bridge._rpc("pair-local", {"node": bridge.profile["node"]})
-                queued = bridge._owner("create", bridge.profile["node"], {"id": "employee-http", "name": "Test"})
+                queued = bridge._owner(
+                    "create",
+                    bridge.profile["node"],
+                    {"id": "employee-http", "name": "Test"},
+                )
                 status = bridge._rpc("command-status", {"id": queued["id"]})
                 self.assertEqual(status["state"], "queued")
                 self.assertIsNone(status["result"])

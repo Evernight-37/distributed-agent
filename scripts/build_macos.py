@@ -12,7 +12,14 @@ import sysconfig
 import tempfile
 from pathlib import Path
 
-from build_desktop import APP_SOURCE, CLIENT_FILES, PROJECT_ROOT, WEB_SOURCE, application_version
+from build_desktop import (
+    APP_SOURCE,
+    CLIENT_FILES,
+    PROJECT_ROOT,
+    SOURCE_ROOT,
+    WEB_SOURCE,
+    application_version,
+)
 
 
 def build(output_root, python_runtime):
@@ -46,7 +53,7 @@ def build(output_root, python_runtime):
             "--specpath",
             str(PROJECT_ROOT / "build"),
             "--paths",
-            str(APP_SOURCE),
+            str(SOURCE_ROOT),
             *trust_data,
             "--hidden-import",
             "webview.platforms.cocoa",
@@ -69,7 +76,10 @@ def build(output_root, python_runtime):
             str(APP_SOURCE / "production_app.py"),
         ],
         cwd=PROJECT_ROOT,
-        env={**os.environ, "PYINSTALLER_CONFIG_DIR": str(PROJECT_ROOT / "build" / "pyinstaller-cache")},
+        env={
+            **os.environ,
+            "PYINSTALLER_CONFIG_DIR": str(PROJECT_ROOT / "build" / "pyinstaller-cache"),
+        },
         check=True,
     )
     app = output_root / "AgentHarness.app"
@@ -84,13 +94,23 @@ def build(output_root, python_runtime):
         python_runtime / "lib" / stdlib_name,
         runtime / "lib" / stdlib_name,
         ignore=shutil.ignore_patterns(
-            "site-packages", "__pycache__", "*.pyc", "test", "tests", "idlelib", "tkinter", "ensurepip"
+            "site-packages",
+            "__pycache__",
+            "*.pyc",
+            "test",
+            "tests",
+            "idlelib",
+            "tkinter",
+            "ensurepip",
         ),
     )
     for library in (python_runtime / "lib").glob("libpython*.dylib"):
         shutil.copy2(library, runtime / "lib" / library.name, follow_symlinks=True)
     packages = runtime / "lib" / stdlib_name / "site-packages"
     packages.mkdir()
+    # The relocatable service interpreter imports the versioned application
+    # package without relying on a shell working directory or user PYTHONPATH.
+    (packages / "agent_harness.pth").write_text("../../../../client\n", encoding="utf-8")
     installed_packages = Path(sysconfig.get_path("purelib"))
     for pattern in (
         "cryptography",
@@ -104,15 +124,20 @@ def build(output_root, python_runtime):
         for source in installed_packages.glob(pattern):
             target = packages / source.name
             if source.is_dir():
-                shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                shutil.copytree(
+                    source,
+                    target,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                )
             else:
                 shutil.copy2(source, target)
     client = bundle / "client"
-    client.mkdir()
-    for name in CLIENT_FILES:
-        shutil.copy2(APP_SOURCE / name, client / name)
-    shutil.copy2(PROJECT_ROOT / "VERSION", client / "VERSION")
-    shutil.copytree(WEB_SOURCE, client / "web")
+    package = client / "agent_harness"
+    package.mkdir(parents=True)
+    for name in ("__init__.py", *CLIENT_FILES):
+        shutil.copy2(APP_SOURCE / name, package / name)
+    shutil.copy2(PROJECT_ROOT / "VERSION", package / "VERSION")
+    shutil.copytree(WEB_SOURCE, package / "web")
     manifest = {
         "format": 1,
         "name": "AgentHarness",
@@ -126,7 +151,11 @@ def build(output_root, python_runtime):
     plist_path = contents / "Info.plist"
     with plist_path.open("rb") as stream:
         info = plistlib.load(stream)
-    info.update(CFBundleShortVersionString=version, CFBundleVersion=version, NSHighResolutionCapable=True)
+    info.update(
+        CFBundleShortVersionString=version,
+        CFBundleVersion=version,
+        NSHighResolutionCapable=True,
+    )
     with plist_path.open("wb") as stream:
         plistlib.dump(info, stream)
     subprocess.run(

@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-import worker
+from agent_harness import worker
 
 
 class WorkerTimeoutTests(unittest.TestCase):

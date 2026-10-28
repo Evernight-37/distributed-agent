@@ -50,6 +50,29 @@ def write_json(path, value):
         tmp.unlink(missing_ok=True)
 
 
+def rotate_log(path, max_bytes=10 * 1024 * 1024, backups=5):
+    """Rotate a private append-only log before a new writer opens it."""
+
+    path = Path(path)
+    if not isinstance(max_bytes, int) or max_bytes < 1024 or not isinstance(backups, int) or not 1 <= backups <= 20:
+        raise ValueError("Invalid log rotation policy")
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size < max_bytes:
+            return False
+        for index in range(backups, 0, -1):
+            source = path if index == 1 else path.with_name(path.name + f".{index - 1}")
+            target = path.with_name(path.name + f".{index}")
+            if source.is_symlink():
+                return False
+            if source.exists():
+                os.replace(source, target)
+        return True
+    except OSError:
+        # A still-running process may have the file open on Windows.  Logging
+        # must continue even when that particular rotation is deferred.
+        return False
+
+
 def validate_local_proxy(value):
     """Validate the app-managed loopback proxy setting."""
     if not isinstance(value, dict) or set(value) != {"enabled", "port"}:
@@ -68,7 +91,14 @@ def apply_local_proxy(env, setting):
     """Apply an explicit app setting to one Codex child process environment."""
     setting = validate_local_proxy(setting)
     result = dict(env)
-    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "WS_PROXY", "WSS_PROXY"):
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "WS_PROXY",
+        "WSS_PROXY",
+    ):
         result.pop(key, None)
         result.pop(key.lower(), None)
     if setting["enabled"]:
@@ -167,4 +197,6 @@ def validate_project(data):
     timeout = data.get("timeout", 1800)
     if not isinstance(timeout, int) or not 30 <= timeout <= 86400:
         raise ValueError("Timeout must be between 30 and 86400 seconds")
+    if not isinstance(data.get("strict_worktree", False), bool):
+        raise ValueError("strict_worktree must be boolean")
     return data

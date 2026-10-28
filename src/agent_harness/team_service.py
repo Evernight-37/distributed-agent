@@ -12,8 +12,9 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from common import lock, read_json, write_json
-from desktop_runtime import assets, python_command
+from agent_harness.common import lock, read_json, write_json
+from agent_harness.desktop_runtime import assets, python_command
+from agent_harness.health import HealthCode, normalize_exception, safe_message
 
 TARGET = "http://127.0.0.1:8765"
 AUTH_URL = re.compile(r"https://login\.tailscale\.com/f/serve\?node=[A-Za-z0-9_-]+")
@@ -119,7 +120,11 @@ class TeamService:
                     "message": "当前服务由其它机器托管。",
                 }
             if state.get("BackendState") != "Running":
-                return {"state": "needs_login", "can_manage": True, "message": "请先在 Tailscale 中登录并连接网络。"}
+                return {
+                    "state": "needs_login",
+                    "can_manage": True,
+                    "message": "请先在 Tailscale 中登录并连接网络。",
+                }
             if not re.fullmatch(r"[a-z0-9-]+\.[a-z0-9-]+\.ts\.net", host):
                 return {
                     "state": "error",
@@ -140,7 +145,11 @@ class TeamService:
                 }[kind],
             }
             operation = read_json(self.job, {})
-            if kind == "disabled" and operation.get("state") in {"starting", "needs_authorization", "error"}:
+            if kind == "disabled" and operation.get("state") in {
+                "starting",
+                "needs_authorization",
+                "error",
+            }:
                 if operation.get("state") == "error" or time.time() - operation.get("updated", 0) < 650:
                     result.update(
                         {k: operation[k] for k in ("state", "message", "authorization_url") if k in operation}
@@ -149,9 +158,26 @@ class TeamService:
                     result.update(state="error", message="上次配置未完成，请重新创建入口。")
             return result
         except FileNotFoundError as exc:
-            return {"state": "missing", "can_manage": self._local(), "message": str(exc)}
+            health = normalize_exception("tailscale", exc, code=HealthCode.NOT_CONFIGURED)
+            return {
+                "state": "missing",
+                "code": health["code"],
+                "can_manage": self._local(),
+                "message": health["message"],
+            }
         except Exception as exc:
-            return {"state": "error", "can_manage": self._local(), "message": str(exc)}
+            health = normalize_exception(
+                "tailscale",
+                exc,
+                code=HealthCode.SERVICE_UNAVAILABLE,
+                message=safe_message(exc, "无法检查 Tailscale 状态"),
+            )
+            return {
+                "state": "error",
+                "code": health["code"],
+                "can_manage": self._local(),
+                "message": health["message"],
+            }
 
     def create(self):
         with lock(self.root / "team-service-launch.lock"):
@@ -166,7 +192,14 @@ class TeamService:
                 raise ValueError(state["message"])
             if state["state"] in {"starting", "needs_authorization"}:
                 return state
-            write_json(self.job, {"state": "starting", "message": "正在创建团队入口…", "updated": time.time()})
+            write_json(
+                self.job,
+                {
+                    "state": "starting",
+                    "message": "正在创建团队入口…",
+                    "updated": time.time(),
+                },
+            )
             flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS if os.name == "nt" else 0
             try:
                 process = subprocess.Popen(
@@ -192,7 +225,11 @@ class TeamService:
             except Exception:
                 write_json(
                     self.job,
-                    {"state": "error", "message": "配置程序未启动，请检查应用是否完整。", "updated": time.time()},
+                    {
+                        "state": "error",
+                        "message": "配置程序未启动，请检查应用是否完整。",
+                        "updated": time.time(),
+                    },
                 )
                 raise
             return dict(state, state="starting", message="正在创建团队入口…")
@@ -200,7 +237,10 @@ class TeamService:
     def stop(self):
         with lock(self.root / "team-service-control.lock"):
             state = self.status()
-            if not state.get("can_manage") or state["state"] not in {"ready", "disabled"}:
+            if not state.get("can_manage") or state["state"] not in {
+                "ready",
+                "disabled",
+            }:
                 raise PermissionError("入口正在配置或属于其它服务，不能停止。")
             if state["state"] == "ready":
                 self.runner(["serve", "--bg", "--https=443", "off"])
@@ -222,11 +262,17 @@ class TeamService:
             raise ValueError("团队入口尚未配置。")
         if state["state"] == "remote" and not url.startswith("https://"):
             raise ValueError("这是本机转发地址，不能交给其它电脑；请向托管者获取 HTTPS 团队地址。")
-        from pull_worker import validate_server
+        from agent_harness.pull_worker import validate_server
 
         validate_server(url)
         if sys.platform == "darwin":
-            proc = subprocess.run(["/usr/bin/pbcopy"], input=url, capture_output=True, text=True, timeout=5)
+            proc = subprocess.run(
+                ["/usr/bin/pbcopy"],
+                input=url,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
             if proc.returncode:
                 raise RuntimeError("复制失败，可直接选中地址复制。")
             return {"copied": True, "message": "服务地址已复制。"}
@@ -322,7 +368,21 @@ def create_background(root, server):
                 raise RuntimeError("配置命令已结束，但未发现预期入口。请检测状态。")
             write_json(manager.job, dict(final, updated=time.time()))
     except Exception as exc:
-        write_json(manager.job, {"state": "error", "message": str(exc), "updated": time.time()})
+        health = normalize_exception(
+            "tailscale",
+            exc,
+            code=HealthCode.SERVICE_UNAVAILABLE,
+            message=safe_message(exc, "团队入口配置失败"),
+        )
+        write_json(
+            manager.job,
+            {
+                "state": "error",
+                "code": health["code"],
+                "message": health["message"],
+                "updated": time.time(),
+            },
+        )
     finally:
         if process and process.poll() is None:
             process.terminate()

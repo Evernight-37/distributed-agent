@@ -1,8 +1,7 @@
 import json
 import unittest
-from collaboration_store import uid
-from coordinator import Coordinator
-from panel import action
+from agent_harness.collaboration_store import uid
+from agent_harness.coordinator import Coordinator
 from tests import test_collaboration as fixtures
 
 
@@ -87,7 +86,8 @@ class Regressions(unittest.TestCase):
         Coordinator(self.store, self.backend).process_completed(task)
         self.assertEqual(self.store.visible_messages(b), [])
         self.assertEqual(
-            self.store.project_view(self.owner["id"], self.project)["messages"][-1]["recipient_id"], self.owner["id"]
+            self.store.project_view(self.owner["id"], self.project)["messages"][-1]["recipient_id"],
+            self.owner["id"],
         )
 
     def test_private_structured_turn_cannot_broadcast(self):
@@ -153,7 +153,10 @@ class Regressions(unittest.TestCase):
         c = Coordinator(self.store, self.backend)
         c.process_completed(task)
         with self.store.connect() as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM tasks WHERE state='queued'").fetchone()[0], 0)
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM tasks WHERE state='queued'").fetchone()[0],
+                0,
+            )
         assignment["agent"] = b
         task = self.finished(a, json.dumps({"reply": "安排工作", "tasks": [assignment]}))
         c.process_completed(task)
@@ -187,19 +190,10 @@ class Regressions(unittest.TestCase):
         c.dispatch()
         self.assertEqual(self.backend.submissions, [])
         with self.store.connect() as db:
-            self.assertEqual(db.execute("SELECT state FROM tasks WHERE id=?", (task,)).fetchone()[0], "unknown")
-
-    def test_cross_owner_cannot_approve_execution(self):
-        a, _ = self.agents()
-        with self.store.connect() as db:
-            db.execute(
-                "INSERT INTO executions(id,project_id,agent_id,template,state,created_at) VALUES('exec',?,?,?,'awaiting_owner',0)",
-                (self.project, a, "train"),
+            self.assertEqual(
+                db.execute("SELECT state FROM tasks WHERE id=?", (task,)).fetchone()[0],
+                "unknown",
             )
-        with self.assertRaises(PermissionError):
-            action(self.store, self.other, {"action": "execution-approve", "execution": "exec"}, self.backend)
-        with self.store.connect() as db:
-            self.assertEqual(db.execute("SELECT state FROM executions WHERE id='exec'").fetchone()[0], "awaiting_owner")
 
     def test_cross_owner_cannot_manually_schedule_other_agent(self):
         a, _ = self.agents()
@@ -218,14 +212,6 @@ class Regressions(unittest.TestCase):
                 },
             )
 
-    def test_cancellation_is_durable_during_startup(self):
-        a, _ = self.agents()
-        task = self.finished(a, "", "starting")
-        result = action(self.store, self.owner, {"action": "cancel-task", "task": task}, self.backend)
-        self.assertEqual(result["status"], "cancellation_requested")
-        with self.store.connect() as db:
-            self.assertEqual(db.execute("SELECT cancel_requested FROM tasks WHERE id=?", (task,)).fetchone()[0], 1)
-
     def test_configuration_uncertainty_blocks_new_tasks(self):
         a, _ = self.agents()
 
@@ -236,20 +222,17 @@ class Regressions(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.store.configure_agent(
                 self.owner["id"],
-                {"agent": a, "model": "test", "effort": "high", "timeout": 45, "enabled": True},
+                {
+                    "agent": a,
+                    "model": "test",
+                    "effort": "high",
+                    "timeout": 45,
+                    "enabled": True,
+                },
                 self.backend,
             )
         with self.assertRaises(ValueError):
             self.finished(a, "{}")
-
-    def test_pause_prevents_new_calls(self):
-        self.agents()
-        action(
-            self.store, self.owner, {"action": "pause-project", "project": self.project, "paused": True}, self.backend
-        )
-        self.store.message(self.owner["id"], self.project, "new message")
-        Coordinator(self.store, self.backend).tick()
-        self.assertEqual(self.backend.submissions, [])
 
 
 if __name__ == "__main__":

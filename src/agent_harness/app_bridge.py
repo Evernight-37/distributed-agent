@@ -9,25 +9,39 @@ import socket
 import sys
 import time
 import threading
-import uuid
 import urllib.request
 import urllib.error
 from pathlib import Path
-from common import lock, read_json, validate_local_proxy, write_json
-from desktop_runtime import DesktopRuntime, assets, python_command
-from runtime_paths import application_home
-from pull_worker import validate_server
-from broker_transport import broker_opener
-from account_identity import (
+from agent_harness.common import lock, read_json, validate_local_proxy, write_json
+from agent_harness.protocol import ensure_hub_compatible
+from agent_harness.desktop_runtime import DesktopRuntime, assets, python_command
+from agent_harness.desktop_api import (
+    DesktopControlAPI,
+    DesktopSessionActions,
+    DesktopSettingsActions,
+    DesktopTeamServiceActions,
+)
+from agent_harness.desktop_actions import (
+    DesktopIdentityActions,
+    DesktopOwnerActions,
+    DesktopProjectActions,
+)
+from agent_harness.runtime_paths import application_home
+from agent_harness.pull_worker import validate_server
+from agent_harness.broker_transport import broker_opener
+from agent_harness.account_identity import (
     generate_identity,
     sign_envelope,
     encrypt_identity,
-    decrypt_identity,
-    approve_certificate,
     approve_delegate,
 )
+from agent_harness.event_pump import DesktopEventPump, notify_webview
 
-MCP_DELEGATE_SCOPES = ["collaboration.message", "collaboration.read", "collaboration.task"]
+MCP_DELEGATE_SCOPES = [
+    "collaboration.message",
+    "collaboration.read",
+    "collaboration.task",
+]
 
 
 class AppBridge:
@@ -39,6 +53,7 @@ class AppBridge:
         self.profile = None
         self.window = None
         self.pending = None
+        self.pending_restore = None
         self.inspected = {}
         self.project_servers = {}
         self.employee_servers = {}
@@ -47,6 +62,21 @@ class AppBridge:
         self.last_service_sync = 0
         self.activated_services = set()
         self.guard = threading.RLock()
+        self.event_pump = DesktopEventPump(
+            self._event_wait,
+            lambda cursor, server: notify_webview(self.window, cursor, server),
+        )
+        self.control_api = DesktopControlAPI(
+            self._invoke,
+            (
+                DesktopSessionActions(self),
+                DesktopSettingsActions(self),
+                DesktopTeamServiceActions(self),
+                DesktopIdentityActions(self),
+                DesktopOwnerActions(self),
+                DesktopProjectActions(self),
+            ),
+        )
         self.allow_window_close = False
         self.broker_proxy = read_json(self.root / "broker-network.json", {}).get("proxy")
 
@@ -79,7 +109,10 @@ class AppBridge:
             raise RuntimeError("协作服务返回了无效数据")
         if "error" in result:
             raise RuntimeError(result["error"])
-        return result.get("result", result) if result.get("ok") is True else result
+        value = result.get("result", result) if result.get("ok") is True else result
+        if data.get("action") == "challenge":
+            ensure_hub_compatible(value)
+        return value
 
     def _server(self, server):
         server = (server or "http://127.0.0.1:8765").rstrip("/")
@@ -92,7 +125,7 @@ class AppBridge:
                 # directory before the user selected an existing profile.
                 # Stop only a verified Harness-managed host, then reopen the
                 # saved project database for that profile.
-                from app_lifecycle import HostRuntime
+                from agent_harness.app_lifecycle import HostRuntime
 
                 HostRuntime(active).stop_and_wait()
             if getattr(sys, "frozen", False) and not (self.profile or {}).get("local_host_state"):
@@ -114,7 +147,7 @@ class AppBridge:
         if os.name != "nt":
             return None
         import subprocess
-        from app_lifecycle import split_windows_command
+        from agent_harness.app_lifecycle import split_windows_command
 
         script = (
             "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
@@ -152,10 +185,14 @@ class AppBridge:
     def _local_host_state(self, public_key=None):
         import sqlite3
         from contextlib import closing
-        from collaboration_store import Store
+        from agent_harness.collaboration_store import Store
 
         challenge = self._post(
-            "http://127.0.0.1:8765", {"action": "challenge", "public_key": public_key or self.identity["public_key"]}
+            "http://127.0.0.1:8765",
+            {
+                "action": "challenge",
+                "public_key": public_key or self.identity["public_key"],
+            },
         )
 
         def candidates():
@@ -183,6 +220,17 @@ class AppBridge:
                 return Store(state)
         raise ValueError("本机已有协作服务，但应用无法确认其数据目录。项目数据不会被覆盖；请更新服务后重试。")
 
+    def _owned_local_store(self):
+        if not self.identity or not self.profile:
+            raise PermissionError("请先登录")
+        if self._hosting_server() != "http://127.0.0.1:8765":
+            raise PermissionError("只能在协作服务所在的电脑管理备份")
+        store = self._local_host_state()
+        owner = store.host_owner()
+        if not owner or owner.get("owner_account_id") != self.identity["account_id"]:
+            raise PermissionError("只有协作服务所属账户可以备份或恢复数据")
+        return store
+
     def _enable_local_host(self):
         if not self.identity:
             raise PermissionError("请先解锁账户")
@@ -194,9 +242,15 @@ class AppBridge:
             "domain": "harness-account-request-v1",
             "nonce": challenge["nonce"],
             "operation": "register",
-            "payload": {"name": self.profile["username"], "device_name": socket.gethostname()},
+            "payload": {
+                "name": self.profile["username"],
+                "device_name": socket.gethostname(),
+            },
         }
-        self._post(local, {"action": "register", "envelope": sign_envelope(self.identity, body)})
+        self._post(
+            local,
+            {"action": "register", "envelope": sign_envelope(self.identity, body)},
+        )
         self.activated_services.add(local)
         self.profile["local_host_enabled"] = True
         self.profile["local_host_state"] = str(store.root)
@@ -242,25 +296,44 @@ class AppBridge:
             return
         write_json(
             self._host_state_root() / "team-service.json",
-            {"mode": "tailscale-serve", "url": url, "proxy": "http://127.0.0.1:8765", "tailnet_only": True},
+            {
+                "mode": "tailscale-serve",
+                "url": url,
+                "proxy": "http://127.0.0.1:8765",
+                "tailnet_only": True,
+            },
         )
 
     def _rpc(self, operation, payload=None, server=None, timeout=15):
         if not self.identity:
             raise PermissionError("请先解锁账户")
         server = server or self.profile["server"]
-        challenge = self._post(server, {"action": "challenge", "public_key": self.identity["public_key"]}, timeout)
+        challenge = self._post(
+            server,
+            {"action": "challenge", "public_key": self.identity["public_key"]},
+            timeout,
+        )
         features = set(challenge.get("features", []))
         if (
             operation.startswith("attachment-") or (payload or {}).get("attachment_ids")
         ) and "chat_attachments_v1" not in features:
-            raise RuntimeError("托管端尚不支持附件。请让托管电脑升级到 1.0.2 并重启协作服务。")
+            raise RuntimeError("托管端尚不支持附件。请将协作服务升级到当前版本并重启后再试。")
         if (
-            operation in {"project", "message", "conversation-read", "memory-note-add", "memory-note-delete"}
+            operation
+            in {
+                "project",
+                "message",
+                "conversation-read",
+                "memory-note-add",
+                "memory-note-delete",
+            }
             and "conversation_privacy_v2" not in features
         ):
             raise RuntimeError("协作服务版本过旧，尚不能保护新会话的隐私。请让托管电脑更新应用并重启协作服务。")
-        if operation == "message" and not {"mention_agent_id", "anchored_reply_draft"}.issubset(features):
+        if operation == "message" and not {
+            "mention_agent_id",
+            "anchored_reply_draft",
+        }.issubset(features):
             raise RuntimeError("协作服务版本过旧。请让托管电脑更新应用并重启协作服务后再发送消息。")
         envelope = sign_envelope(
             self.identity,
@@ -275,6 +348,39 @@ class AppBridge:
         if operation == "project" and isinstance(result, dict):
             result["capabilities"] = sorted(features)
         return result
+
+    def _event_wait(self, identity, server, cursor, wait_seconds):
+        """Signed long wait using an immutable identity snapshot."""
+
+        challenge = self._post(
+            server,
+            {"action": "challenge", "public_key": identity["public_key"]},
+            min(10, wait_seconds + 5),
+        )
+        if "event_cursor_v1" not in set(challenge.get("features", [])):
+            raise RuntimeError("协作服务尚不支持实时事件")
+        envelope = sign_envelope(
+            identity,
+            {
+                "domain": "harness-account-request-v1",
+                "nonce": challenge["nonce"],
+                "operation": "events-wait",
+                "payload": {"cursor": cursor, "wait_seconds": wait_seconds},
+            },
+        )
+        result = self._post(
+            server,
+            {"action": "rpc", "envelope": envelope},
+            wait_seconds + 5,
+        )
+        if not isinstance(result, dict) or not isinstance(result.get("cursor"), int):
+            raise RuntimeError("协作服务返回了无效事件游标")
+        return result
+
+    def _sync_event_pump(self):
+        identity = self.identity if self.window else None
+        services = self._services() if identity and self.profile else ()
+        self.event_pump.update(identity, services)
 
     def _save_profile(self, password):
         self.profile["encrypted"] = encrypt_identity(self.identity, password)
@@ -303,7 +409,11 @@ class AppBridge:
         return "agent-harness-" + self.profile["id"].lower()
 
     def _register_mcp_delegate(self, server, grant, timeout=8):
-        challenge = self._post(server, {"action": "challenge", "public_key": grant["identity"]["public_key"]}, timeout)
+        challenge = self._post(
+            server,
+            {"action": "challenge", "public_key": grant["identity"]["public_key"]},
+            timeout,
+        )
         if "codex_mcp_v1" not in set(challenge.get("features", [])):
             raise RuntimeError("协作服务版本过旧，尚未支持受限 Codex MCP 身份")
         body = {
@@ -312,7 +422,14 @@ class AppBridge:
             "operation": "activate-device",
             "payload": {"device_name": socket.gethostname() + " · Codex MCP"},
         }
-        self._post(server, {"action": "activate-device", "envelope": sign_envelope(grant["identity"], body)}, timeout)
+        self._post(
+            server,
+            {
+                "action": "activate-device",
+                "envelope": sign_envelope(grant["identity"], body),
+            },
+            timeout,
+        )
 
     def _sync_mcp_delegate(self, servers=None):
         path = self._mcp_grant_path()
@@ -343,7 +460,7 @@ class AppBridge:
         selected = saved.get("path") if isinstance(saved, dict) else None
         if selected and Path(selected).is_file():
             return selected
-        from worker import cli_status
+        from agent_harness.worker import cli_status
 
         status = cli_status(self._runtime().root)
         if not status.get("found"):
@@ -411,7 +528,12 @@ class AppBridge:
             failed = []
             for server in list(dict.fromkeys(entry.get("servers", []))):
                 try:
-                    self._rpc("revoke-delegate", {"public_key": entry["public_key"]}, server=server, timeout=5)
+                    self._rpc(
+                        "revoke-delegate",
+                        {"public_key": entry["public_key"]},
+                        server=server,
+                        timeout=5,
+                    )
                 except (OSError, RuntimeError, PermissionError, ValueError) as exc:
                     failed.append(server)
                     warnings.append({"server": server, "error": str(exc)})
@@ -434,7 +556,10 @@ class AppBridge:
             if isinstance(entry, dict) and entry.get("public_key")
         }
         merged[public] = list(dict.fromkeys([*merged.get(public, []), *servers]))
-        write_json(path, {"entries": [{"public_key": key, "servers": value} for key, value in merged.items()]})
+        write_json(
+            path,
+            {"entries": [{"public_key": key, "servers": value} for key, value in merged.items()]},
+        )
         self._secure(path)
 
     def _mcp_status(self):
@@ -450,7 +575,11 @@ class AppBridge:
         pending = read_json(self._mcp_revocation_path(), {}) if self.identity else {}
         entries = pending.get("entries", []) if isinstance(pending, dict) else []
         pending_count = sum(len(entry.get("servers", [])) for entry in entries if isinstance(entry, dict))
-        result = {"enabled": bool(grant), "configured": configured, "pending_revocations": pending_count}
+        result = {
+            "enabled": bool(grant),
+            "configured": configured,
+            "pending_revocations": pending_count,
+        }
         if warning:
             result["warnings"] = [warning]
         if pending_count:
@@ -562,7 +691,11 @@ class AppBridge:
     def _activate_service(self, server, timeout=15):
         if server in self.activated_services:
             return
-        challenge = self._post(server, {"action": "challenge", "public_key": self.identity["public_key"]}, timeout)
+        challenge = self._post(
+            server,
+            {"action": "challenge", "public_key": self.identity["public_key"]},
+            timeout,
+        )
         envelope = sign_envelope(
             self.identity,
             {
@@ -577,7 +710,8 @@ class AppBridge:
 
     def _secure(self, path):
         if os.name == "nt":
-            import subprocess, csv
+            import subprocess
+            import csv
 
             no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             who = subprocess.check_output(
@@ -589,7 +723,14 @@ class AppBridge:
             )
             sid = next(csv.reader(who.splitlines()))[-1]
             proc = subprocess.run(
-                ["icacls.exe", str(path), "/inheritance:r", "/grant:r", "*" + sid + ":F", "*S-1-5-18:F"],
+                [
+                    "icacls.exe",
+                    str(path),
+                    "/inheritance:r",
+                    "/grant:r",
+                    "*" + sid + ":F",
+                    "*S-1-5-18:F",
+                ],
                 capture_output=True,
                 timeout=15,
                 creationflags=no_window,
@@ -661,7 +802,14 @@ class AppBridge:
         with lock(runtime.root / "executor.lock"):
             executor = read_json(path, {})
             network = dict(executor.get("network_env", {}))
-            for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "WS_PROXY", "WSS_PROXY"):
+            for key in (
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "NO_PROXY",
+                "WS_PROXY",
+                "WSS_PROXY",
+            ):
                 network.pop(key, None)
                 network.pop(key.lower(), None)
             if network:
@@ -699,7 +847,11 @@ class AppBridge:
         if not runtime.config_path.exists():
             pair = self._rpc("pair-local", {"node": self.profile["node"]}, server=server)
             if self.broker_proxy:
-                runtime.pair(server, pair.get("code", pair.get("pair_code")), broker_proxy=self.broker_proxy)
+                runtime.pair(
+                    server,
+                    pair.get("code", pair.get("pair_code")),
+                    broker_proxy=self.broker_proxy,
+                )
             else:
                 runtime.pair(server, pair.get("code", pair.get("pair_code")))
             config = read_json(runtime.config_path)
@@ -717,7 +869,8 @@ class AppBridge:
     def _owner(self, action, node, data, server=None):
         if action == "delete":
             challenge = self._post(
-                server or self.profile["server"], {"action": "challenge", "public_key": self.identity["public_key"]}
+                server or self.profile["server"],
+                {"action": "challenge", "public_key": self.identity["public_key"]},
             )
             if "employee_delete_v1" not in challenge.get("features", []):
                 raise ValueError("协作服务版本过旧，请先更新托管电脑和员工所在设备的应用，再删除员工。")
@@ -760,7 +913,8 @@ class AppBridge:
             return self._rpc("dashboard", server=server, timeout=5)
 
         with ThreadPoolExecutor(
-            max_workers=min(8, max(1, len(services))), thread_name_prefix="service-dashboard"
+            max_workers=min(8, max(1, len(services))),
+            thread_name_prefix="service-dashboard",
         ) as pool:
             futures = {pool.submit(fetch, server): server for server in services}
             for future in as_completed(futures):
@@ -804,7 +958,10 @@ class AppBridge:
             raise PermissionError("账户在协作服务上被拒绝：" + denied[0][1])
         if result is None:
             result = {
-                "user": {"id": self.identity["account_id"], "username": self.profile["username"]},
+                "user": {
+                    "id": self.identity["account_id"],
+                    "username": self.profile["username"],
+                },
                 "projects": [],
                 "employees": [],
                 "devices": [],
@@ -828,569 +985,23 @@ class AppBridge:
     def invoke(self, action, data=None):
         try:
             with self.guard:
-                return {"ok": True, "result": self._invoke(action, data or {})}
+                result = self.control_api.invoke(action, data)
+                self._sync_event_pump()
+                return {"ok": True, "result": result}
         except Exception as exc:
             logging.getLogger("agent_harness").exception("Application action failed: %s", action)
             return {"ok": False, "error": str(exc)}
 
     def _invoke(self, action, data):
-        if action == "app-services":
-            from app_lifecycle import Lifecycle
-
-            return Lifecycle(self.root, host_root=self._host_state_root()).status()
-        if action in {"app-exit", "app-background"}:
-            if action == "app-exit":
-                from app_lifecycle import Lifecycle
-
-                result = Lifecycle(self.root, host_root=self._host_state_root()).stop()
-            else:
-                result = {"background": True}
-            self.allow_window_close = True
-            if self.window:
-                threading.Timer(0.3, self.window.destroy).start()
-            return result
-        if action == "local-status":
-            return {
-                "profiles": [{"id": p["id"], "username": p["username"]} for p in self._profiles()],
-                "unlocked": bool(self.identity),
-                "server": (self.profile or {}).get("server", "http://127.0.0.1:8765"),
-            }
-        if action == "register":
-            identity = generate_identity()
-            server = self._server(data.get("server"))
-            store = None
-            if server == "http://127.0.0.1:8765":
-                store = self._local_host_state(public_key=identity["public_key"])
-                store.claim_local_host(
-                    identity["account_id"], "device-" + hashlib.sha256(identity["public_key"].encode()).hexdigest()[:24]
-                )
-            challenge = self._post(server, {"action": "challenge", "public_key": identity["public_key"]})
-            body = {
-                "domain": "harness-account-request-v1",
-                "nonce": challenge["nonce"],
-                "operation": "register",
-                "payload": {"name": data["username"], "device_name": socket.gethostname()},
-            }
-            self._post(server, {"action": "register", "envelope": sign_envelope(identity, body)})
-            self.identity = identity
-            self.profile = {
-                "id": secrets.token_hex(16),
-                "username": data["username"],
-                "server": server,
-                "node": "device-" + hashlib.sha256(identity["public_key"].encode()).hexdigest()[:24],
-                "local_host_enabled": server == "http://127.0.0.1:8765",
-            }
-            if store:
-                self.profile["local_host_state"] = str(store.root)
-            self._save_profile(data.get("password", ""))
-            self._enroll()
-            return {"created": True}
-        if action == "login":
-            profile = next((p for p in self._profiles() if p["id"] == data["profile"]), None)
-            if not profile:
-                raise ValueError("本地账户不存在")
-            identity = decrypt_identity(profile["encrypted"], data.get("password", ""))
-            self.identity = identity
-            self.profile = profile
-            if profile["server"] == "http://127.0.0.1:8765":
-                try:
-                    self._server(profile["server"])
-                except (OSError, RuntimeError, ValueError):
-                    self.identity = None
-                    self.profile = None
-                    raise
-            self.activated_services = {self.profile["server"]}
-            if (
-                getattr(sys, "frozen", False)
-                and self.profile["server"] == "http://127.0.0.1:8765"
-                and not self.profile.get("local_host_state")
-            ):
-                try:
-                    store = self._local_host_state()
-                    self.profile["local_host_state"] = str(store.root)
-                    self._save_public_profile()
-                except (OSError, RuntimeError, ValueError, PermissionError):
-                    pass
-            self._dashboard()
-            self._sync_service_links(force=True)
-            for server in self._attached_services():
-                try:
-                    self._activate_service(server)
-                    self._enroll() if server == self.profile["server"] else self._enroll(server)
-                except (OSError, RuntimeError, ValueError):
-                    pass
-            try:
-                self._retry_mcp_revocations()
-            except (OSError, RuntimeError, ValueError, PermissionError):
-                pass
-            if self._mcp_grant_path().is_file():
-                try:
-                    self._sync_mcp_delegate()
-                except (OSError, RuntimeError, ValueError, PermissionError):
-                    pass
-            return {"unlocked": True}
-        if action == "logout":
-            self.identity = None
-            self.profile = None
-            self.activated_services = set()
-            return {}
-        if action == "device-request":
-            identity = generate_identity()
-            server = self._server(data.get("server"))
-            name = data.get("name") or socket.gethostname()
-            result = self._post(
-                server, {"action": "request-device", "public_key": identity["public_key"], "name": name}
-            )
-            self.pending = {
-                "identity": identity,
-                "server": server,
-                "password": data.get("password", ""),
-                "request": result,
-            }
-            return result
-        if action == "device-claim":
-            if not self.pending:
-                raise ValueError("本机没有待关联请求")
-            pending = self.pending
-            r = self._post(pending["server"], dict(action="claim-device", **pending["request"]))
-            if r.get("status") != "approved":
-                return r
-            identity = pending["identity"]
-            identity.update(account_id=r["account_id"], chain=r["chain"])
-            from account_identity import verify_envelope
-
-            verify_envelope(sign_envelope(identity, {"claim": True}), expected_account=r["account_id"])
-            self.identity = identity
-            self.profile = {
-                "id": secrets.token_hex(16),
-                "username": r["username"],
-                "server": pending["server"],
-                "node": "device-" + hashlib.sha256(identity["public_key"].encode()).hexdigest()[:24],
-            }
-            self.activated_services = {self.profile["server"]}
-            self._save_profile(pending["password"])
-            self.pending = None
-            self._sync_service_links(force=True)
-            self._enroll()
-            return {"status": "approved"}
-        if not self.identity:
-            raise PermissionError("请先登录")
-        if action == "dashboard":
-            result = self._dashboard()
-            self.job_servers = {}
-            for d in result.get("devices", []):
-                d["local"] = d.get("node", d.get("id")) == self.profile["node"]
-            for employee in result.get("employees", []):
-                if not employee.get("pending"):
-                    employee["pending"] = None
-            result["pending_devices"] = list(self.inspected.values())
-            result["pending_approvals"] = []
-            for server in self._attached_services():
-                runtime = self._runtime(server)
-                for receipt in (runtime.root / "pull-receipts").glob("*.json"):
-                    value = read_json(receipt, {})
-                    if value.get("phase") == "waiting_local_approval":
-                        job = value["job"]
-                        backend = job["backend_project"]
-                        template_name = job["request"].get("template")
-                        template = read_json(runtime.root / "projects" / backend / "execution_templates.json", {}).get(
-                            template_name
-                        )
-                        project = read_json(runtime.root / "projects" / backend / "project.json", {})
-                        self.job_servers[job["id"]] = server
-                        result["pending_approvals"].append(
-                            {
-                                "job_id": job["id"],
-                                "template": template_name,
-                                "expected_template": template,
-                                "argv": (template or {}).get("argv"),
-                                "cwd": project.get("remote_path"),
-                                "node": self.profile["node"],
-                                "server": server,
-                            }
-                        )
-            return result
-        if action == "host-local-enable":
-            return self._enable_local_host()
-        if action == "device-inspect":
-            request = self._rpc("inspect-device", {"code": data["code"]})
-            request["public_key_fingerprint"] = hashlib.sha256(request["public_key"].encode()).hexdigest()[:16]
-            self.inspected[request["id"]] = request
-            return request
-        if action == "device-approve":
-            request = self.inspected.get(data["request_id"])
-            if not request:
-                raise ValueError("关联请求不存在")
-            chain = approve_certificate(self.identity, request["public_key"])
-            result = self._rpc("approve-device", {"request_id": request["id"], "chain": chain})
-            self.inspected.pop(request["id"], None)
-            return result
-        if action == "device-revoke":
-            server = data.get("server") or self.profile["server"]
-            if server not in self._services():
-                raise ValueError("未知服务")
-            return self._rpc("revoke-device", data, server=server)
-        if action == "employee-create":
-            server = data.get("server") or self.profile["server"]
-            if server not in self._services():
-                raise ValueError("请先加入该服务上的项目")
-            if data["node"] == self.profile["node"] and server not in self._attached_services():
-                raise ValueError("请先在设置中将本机 agent 接入该协作服务")
-            return self._owner(
-                "create", data["node"], {"id": "employee-" + secrets.token_hex(16), "name": data["name"]}, server
-            )
-        if action == "employee-delete":
-            employee = self._employee(data["id"])
-            return self._owner("delete", employee["node"], {"id": employee["id"]}, employee["server"])
-        if action == "employee-configure":
-            employee = self._employee(data["id"])
-            settings = {k: data[k] for k in ("model", "effort", "enabled", "stages", "timeout")}
-            settings["remote_path"] = data["path"]
-            return self._owner(
-                "configure",
-                employee["node"],
-                {"id": data["id"], "name": data["name"], "settings": settings},
-                employee["server"],
-            )
-        if action in {"employee-dispatch", "employee-withdraw"}:
-            employee = self._employee(data["id"])
-            project_server = self.project_servers.get(data["project"])
-            if project_server != employee["server"]:
-                raise ValueError("只能派遣已接入这个项目服务的员工")
-            return self._owner(
-                "dispatch" if action.endswith("dispatch") else "withdraw",
-                employee["node"],
-                {"id": data["id"], "project_id": data["project"]},
-                employee["server"],
-            )
-        if action == "browse-folders":
-            r = self._owner("browse", data["node"], {"path": data.get("path")}, data.get("server"))
-            return {"request_id": r["id"]}
-        if action == "command-status":
-            return self._rpc("command-status", data, server=self.command_servers.get(data["id"]))
-        if action == "choose-folder":
-            if not self.window:
-                raise RuntimeError("文件夹选择器尚未就绪")
-            import webview
-
-            chosen = self.window.create_file_dialog(webview.FileDialog.FOLDER)
-            return {"path": chosen[0] if chosen else ""}
-        if action == "attachment-save":
-            if not self.window:
-                raise RuntimeError("文件保存窗口尚未就绪")
-            from attachments import decode_file, safe_name
-            import webview
-
-            server = self.project_servers.get(data["project"], self.profile["server"])
-            file = self._rpc("attachment-get", data, server=server, timeout=45)
-            chosen = self.window.create_file_dialog(webview.FileDialog.SAVE, save_filename=safe_name(file["name"]))
-            if not chosen:
-                return {"saved": False}
-            path = Path(chosen if isinstance(chosen, str) else chosen[0])
-            path.write_bytes(decode_file(file["base64"]))
-            return {"saved": True, "name": path.name}
-        if action == "new-project":
-            server = data.get("server") or self.profile["server"]
-            if server == "http://127.0.0.1:8765" and not self.profile.get("local_host_enabled"):
-                self._enable_local_host()
-            if server not in self._services():
-                raise ValueError("请先加入该协作服务")
-            owned = next(
-                (item.get("hosted_by_me") for item in self._dashboard()["services"] if item["server"] == server), False
-            )
-            if not owned:
-                raise PermissionError("只能在自己账户名下的协作服务创建项目")
-            self._activate_service(server)
-            result = self._rpc("create-project", {"name": data["name"]}, server=server)
-            self.project_servers[result["id"]] = server
-            return dict(result, server=server)
-        if action == "join-project":
-            server = self._server(data.get("server") or self.profile["server"])
-            if server in self._services():
-                result = self._rpc("join-project", {"invite": data["invite"]}, server=server)
-            else:
-                challenge = self._post(server, {"action": "challenge", "public_key": self.identity["public_key"]})
-                payload = {
-                    "invite": data["invite"],
-                    "name": self.profile["username"],
-                    "device_name": socket.gethostname(),
-                }
-                envelope = sign_envelope(
-                    self.identity,
-                    {
-                        "domain": "harness-account-request-v1",
-                        "nonce": challenge["nonce"],
-                        "operation": "accept-project-invite",
-                        "payload": payload,
-                    },
-                )
-                result = self._post(server, {"action": "accept-project-invite", "envelope": envelope})
-                self.activated_services.add(server)
-                self.profile.setdefault("services", []).append(server)
-                self._save_public_profile()
-                self._sync_service_links(force=True)
-            if self._mcp_grant_path().is_file():
-                self._sync_mcp_delegate([server])
-            self.project_servers[result["project"]] = server
-            return dict(result, server=server)
-        if action in {
-            "project",
-            "invite",
-            "message",
-            "set-admin",
-            "conversation-read",
-            "memory-note-add",
-            "memory-note-delete",
-            "attachment-upload",
-            "attachment-get",
-        }:
-            project = data.get("project", data.get("id"))
-            server = self.project_servers.get(project, self.profile["server"])
-            payload = dict(data)
-            if action == "message":
-                payload.setdefault("client_message_id", str(uuid.uuid4()))
-            result = self._rpc(action, payload, server=server, timeout=45 if action.startswith("attachment-") else 15)
-            if action == "project":
-                result["server"] = server
-            if action == "invite":
-                from team_service import TeamService
-
-                entry = TeamService(self.root, server).status()
-                result["server"] = entry.get("url") if entry["state"] == "ready" else server
-            return result
-        if action == "receiver-attach":
-            server = self._server(data["server"])
-            if server not in self._services():
-                raise ValueError("请先接受这个服务的项目邀请")
-            self._activate_service(server)
-            self._rpc("dashboard", server=server)
-            self._enroll(server)
-            if server != self.profile["server"] and server not in self.profile.setdefault("attached_services", []):
-                self.profile["attached_services"].append(server)
-                self._save_public_profile()
-            return {"attached": True, "server": server}
-        if action == "receiver-start":
-            started = []
-            for server in self._attached_services():
-                self._activate_service(server)
-                self._enroll() if server == self.profile["server"] else self._enroll(server)
-                started.append(server)
-            return {"started": started}
-        if action == "receiver-stop":
-            for server in self._attached_services():
-                self._runtime(server).stop_and_wait()
-            return {"stopped": True}
-        if action == "approve-execution":
-            return self._runtime(self._execution_server(data["job_id"]))._control(
-                "action", dict(action="approve-execution", **data)
-            )
-        if action == "settings-get":
-            from team_service import TeamService
-
-            dashboard = self._dashboard()
-            local_owned = any(
-                s["server"] == "http://127.0.0.1:8765" and s["hosted_by_me"] for s in dashboard["services"]
-            )
-            enabled = bool(self.profile.get("local_host_enabled") or local_owned)
-            service = TeamService(self.root, self._hosting_server())
-            status = service.status()
-            if enabled:
-                self._publish_hosted_service(status)
-            return {
-                "server": self.profile["server"],
-                "services": dashboard["services"],
-                "can_host_locally": not enabled,
-                "local_host_enabled": enabled,
-                "background": self.profile.get("background", True),
-                "autostart": False,
-                "data_root": str(self.root),
-                "team_service": status,
-                "proxy": self._proxy_settings(),
-                "warm_idle_seconds": self._idle_seconds(),
-                "codex_mcp": self._mcp_status(),
-            }
-        if action == "codex-mcp-status":
-            return self._mcp_status()
-        if action == "codex-mcp-enable":
-            return self._enable_mcp()
-        if action == "codex-mcp-disable":
-            return self._disable_mcp()
-        if action == "codex-cli-status":
-            if not self.profile or not self.identity:
-                raise PermissionError("请先登录")
-            from worker import cli_status, codex_login_status
-
-            saved = read_json(self.root / "codex-cli.json", {})
-            if (
-                isinstance(saved, dict)
-                and isinstance(saved.get("path"), str)
-                and saved["path"]
-                and Path(saved["path"]).is_file()
-            ):
-                result = {
-                    "found": True,
-                    "configured": saved.get("mode") == "manual",
-                    "path": saved["path"],
-                    "version": saved.get("version", ""),
-                }
-                result.update(codex_login_status(saved["path"], self._runtime().root))
-                return result
-            if isinstance(saved, dict) and saved.get("mode") == "manual":
-                return {"found": False, "configured": True, "error": "设置的 Codex 路径已失效，请重新选择程序"}
-            if isinstance(saved, dict) and saved.get("mode") == "auto" and not saved.get("path"):
-                return {
-                    "found": False,
-                    "configured": False,
-                    "error": saved.get("error", "未找到可运行的 Codex CLI；请点击重新检测"),
-                }
-            result = cli_status(self._runtime().root)
-            if result.get("found"):
-                result.update(codex_login_status(result["path"], self._runtime().root))
-            write_json(
-                self.root / "codex-cli.json",
-                {
-                    "path": result.get("path", ""),
-                    "version": result.get("version", ""),
-                    "error": result.get("error", ""),
-                    "mode": "auto",
-                },
-            )
-            if result["found"]:
-                for receiver in (self.root / "receivers").glob("device-*"):
-                    if receiver.is_dir():
-                        self._sync_cli(DesktopRuntime(receiver), result["path"])
-            return result
-        if action == "codex-cli-redetect":
-            if not self.profile or not self.identity:
-                raise PermissionError("请先登录")
-            from worker import cli_status, codex_login_status
-
-            for receiver in (self.root / "receivers").glob("device-*"):
-                if receiver.is_dir():
-                    self._sync_cli(DesktopRuntime(receiver), "")
-            result = cli_status(self._runtime().root)
-            if result.get("found"):
-                result.update(codex_login_status(result["path"], self._runtime().root))
-            selected = result.get("path", "") if result.get("found") else ""
-            for receiver in (self.root / "receivers").glob("device-*"):
-                if receiver.is_dir():
-                    self._sync_cli(DesktopRuntime(receiver), selected)
-            write_json(
-                self.root / "codex-cli.json",
-                {
-                    "path": selected,
-                    "version": result.get("version", ""),
-                    "error": result.get("error", ""),
-                    "mode": "auto",
-                },
-            )
-            return result
-        if action == "codex-cli-choose":
-            if not self.profile or not self.identity:
-                raise PermissionError("请先登录")
-            if not self.window:
-                raise RuntimeError("文件选择器尚未就绪")
-            import webview
-
-            chosen = self.window.create_file_dialog(webview.FileDialog.OPEN)
-            return {"path": chosen[0] if chosen else ""}
-        if action == "codex-cli-save":
-            if not self.profile or not self.identity:
-                raise PermissionError("请先登录")
-            selected = data.get("path", "")
-            if not isinstance(selected, str):
-                raise ValueError("Codex 路径必须是文字")
-            selected = selected.strip()
-            if selected:
-                from worker import codex_version
-
-                if not Path(selected).is_absolute() or not Path(selected).is_file() or codex_version(selected) is None:
-                    raise ValueError("请选择能运行的 Codex CLI 程序（macOS: codex；Windows: codex.exe 或 codex.cmd）")
-            receivers = self.root / "receivers"
-            for path in receivers.glob("device-*"):
-                if path.is_dir() and path.resolve().parent == receivers.resolve():
-                    self._sync_cli(DesktopRuntime(path), selected)
-            from worker import cli_status, codex_login_status
-
-            result = cli_status(self._runtime().root)
-            if not selected and result.get("found"):
-                selected = result["path"]
-                for path in receivers.glob("device-*"):
-                    if path.is_dir() and path.resolve().parent == receivers.resolve():
-                        self._sync_cli(DesktopRuntime(path), selected)
-            if result.get("found"):
-                result.update(codex_login_status(result["path"], self._runtime().root))
-            write_json(
-                self.root / "codex-cli.json",
-                {
-                    "path": selected,
-                    "version": result.get("version", ""),
-                    "error": result.get("error", ""),
-                    "mode": "manual" if data.get("path", "").strip() else "auto",
-                },
-            )
-            return result
-        if action == "proxy-save":
-            if not self.profile or not self.identity:
-                raise PermissionError("请先登录")
-            setting = validate_local_proxy(data)
-            receivers = self.root / "receivers"
-            for path in receivers.glob("device-*"):
-                if path.is_dir() and path.resolve().parent == receivers.resolve():
-                    self._sync_proxy(DesktopRuntime(path), setting)
-            write_json(self.root / "codex-proxy.json", setting)
-            return setting
-        if action == "warm-idle-save":
-            if not self.profile or not self.identity:
-                raise PermissionError("请先登录")
-            seconds = data.get("seconds")
-            if isinstance(seconds, bool) or not isinstance(seconds, int) or not 30 <= seconds <= 3600:
-                raise ValueError("空闲保活时间须为 30 到 3600 秒")
-            receivers = self.root / "receivers"
-            for path in receivers.glob("device-*"):
-                if path.is_dir() and path.resolve().parent == receivers.resolve():
-                    self._sync_idle(DesktopRuntime(path), seconds)
-            write_json(self.root / "codex-warm-idle.json", {"seconds": seconds})
-            return {"seconds": seconds}
-        if action.startswith("team-service-"):
-            from team_service import TeamService
-
-            service = TeamService(self.root, self._hosting_server())
-            if action == "team-service-status":
-                status = service.status()
-                self._publish_hosted_service(status)
-                return status
-            if action == "team-service-create":
-                status = service.status()
-                if not status.get("can_manage"):
-                    raise PermissionError("请在托管协作服务的电脑创建入口。")
-                self._rpc("dashboard", server=self._hosting_server())
-                return service.create()
-            if action == "team-service-stop":
-                result = service.stop()
-                (self._host_state_root() / "team-service.json").unlink(missing_ok=True)
-                return result
-            if action == "team-service-authorize":
-                return service.authorize()
-            if action == "team-service-copy":
-                return service.copy()
-            if action == "team-service-test":
-                status = service.status()
-                if status["state"] not in {"ready", "remote"}:
-                    raise ValueError(status.get("message", "入口尚未配置"))
-                self._rpc("dashboard", server=status["url"])
-                return {"ok": True, "message": "连接成功：当前账户可通过此地址访问协作服务。"}
-        if action == "settings-save":
-            if "server" in data and data["server"].rstrip("/") != self.profile["server"]:
-                raise ValueError("首个服务地址不可在此修改。加入其他服务请使用项目邀请。")
-            if "background" in data:
-                self.profile["background"] = bool(data["background"])
-                write_json(self.root / "profiles" / (self.profile["id"] + ".json"), self.profile)
-            return {"saved": True}
+        for group in self.control_api.action_groups:
+            if action in group.actions:
+                return group.invoke(action, data)
         raise ValueError("未知应用操作")
 
     def close(self):
         # All service operations happen before the user-approved window close.
         # The native closed event must never block on network/process cleanup.
         self.identity = None
+        self.event_pump.stop()
         self.pending = None
+        self.pending_restore = None

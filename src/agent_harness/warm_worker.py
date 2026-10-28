@@ -1,13 +1,12 @@
 """Per-project local Codex app-server manager with an explicit receiver root."""
 
-# Keep startup imports stdlib-only.  The CLI binds the receiver root and puts it
-# first on sys.path before importing any receiver-local module.
+# Runtime code is imported from the immutable installed package. The explicit
+# receiver root below contains mutable state only and never becomes importable.
 import argparse
 import importlib
 import json
 import os
 import re
-import sys
 import threading
 import time
 import traceback
@@ -19,31 +18,34 @@ ROOT = None
 
 
 def configure_runtime(root):
-    global ROOT, AppServer, PublicReplyDecoder, lock, read_json, write_json
+    global ROOT, AppServer, PublicReplyDecoder, lock, read_json, rotate_log, write_json
     global worker, GROUP_RULES, cli_path, codex_login_status, effective_model
     global execution_timeout, executor_environment, job_dir, now, process_stamp, project_dir
     root = Path(root).resolve()
     if not root.is_dir():
         raise ValueError("Explicit receiver root is invalid")
-    # Import code from this immutable service bundle; root contains mutable
-    # receiver state and may belong to an older active runtime generation.
-    code_root = Path(__file__).resolve().parent
-    value = str(code_root)
-    sys.path[:] = [value] + [
-        item for item in sys.path if os.path.normcase(os.path.abspath(item or ".")) != os.path.normcase(value)
-    ]
-    # A fresh CLI process has no local modules yet. Tests may rebind a loaded
-    # module; worker.set_root still makes all state paths explicit.
-    worker = importlib.import_module("worker")
+    worker = importlib.import_module("agent_harness.worker")
     worker.set_root(root)
-    appserver = importlib.import_module("appserver_client")
-    common = importlib.import_module("common")
+    appserver = importlib.import_module("agent_harness.appserver_client")
+    common = importlib.import_module("agent_harness.common")
     AppServer, PublicReplyDecoder = appserver.AppServer, appserver.PublicReplyDecoder
-    lock, read_json, write_json = common.lock, common.read_json, common.write_json
+    lock, read_json, rotate_log, write_json = (
+        common.lock,
+        common.read_json,
+        common.rotate_log,
+        common.write_json,
+    )
     GROUP_RULES = worker.GROUP_RULES
     cli_path, codex_login_status = worker.cli_path, worker.codex_login_status
-    effective_model, execution_timeout = worker.effective_model, worker.execution_timeout
-    executor_environment, job_dir, now = worker.executor_environment, worker.job_dir, worker.now
+    effective_model, execution_timeout = (
+        worker.effective_model,
+        worker.execution_timeout,
+    )
+    executor_environment, job_dir, now = (
+        worker.executor_environment,
+        worker.job_dir,
+        worker.now,
+    )
     process_stamp, project_dir = worker.process_stamp, worker.project_dir
     ROOT = root
     return root
@@ -51,7 +53,12 @@ def configure_runtime(root):
 
 def response_schema():
     def obj(properties):
-        return {"type": "object", "additionalProperties": False, "required": list(properties), "properties": properties}
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(properties),
+            "properties": properties,
+        }
 
     def array(properties):
         return {"type": "array", "items": obj(properties)}
@@ -64,7 +71,15 @@ def response_schema():
             "tasks": array(
                 {
                     key: {"type": "string"}
-                    for key in ("agent", "title", "instructions", "stage", "allowed_files", "acceptance", "validation")
+                    for key in (
+                        "agent",
+                        "title",
+                        "instructions",
+                        "stage",
+                        "allowed_files",
+                        "acceptance",
+                        "validation",
+                    )
                 }
             ),
             "executions": array({"template": {"type": "string"}}),
@@ -109,7 +124,11 @@ def mcp_names(server):
 
 class WarmManager:
     def __init__(self, project, launch_token=None, generation=None):
-        self.project, self.launch_token, self.generation = project, launch_token, generation
+        self.project, self.launch_token, self.generation = (
+            project,
+            launch_token,
+            generation,
+        )
         self.directory = project_dir(project)
         self.server = self.stage = self.stderr = None
         # A thread stays attached to one app-server for that process lifetime.
@@ -159,7 +178,12 @@ class WarmManager:
     def reject_registration(self, reason):
         write_json(
             self.directory / "startup-error.json",
-            {"token": self.launch_token, "generation": self.generation, "error": str(reason)[:2000], "at": time.time()},
+            {
+                "token": self.launch_token,
+                "generation": self.generation,
+                "error": str(reason)[:2000],
+                "at": time.time(),
+            },
         )
         raise RuntimeError(reason)
 
@@ -167,7 +191,9 @@ class WarmManager:
         if self.server and self.stage == stage and self.server.process.poll() is None:
             return self.server
         self.close_server()
-        self.stderr = (self.directory / "app-server-stderr.log").open("ab")
+        stderr_path = self.directory / "app-server-stderr.log"
+        rotate_log(stderr_path)
+        self.stderr = stderr_path.open("ab")
         command = server_command(stage)
         probe = AppServer(command, cwd, local_env(), self.stderr)
         try:
@@ -255,7 +281,8 @@ class WarmManager:
         thread_id, replaced_thread = self.attach_thread(server, settings, existing)
         with lock(ROOT / "registry.lock"):
             write_json(
-                self.directory / config.get("session_file", "session.json"), {"thread_id": thread_id, "last_job": job}
+                self.directory / config.get("session_file", "session.json"),
+                {"thread_id": thread_id, "last_job": job},
             )
         prompt = (
             GROUP_RULES
@@ -316,11 +343,20 @@ class WarmManager:
                 interrupted = True
                 interrupt_deadline = time.monotonic() + grace
                 try:
-                    server.call("turn/interrupt", {"threadId": thread_id, "turnId": turn_id}, min(grace, 10))
+                    server.call(
+                        "turn/interrupt",
+                        {"threadId": thread_id, "turnId": turn_id},
+                        min(grace, 10),
+                    )
                 except (RuntimeError, TimeoutError):
                     pass
             if interrupted and time.monotonic() >= interrupt_deadline:
-                self.update_state(path, status="cancelled" if cancelled else "timed_out", finished_at=now(), error=None)
+                self.update_state(
+                    path,
+                    status="cancelled" if cancelled else "timed_out",
+                    finished_at=now(),
+                    error=None,
+                )
                 self.close_server()
                 return
             try:
@@ -330,7 +366,12 @@ class WarmManager:
             except RuntimeError:
                 if not interrupted:
                     raise
-                self.update_state(path, status="cancelled" if cancelled else "timed_out", finished_at=now(), error=None)
+                self.update_state(
+                    path,
+                    status="cancelled" if cancelled else "timed_out",
+                    finished_at=now(),
+                    error=None,
+                )
                 self.close_server()
                 return
             if "id" in event:
@@ -433,7 +474,12 @@ class WarmManager:
                         try:
                             self.run_job(job)
                         except Exception as exc:
-                            self.update_state(job_dir(job), status="failed", error=str(exc)[:2000], finished_at=now())
+                            self.update_state(
+                                job_dir(job),
+                                status="failed",
+                                error=str(exc)[:2000],
+                                finished_at=now(),
+                            )
                             self.close_server()
                         finally:
                             with lock(ROOT / "registry.lock"):
@@ -465,7 +511,7 @@ def main(argv=None):
     parser.add_argument("--generation", required=True)
     args = parser.parse_args(argv)
     configure_runtime(args.root)
-    from common import identifier
+    from agent_harness.common import identifier
 
     WarmManager(identifier(args.project), args.token, args.generation).loop()
 

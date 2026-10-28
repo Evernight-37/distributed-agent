@@ -3,12 +3,13 @@
 import argparse
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 import threading
 import time
 from pathlib import Path
-from desktop_runtime import web_assets
-from app_bridge import AppBridge
+from agent_harness.desktop_runtime import web_assets
+from agent_harness.app_bridge import AppBridge
 
 
 def request_close_dialog(window, bridge):
@@ -49,7 +50,9 @@ def main():
 
     bridge = AppBridge(args.data)
     diagnostic_path = bridge.root / "app-errors.log"
-    diagnostic_handler = logging.FileHandler(diagnostic_path, encoding="utf-8")
+    diagnostic_handler = RotatingFileHandler(
+        diagnostic_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
     if sys.platform != "win32":
         diagnostic_path.chmod(0o600)
     diagnostic_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
@@ -124,7 +127,7 @@ def main():
                             break
                         time.sleep(0.1)
                     result["dashboard_heading"] = heading
-                from app_lifecycle import Lifecycle
+                from agent_harness.app_lifecycle import Lifecycle
 
                 Lifecycle(bridge.root, host_root=bridge._host_state_root()).stop()
             Path(args.smoke_report).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")

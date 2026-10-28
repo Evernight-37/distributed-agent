@@ -11,10 +11,10 @@ from pathlib import Path
 from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import desktop_runtime
-import desktop_service
-from common import read_json, write_json
-from service_install import runtime_python
+from agent_harness import desktop_runtime
+from agent_harness import desktop_service
+from agent_harness.common import read_json, write_json
+from agent_harness.service_install import runtime_python
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +22,8 @@ PACKAGED_APP = Path(os.environ.get("AGENT_HARNESS_TEST_BUNDLE", PROJECT_ROOT / "
 
 
 class FakeConnector:
+    waits = []
+
     def __init__(self, config_path, transport=None, executor=None):
         self.root = Path(config_path).parent
         self.config = {"node": "test-node", "server": "http://127.0.0.1:1"}
@@ -29,7 +31,8 @@ class FakeConnector:
         if executor is not None:
             self.executor = executor
 
-    def cycle(self):
+    def cycle(self, wait_seconds=10):
+        self.waits.append(wait_seconds)
         write_json(self.root / "broker-projects.json", [])
 
     def bindings(self):
@@ -45,6 +48,7 @@ class FakeConnector:
 
 class DesktopServiceTests(unittest.TestCase):
     def setUp(self):
+        FakeConnector.waits = []
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         write_json(
@@ -75,7 +79,13 @@ class DesktopServiceTests(unittest.TestCase):
 
     def tearDown(self):
         try:
-            self.request("POST", "/desktop/stop", {}, key=self.info["key"], origin=self.info["url"])
+            self.request(
+                "POST",
+                "/desktop/stop",
+                {},
+                key=self.info["key"],
+                origin=self.info["url"],
+            )
         except Exception:
             pass
         self.thread.join(timeout=8)
@@ -92,7 +102,7 @@ class DesktopServiceTests(unittest.TestCase):
             except PermissionError:
                 time.sleep(0.05)
 
-    def request(self, method, path, data=None, key=None, origin=None, cookie=None):
+    def request(self, method, path, data=None, key=None, origin=None):
         conn = http.client.HTTPConnection(self.host, self.port, timeout=3)
         headers = {"Host": f"127.0.0.1:{self.port}"}
         if key:
@@ -104,8 +114,6 @@ class DesktopServiceTests(unittest.TestCase):
             body = json.dumps(data).encode()
             headers["Content-Type"] = "application/json"
             headers["Content-Length"] = str(len(body))
-        if cookie:
-            headers["Cookie"] = cookie
         conn.request(method, path, body=body, headers=headers)
         response = conn.getresponse()
         payload = response.read()
@@ -132,29 +140,30 @@ class DesktopServiceTests(unittest.TestCase):
         self.assertNotIn("key", first)
         self.assertNotIn("device_token", first)
 
-    def test_desktop_auth_browser_ticket_is_one_time_and_rejects_direct_browser(self):
-        runtime = desktop_runtime.DesktopRuntime(self.root)
-        ticket = runtime._control("browser", {})["ticket"]
-        status, _, headers = self.request("GET", "/launch/" + ticket)
-        self.assertEqual(status, 302)
-        self.assertTrue(headers["Set-Cookie"].startswith("harness_local="))
-        self.assertEqual(self.request("GET", "/launch/" + ticket)[0], 403)
-        cookie = headers["Set-Cookie"].split(";", 1)[0]
-        self.assertEqual(self.request("GET", "/api/state", cookie=cookie)[0], 200)
-        self.assertEqual(self.request("GET", "/", cookie=None)[0], 403)
-        self.assertEqual(self.request("GET", "/api/state")[0], 403)
-        self.assertEqual(self.request("POST", "/api/action", {"action": "binding"}, origin=self.info["url"])[0], 403)
-        self.assertEqual(self.request("GET", "/desktop/status")[0], 403)
-
     def test_stop_eventually_reports_not_running(self):
         runtime = desktop_runtime.DesktopRuntime(self.root)
         self.assertTrue(runtime.status()["running"])
         runtime.stop()
         self.thread.join(timeout=5)
         self.assertFalse(self.thread.is_alive())
+        self.assertTrue(FakeConnector.waits)
+        self.assertTrue(all(wait == 1 for wait in FakeConnector.waits))
 
 
 class DesktopRuntimeContractTests(unittest.TestCase):
+    def test_team_service_probe_uses_public_healthz_not_retired_session_api(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"ok":true,"service":"agent-harness-hub"}'
+        opener = mock.MagicMock()
+        opener.open.return_value = response
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch("agent_harness.desktop_runtime.urllib.request.build_opener", return_value=opener),
+        ):
+            result = desktop_runtime.DesktopRuntime(Path(directory)).start_workbench(open_browser=False)
+        self.assertEqual(result, "http://127.0.0.1:8765")
+        self.assertEqual(opener.open.call_args.args[0], "http://127.0.0.1:8765/healthz")
+
     def test_source_snapshot_contains_release_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             snapshot = desktop_runtime.DesktopRuntime(Path(directory))._service_snapshot()
@@ -170,7 +179,10 @@ class DesktopRuntimeContractTests(unittest.TestCase):
             project.mkdir(parents=True)
             job.mkdir(parents=True)
             write_json(project / "active.json", None)
-            write_json(job / "state.json", {"job": "orphan", "project": "p", "status": "starting"})
+            write_json(
+                job / "state.json",
+                {"job": "orphan", "project": "p", "status": "starting"},
+            )
 
             desktop_runtime.reconcile_orphaned_turns(root)
 
@@ -179,14 +191,28 @@ class DesktopRuntimeContractTests(unittest.TestCase):
             self.assertIn("No active worker owns", state["error"])
 
     def test_active_worker_restart_uses_immutable_snapshot_without_deploy(self):
-        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as source_dir:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory() as source_dir,
+        ):
             root, source = Path(directory), Path(source_dir)
             (root / "projects" / "p").mkdir(parents=True)
-            write_json(root / "pull-config.json", {"node": "n", "server": "https://broker.example"})
-            write_json(root / "projects" / "p" / "active.json", {"job": "j", "pid": 1, "stamp": "s"})
+            write_json(
+                root / "pull-config.json",
+                {"node": "n", "server": "https://broker.example"},
+            )
+            write_json(
+                root / "projects" / "p" / "active.json",
+                {"job": "j", "pid": 1, "stamp": "s"},
+            )
             # An older active generation keeps its receiver-root files intact.
             (root / "worker.py").write_text("old", encoding="utf-8")
-            for name in ("desktop_service.py", "worker.py", "warm_worker.py", "VERSION"):
+            for name in (
+                "desktop_service.py",
+                "worker.py",
+                "warm_worker.py",
+                "VERSION",
+            ):
                 (source / name).write_text("new-" + name, encoding="utf-8")
             runtime = desktop_runtime.DesktopRuntime(root)
             statuses = iter(({"running": False}, {"running": True}))
@@ -211,22 +237,38 @@ class DesktopRuntimeContractTests(unittest.TestCase):
         sid = "S-1-5-21-123-456-789-1001"
         for encoding in ("gbk", "utf-8"):
             output = ('"电脑\\中文用户","' + sid + '"\r\n').encode(encoding)
-            with self.subTest(encoding=encoding), mock.patch("subprocess.check_output", return_value=output) as command:
+            with (
+                self.subTest(encoding=encoding),
+                mock.patch("subprocess.check_output", return_value=output) as command,
+            ):
                 self.assertEqual(desktop_service.windows_user_sid(), sid)
                 self.assertNotIn("text", command.call_args.kwargs)
                 self.assertNotIn("encoding", command.call_args.kwargs)
 
     def test_windows_sid_rejects_missing_or_invalid_identity(self):
-        for output in (b"", b'"user","not-a-sid"\r\n', b'"S-1-5-21-1001","invalid"\r\n'):
-            with self.subTest(output=output), mock.patch("subprocess.check_output", return_value=output):
+        for output in (
+            b"",
+            b'"user","not-a-sid"\r\n',
+            b'"S-1-5-21-1001","invalid"\r\n',
+        ):
+            with (
+                self.subTest(output=output),
+                mock.patch("subprocess.check_output", return_value=output),
+            ):
                 with self.assertRaises(RuntimeError):
                     desktop_service.windows_user_sid()
 
     def test_status_and_control_do_not_expose_service_key(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            write_json(root / "pull-config.json", {"node": "n", "server": "https://broker.example"})
-            write_json(root / "desktop-service.json", {"url": "http://127.0.0.1:1", "key": "secret", "instance": "i"})
+            write_json(
+                root / "pull-config.json",
+                {"node": "n", "server": "https://broker.example"},
+            )
+            write_json(
+                root / "desktop-service.json",
+                {"url": "http://127.0.0.1:1", "key": "secret", "instance": "i"},
+            )
             runtime = desktop_runtime.DesktopRuntime(root)
             with mock.patch.object(runtime, "_control", return_value={"running": False}):
                 value = runtime.status()
@@ -237,7 +279,8 @@ class DesktopRuntimeContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             write_json(
-                root / "desktop-service.json", {"url": "https://outside.example", "key": "private", "instance": "i"}
+                root / "desktop-service.json",
+                {"url": "https://outside.example", "key": "private", "instance": "i"},
             )
             with self.assertRaises(RuntimeError):
                 desktop_runtime.DesktopRuntime(root)._control("status")
@@ -248,7 +291,7 @@ class PackagedReceiverTests(unittest.TestCase):
         (PACKAGED_APP / "runtime" / "python.exe").exists() or (PACKAGED_APP / "runtime" / "bin" / "python3").exists(),
         "Build the portable app first",
     )
-    def test_sidecar_pair_register_bind_duplicate_start_and_stop(self):
+    def test_sidecar_pair_duplicate_start_and_stop(self):
         class Broker(BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
@@ -258,7 +301,11 @@ class PackagedReceiverTests(unittest.TestCase):
                 result = (
                     {"node": "portable-test"}
                     if self.path.endswith("/enroll")
-                    else {"jobs": [], "projects": [{"id": "project-test", "name": "Research"}], "cancellations": []}
+                    else {
+                        "jobs": [],
+                        "projects": [{"id": "project-test", "name": "Research"}],
+                        "cancellations": [],
+                    }
                 )
                 body = json.dumps({"ok": True, "result": result}).encode()
                 self.send_response(200)
@@ -278,11 +325,18 @@ class PackagedReceiverTests(unittest.TestCase):
                 "python_command",
                 return_value=str(runtime_python(bundle)),
             ),
-            mock.patch.object(desktop_runtime, "assets", return_value=bundle / "client"),
+            mock.patch.object(
+                desktop_runtime,
+                "assets",
+                return_value=bundle / "client" / "agent_harness",
+            ),
         ):
             root = Path(directory)
             runtime = desktop_runtime.DesktopRuntime(root / "中文用户数据")
-            runtime.pair(f"http://127.0.0.1:{broker.server_address[1]}", "synthetic-one-time-code")
+            runtime.pair(
+                f"http://127.0.0.1:{broker.server_address[1]}",
+                "synthetic-one-time-code",
+            )
             with self.assertRaises(ValueError):
                 runtime.pair("http://127.0.0.1:1", "again")
             try:
@@ -293,25 +347,9 @@ class PackagedReceiverTests(unittest.TestCase):
                     instance,
                     json.loads((runtime.root / "desktop-service.json").read_text(encoding="utf-8"))["instance"],
                 )
-                workdir = root / "project"
-                workdir.mkdir()
-                runtime.register_project("local-test", str(workdir), "owner-model", "high")
-                runtime.save_binding(
-                    {
-                        "project_id": "project-test",
-                        "backend_project": "local-test",
-                        "name": "Test",
-                        "model": "owner-model",
-                        "effort": "high",
-                        "timeout": 120,
-                        "enabled": False,
-                        "stages": ["discuss"],
-                    }
-                )
-                state = runtime.fetch_state()
-                self.assertFalse(state["bindings"][0]["enabled"])
-                self.assertEqual(state["bindings"][0]["model"], "owner-model")
-                self.assertNotIn("device_token", json.dumps(state))
+                status = runtime.status()
+                self.assertTrue(status["running"])
+                self.assertNotIn("device_token", json.dumps(status))
             finally:
                 runtime.stop_and_wait(timeout=20)
                 self.assertFalse(runtime.status()["running"])

@@ -4,11 +4,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app_bridge import AppBridge
-from appserver_client import PublicReplyDecoder, application_version
-from collaboration_store import Store
-from coordinator import Coordinator
-from panel import action as panel_action
+from agent_harness.app_bridge import AppBridge
+from agent_harness.appserver_client import PublicReplyDecoder, application_version
+from agent_harness.collaboration_store import Store
+from agent_harness.coordinator import Coordinator
+from tests.helpers import provision_account
 
 
 class Backend:
@@ -28,7 +28,7 @@ class StreamingTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.tmp.name))
-        self.owner = self.store.signup("owner", "password", bootstrap=True)["id"]
+        self.owner = provision_account(self.store, "owner", bootstrap=True)["id"]
         self.project = self.store.project_create(self.owner, "project")["id"]
         self.backend = Backend()
         with self.store.connect() as db:
@@ -36,7 +36,17 @@ class StreamingTests(unittest.TestCase):
             for agent, name in (("admin", "Admin"), ("peer", "Peer")):
                 db.execute(
                     "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout,enabled) VALUES(?,?,?,?,?,?,?,?,?,1)",
-                    (agent, self.project, name, self.owner, "node", agent, "model", "low", 30),
+                    (
+                        agent,
+                        self.project,
+                        name,
+                        self.owner,
+                        "node",
+                        agent,
+                        "model",
+                        "low",
+                        30,
+                    ),
                 )
         self.store.set_admin(self.owner, self.project, "admin")
         self.coordinator = Coordinator(self.store, self.backend)
@@ -102,10 +112,21 @@ class StreamingTests(unittest.TestCase):
         view = self.store.project_view(self.owner, self.project)
         self.assertEqual([m["body"] for m in view["messages"]], ["first", "partial", "second"])
         draft_id = view["messages"][1]["id"]
-        self.assertEqual([m["body"] for m in self.store.visible_messages("peer")], ["first", "second"])
+        self.assertEqual(
+            [m["body"] for m in self.store.visible_messages("peer")],
+            ["first", "second"],
+        )
         self.backend.result = {
             "status": "needs_review",
-            "report": json.dumps({"reply": "finished", "done": True, "messages": [], "tasks": [], "executions": []}),
+            "report": json.dumps(
+                {
+                    "reply": "finished",
+                    "done": True,
+                    "messages": [],
+                    "tasks": [],
+                    "executions": [],
+                }
+            ),
         }
         self.coordinator.collect()
         view = self.store.project_view(self.owner, self.project)
@@ -118,10 +139,21 @@ class StreamingTests(unittest.TestCase):
         self.coordinator.dispatch()
         self.backend.result = {
             "status": "needs_review",
-            "report": json.dumps({"reply": "", "done": True, "messages": [], "tasks": [], "executions": []}),
+            "report": json.dumps(
+                {
+                    "reply": "",
+                    "done": True,
+                    "messages": [],
+                    "tasks": [],
+                    "executions": [],
+                }
+            ),
         }
         self.coordinator.collect()
-        self.assertEqual([m["body"] for m in self.store.project_view(self.owner, self.project)["messages"]], ["notice"])
+        self.assertEqual(
+            [m["body"] for m in self.store.project_view(self.owner, self.project)["messages"]],
+            ["notice"],
+        )
         self.coordinator.wake_messages()
         self.assertEqual(len(self.backend.submissions), 1)
 
@@ -147,28 +179,52 @@ class StreamingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.message(self.owner, self.project, "bad", mention_agent_id="missing")
         with self.assertRaises(ValueError):
-            self.store.message(self.owner, self.project, "bad", recipient="admin", mention_agent_id="peer")
+            self.store.message(
+                self.owner,
+                self.project,
+                "bad",
+                recipient="admin",
+                mention_agent_id="peer",
+            )
 
     def test_other_project_member_can_call_an_agent_in_the_public_group(self):
-        other = self.store.signup(
-            "other-member", "password", invite=self.store.invite(self.owner, self.project)["invite"]
+        other = provision_account(
+            self.store,
+            "other-member",
+            invite=self.store.invite(self.owner, self.project)["invite"],
         )["id"]
-        self.store.message(other, self.project, "Please answer my public question", mention_agent_id="peer")
+        self.store.message(
+            other,
+            self.project,
+            "Please answer my public question",
+            mention_agent_id="peer",
+        )
         self.coordinator.wake_messages()
         with self.store.connect() as db:
-            self.assertEqual([r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")], ["peer"])
+            self.assertEqual(
+                [r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")],
+                ["peer"],
+            )
         self.coordinator.dispatch()
         context = self.backend.submissions[0]
-        self.assertIn("Please answer my public question", [m["body"] for m in context["visible_messages"]])
+        self.assertIn(
+            "Please answer my public question",
+            [m["body"] for m in context["visible_messages"]],
+        )
 
     def test_other_member_public_message_wakes_the_administrator(self):
-        other = self.store.signup(
-            "other-member", "password", invite=self.store.invite(self.owner, self.project)["invite"]
+        other = provision_account(
+            self.store,
+            "other-member",
+            invite=self.store.invite(self.owner, self.project)["invite"],
         )["id"]
         self.store.message(other, self.project, "A public question for the administrator")
         self.coordinator.wake_messages()
         with self.store.connect() as db:
-            self.assertEqual([r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")], ["admin"])
+            self.assertEqual(
+                [r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")],
+                ["admin"],
+            )
 
     def test_mentions_and_group_chat_create_independent_turns(self):
         self.store.message(self.owner, self.project, "general update")
@@ -176,7 +232,10 @@ class StreamingTests(unittest.TestCase):
         self.coordinator.wake_messages()
         self.coordinator.wake_messages()
         with self.store.connect() as db:
-            self.assertEqual([r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")], ["peer", "admin"])
+            self.assertEqual(
+                [r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")],
+                ["peer", "admin"],
+            )
 
     def test_plain_at_text_is_not_a_mention(self):
         self.store.message(self.owner, self.project, "@Peer please review")
@@ -185,16 +244,19 @@ class StreamingTests(unittest.TestCase):
             tasks = [r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")]
         self.assertEqual(tasks, ["admin"])
 
-    def test_panel_action_preserves_explicit_mention(self):
-        panel_action(
-            self.store,
-            {"id": self.owner},
-            {"action": "message", "project": self.project, "body": "Please review", "mention_agent_id": "peer"},
-            self.backend,
+    def test_signed_message_path_preserves_explicit_mention(self):
+        self.store.message(
+            self.owner,
+            self.project,
+            "Please review",
+            mention_agent_id="peer",
         )
         self.coordinator.wake_messages()
         with self.store.connect() as db:
-            self.assertEqual([r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")], ["peer"])
+            self.assertEqual(
+                [r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")],
+                ["peer"],
+            )
 
     def test_desktop_refuses_message_when_team_service_is_too_old(self):
         bridge = AppBridge(Path(self.tmp.name) / "app")
@@ -207,10 +269,20 @@ class StreamingTests(unittest.TestCase):
 
     def test_public_reply_decoder_never_emits_private_fields(self):
         decoder = PublicReplyDecoder()
-        pieces = ['{"reply":"hello', ' world","messages":[{"body":"SECRET"}],', '"tasks":[]}']
-        self.assertEqual([decoder.feed(part) for part in pieces], ["hello", "hello world", "hello world"])
+        pieces = [
+            '{"reply":"hello',
+            ' world","messages":[{"body":"SECRET"}],',
+            '"tasks":[]}',
+        ]
+        self.assertEqual(
+            [decoder.feed(part) for part in pieces],
+            ["hello", "hello world", "hello world"],
+        )
         self.assertNotIn("SECRET", decoder.feed(""))
-        self.assertEqual(PublicReplyDecoder().feed('{"messages":[{"body":"SECRET"}],"reply":"late"}'), "")
+        self.assertEqual(
+            PublicReplyDecoder().feed('{"messages":[{"body":"SECRET"}],"reply":"late"}'),
+            "",
+        )
 
 
 if __name__ == "__main__":

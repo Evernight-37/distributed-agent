@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from app_bridge import AppBridge
-from desktop_service import windows_user_sid
-from host_control import protect
+from agent_harness.app_bridge import AppBridge
+from agent_harness.desktop_service import windows_user_sid
+from agent_harness.host_control import protect
 
 
 @unittest.skipUnless(os.name == "nt", "Windows console creation flags")
@@ -30,7 +30,10 @@ class NoConsoleTests(unittest.TestCase):
             self.assertEqual(windows_user_sid(), "S-1-5-21-123")
         self.assertEqual(who.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
         with (
-            patch("desktop_service.windows_user_sid", return_value="S-1-5-21-123"),
+            patch(
+                "agent_harness.desktop_service.windows_user_sid",
+                return_value="S-1-5-21-123",
+            ),
             patch("subprocess.run", return_value=Mock(returncode=0)) as acl,
         ):
             protect(Path("example.json"))

@@ -10,7 +10,7 @@ import json
 import sys
 from typing import Any, TextIO
 
-from release_info import version as server_version
+from agent_harness.release_info import version as server_version
 
 
 class JsonRpcError(Exception):

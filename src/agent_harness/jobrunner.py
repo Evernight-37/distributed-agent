@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common import identifier, lock, read_json, tail, write_json
+from agent_harness.common import identifier, lock, read_json, tail, write_json
 
 TERMINAL = {"completed", "failed", "cancelled", "timed_out", "interrupted"}
 
@@ -37,7 +37,10 @@ def _stamp(pid):
         try:
             os.kill(pid, 0)
             result = subprocess.run(
-                ["/bin/ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True, timeout=5
+                ["/bin/ps", "-p", str(pid), "-o", "lstart="],
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             return result.stdout.strip() if result.returncode == 0 else None
         except (OSError, subprocess.TimeoutExpired):
@@ -55,7 +58,10 @@ def _stamp(pid):
     kernel.OpenProcess.restype = wintypes.HANDLE
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
-    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     handle = kernel.OpenProcess(0x1000, False, int(pid))
     if not handle:
@@ -102,7 +108,15 @@ def _launch(root, execution):
         out = (execution / "supervisor.log").open("ab")
         try:
             child = subprocess.Popen(
-                [sys.executable, "-X", "utf8", str(Path(__file__).resolve()), "run", str(root), execution.name],
+                [
+                    sys.executable,
+                    "-X",
+                    "utf8",
+                    str(Path(__file__).resolve()),
+                    "run",
+                    str(root),
+                    execution.name,
+                ],
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=out,
@@ -113,7 +127,15 @@ def _launch(root, execution):
             out.close()
         return child.pid
     command = subprocess.list2cmdline(
-        [sys.executable, "-X", "utf8", str(Path(__file__).resolve()), "run", str(root), execution.name]
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            str(Path(__file__).resolve()),
+            "run",
+            str(root),
+            execution.name,
+        ]
     )
     script = (
         "$ErrorActionPreference='Stop';$s=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0};$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='"
@@ -140,7 +162,11 @@ def _launch(root, execution):
 
 def _kill(pid):
     if os.name == "nt":
-        subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30)
+        subprocess.run(
+            ["taskkill.exe", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            timeout=30,
+        )
     else:
         os.killpg(pid, signal.SIGKILL)
 
@@ -160,7 +186,11 @@ def _reconcile(root, state):
                     return state
             except ValueError:
                 pass
-        state.update(status="interrupted", finished_at=now(), error="Supervisor launch handshake failed")
+        state.update(
+            status="interrupted",
+            finished_at=now(),
+            error="Supervisor launch handshake failed",
+        )
         write_json(_execution(root, state["execution"]) / "state.json", state)
         return state
     expected = state.get("supervisor_stamp") or state.get("stamp")
@@ -176,7 +206,10 @@ def _run(root, execution_id):
     state = read_json(path / "state.json", {"execution": execution_id})
     proc = None
     try:
-        with (path / "stdout.log").open("ab") as output, (path / "stderr.log").open("ab") as error:
+        with (
+            (path / "stdout.log").open("ab") as output,
+            (path / "stderr.log").open("ab") as error,
+        ):
             proc = subprocess.Popen(
                 request["argv"],
                 cwd=request["cwd"],
@@ -258,7 +291,12 @@ def rpc(root, request):
             write_json(path / "request.json", request_data)
             write_json(
                 path / "state.json",
-                {"execution": execution_id, "project": project["name"], "status": "starting", "created_at": now()},
+                {
+                    "execution": execution_id,
+                    "project": project["name"],
+                    "status": "starting",
+                    "created_at": now(),
+                },
             )
             try:
                 pid = _launch(root, path)
@@ -279,7 +317,11 @@ def rpc(root, request):
             state["supervisor_pid"] = pid
             state["supervisor_stamp"] = stamp
             if stamp is None:
-                state.update(status="failed", error="Supervisor did not survive launch", finished_at=now())
+                state.update(
+                    status="failed",
+                    error="Supervisor did not survive launch",
+                    finished_at=now(),
+                )
                 write_json(path / "state.json", state)
                 raise RuntimeError(state["error"])
             write_json(path / "state.json", state)

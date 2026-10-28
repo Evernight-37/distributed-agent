@@ -1,15 +1,16 @@
-# Linux 无界面接收端（1.1.1）
+# Linux 无界面接收端（2.0.0）
 
 Linux 接收端把服务器作为你账户名下的一台执行机器。Windows 或 macOS 控制台可以在这台机器上添加员工、选择服务器项目目录并派入项目；群聊呼叫员工后，它会启动独立 Codex 会话并回传结果。接收端不会接管 VS Code 中已经打开的 Codex 对话。
 
-需要 Python 3.10+、Python 的 `venv` 组件、可运行且已登录的 Codex CLI，以及到协作服务的网络连接。服务器项目文件始终留在服务器。普通用户即可安装，不修改系统 Python，也不需要 Linux 桌面环境。Ubuntu/Debian 的精简安装若缺少 `venv`，先由管理员一次性安装对应包（例如 Ubuntu 24.04 的 `python3-venv`）；此后安装和运行 Harness 都使用普通用户。不要使用 `sudo` 或 root 运行 Harness、Codex 或 MCP；1.1.1 会拒绝实际 root 操作。
+不熟悉 Linux 命令时，推荐在桌面 Harness **账户 → 添加 Linux 服务器** 中复制配置提示词，粘贴给服务器 Codex。发布包根目录的 `交给AI安装.md` 也包含同一份受限任务说明；Codex 会执行下面的流程，并在外部账号和权限节点暂停让人确认。说明见 [AI 配置流程](AI-SETUP-LINUX.md)。
+
+需要可运行且已登录的 Codex CLI，以及到协作服务的网络连接。发布包已经包含 Harness 所需运行时，不要求安装 Python、pip 或 venv，不修改系统 Python，也不需要 Linux 桌面环境。服务器项目文件始终留在服务器。安装和运行均使用普通用户；不要使用 `sudo` 或 root 运行 Harness、Codex 或 MCP。
 
 ## 首次安装
 
 ```bash
-tar -xzf AgentHarness-1.1.1-linux-receiver.tar.gz
+tar -xzf AgentHarness-2.0.0-linux-x64.tar.gz # ARM64 机器使用 linux-arm64 包
 cd AgentHarness-linux
-python3 install.py
 ./harness link --server https://你的团队地址 --codex /绝对路径/codex
 ```
 
@@ -109,7 +110,7 @@ tailscale --socket="$HOME/.local/share/AgentHarness/tailscale/tailscaled.sock" u
 
 ```bash
 ./harness upgrade \
-  --bundle /绝对路径/AgentHarness-1.1.1-linux-receiver.tar.gz \
+  --bundle /绝对路径/AgentHarness-2.0.0-linux-x64.tar.gz \
   --sha256 64位十六进制摘要
 ```
 

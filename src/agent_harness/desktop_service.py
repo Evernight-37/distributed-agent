@@ -9,14 +9,48 @@ import sys
 import threading
 import time
 import urllib.error
-from http.cookies import SimpleCookie
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from common import identifier, lock, read_json, validate_project, write_json
-from local_panel import handler_for
-from pull_worker import Connector, enroll
-from worker import ManagedRuntime
+from agent_harness.common import (
+    lock,
+    read_json,
+    write_json,
+)
+from agent_harness.pull_worker import Connector, enroll
+from agent_harness.worker import ManagedRuntime
+
+
+def receiver_handler(port):
+    """Return the minimal loopback base handler used by the Desktop API."""
+    expected_host = f"127.0.0.1:{port}"
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def respond(self, value, status=200, content_type="application/json"):
+            import json
+
+            body = value.encode() if isinstance(value, str) else json.dumps(value, ensure_ascii=False).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", content_type + "; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def valid_host(self):
+            return self.headers.get("Host") == expected_host
+
+        def do_GET(self):
+            self.respond({"error": "Not found"}, 404)
+
+        def do_POST(self):
+            self.respond({"error": "Not found"}, 404)
+
+    return Handler
 
 
 def receiver_runtime(root):
@@ -36,7 +70,8 @@ def windows_user_sid():
     import subprocess
 
     output = subprocess.check_output(
-        ["whoami.exe", "/user", "/fo", "csv", "/nh"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        ["whoami.exe", "/user", "/fo", "csv", "/nh"],
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     match = re.search(rb'"(S-1-[0-9]+(?:-[0-9]+)+)"\s*$', output)
     if not match:
@@ -50,12 +85,11 @@ def serve(root):
     connector = Connector(root / "pull-config.json", executor=runtime.rpc)
     stop = threading.Event()
     key, instance = secrets.token_urlsafe(48), secrets.token_urlsafe(24)
-    browser_tickets, browser_sessions = {}, {}
     # Share the existing lock with CLI receivers. Never run two receivers.
     with lock(root / "pull-worker.lock"):
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(connector, 0))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), receiver_handler(0))
         port = server.server_address[1]
-        base = handler_for(connector, port)
+        base = receiver_handler(port)
         origin = f"http://127.0.0.1:{port}"
 
         class Handler(base):
@@ -81,57 +115,19 @@ def serve(root):
                             "stopping": stop.is_set(),
                             "online": bool(state.get("online")) and time.time() - state.get("updated", 0) < 20,
                         }
-                    elif route == "state" and data is None:
-                        result = {
-                            "projects": [read_json(p) for p in (root / "projects").glob("*/project.json")],
-                            "shared_projects": read_json(root / "broker-projects.json", []),
-                            "bindings": connector.bindings(),
-                        }
                     elif route == "action" and data is not None:
                         action = data.pop("action")
-                        if action == "binding":
-                            result = connector.save_binding(data)
-                        elif action == "approve-execution":
+                        if action == "approve-execution":
                             result = connector.approve(
-                                data["job_id"], data["approved"], data.get("expected_template")
+                                data["job_id"],
+                                data["approved"],
+                                data.get("expected_template"),
                             ) or {"updated": True}
-                        elif action == "register":
-                            path = Path(data["path"])
-                            if not path.is_absolute() or not path.is_dir():
-                                raise ValueError("请选择已存在的项目文件夹")
-                            project = validate_project(
-                                {
-                                    "name": identifier(data["name"]),
-                                    "remote_path": str(path.resolve()),
-                                    "model": data["model"],
-                                    "effort": data["effort"],
-                                    "timeout": 120,
-                                    "local_control": True,
-                                }
-                            )
-                            # Existing projects retain their session and memory.
-                            existing = read_json(root / "projects" / project["name"] / "project.json")
-                            if existing:
-                                if Path(existing["remote_path"]).resolve() != path.resolve():
-                                    raise ValueError("此本机项目名已对应其他目录，请换一个名字")
-                                result = existing
-                            else:
-                                result = connector.executor(
-                                    {"action": "register", "project": project, "memory": {"revision": 0, "entries": []}}
-                                )
-                        elif action == "retire-workers-after-turn":
-                            retire = getattr(runtime, "retire_workers_after_turn", None)
-                            result = {"retired": retire() if retire else 0}
                         else:
                             raise ValueError("Unknown desktop action")
                     elif route == "stop" and data is not None:
                         stop.set()
                         result = {"stopping": True}
-                    elif route == "browser" and data is not None:
-                        ticket = secrets.token_urlsafe(32)
-                        browser_tickets.clear()
-                        browser_tickets[ticket] = time.monotonic() + 30
-                        result = {"ticket": ticket}
                     else:
                         raise ValueError("Unknown desktop operation")
                     self.respond({"ok": True, "instance": instance, "result": result})
@@ -141,38 +137,12 @@ def serve(root):
             def do_GET(self):
                 if self.path.startswith("/desktop/"):
                     return self.desktop()
-                if self.path.startswith("/launch/") and self.valid_host():
-                    expiry = browser_tickets.pop(self.path.removeprefix("/launch/"), 0)
-                    if expiry > time.monotonic():
-                        session = secrets.token_urlsafe(32)
-                        browser_sessions[session] = time.monotonic() + 86400
-                        self.send_response(302)
-                        self.send_header("Location", "/")
-                        self.send_header("Set-Cookie", f"harness_local={session}; HttpOnly; SameSite=Strict; Path=/")
-                        self.send_header("Cache-Control", "no-store")
-                        self.send_header("Referrer-Policy", "no-referrer")
-                        self.send_header("Content-Length", "0")
-                        self.end_headers()
-                        return
-                if not self.browser_auth():
-                    return self.respond({"ok": False, "error": "请从本机应用打开高级设置"}, 403)
-                super().do_GET()
+                return self.respond({"error": "Not found"}, 404)
 
             def do_POST(self):
                 if self.path.startswith("/desktop/"):
                     return self.desktop()
-                if not self.browser_auth():
-                    return self.respond({"ok": False, "error": "请从本机应用打开高级设置"}, 403)
-                super().do_POST()
-
-            def browser_auth(self):
-                cookie = SimpleCookie()
-                try:
-                    cookie.load(self.headers.get("Cookie", ""))
-                except Exception:
-                    return False
-                session = cookie.get("harness_local")
-                return bool(session and browser_sessions.get(session.value, 0) > time.monotonic())
+                return self.respond({"error": "Not found"}, 404)
 
         server.RequestHandlerClass = Handler
         write_json(
@@ -211,22 +181,35 @@ def serve(root):
         try:
             while not stop.is_set():
                 try:
-                    connector.cycle()
+                    # Keep the desktop control plane responsive to stop/restart.
+                    # CLI and systemd receivers may use the full 10-second wait,
+                    # but the in-process stop Event cannot cancel urllib mid-call.
+                    connector.cycle(wait_seconds=1)
                 except Exception as exc:
                     write_json(
                         root / "connector-status.json",
-                        {"online": False, "error": type(exc).__name__, "updated": time.time()},
+                        {
+                            "online": False,
+                            "error": type(exc).__name__,
+                            "updated": time.time(),
+                        },
                     )
                 else:
-                    write_json(root / "connector-status.json", {"online": True, "updated": time.time()})
-                stop.wait(3)
+                    write_json(
+                        root / "connector-status.json",
+                        {"online": True, "updated": time.time()},
+                    )
+                stop.wait(0.25)
         finally:
             retire = getattr(runtime, "retire_idle_workers", None)
             if retire:
                 retire()
             server.shutdown()
             server.server_close()
-            write_json(root / "connector-status.json", {"online": False, "updated": time.time()})
+            write_json(
+                root / "connector-status.json",
+                {"online": False, "updated": time.time()},
+            )
 
 
 if __name__ == "__main__":
@@ -234,7 +217,12 @@ if __name__ == "__main__":
     if command == "pair":
         try:
             data = json.load(sys.stdin)
-            value = enroll(data["server"], data["code"], root, broker_proxy=data.get("broker_proxy"))
+            value = enroll(
+                data["server"],
+                data["code"],
+                root,
+                broker_proxy=data.get("broker_proxy"),
+            )
             print(json.dumps({"ok": True, "result": value}, ensure_ascii=False))
         except Exception as exc:
             error = str(exc)

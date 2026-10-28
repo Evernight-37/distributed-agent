@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -14,11 +15,28 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from common import identifier, lock, read_json, validate_project, write_json
-from release_info import version_path
-from broker_transport import broker_opener
+from agent_harness.common import (
+    identifier,
+    lock,
+    read_json,
+    validate_project,
+    write_json,
+)
+from agent_harness.protocol import ensure_hub_compatible
+from agent_harness.release_info import version_path
+from agent_harness.broker_transport import broker_opener
+from agent_harness.health import HealthCode, component, report
 
-TERMINAL = {"needs_review", "completed", "failed", "cancelled", "timed_out", "interrupted", "unknown"}
+TERMINAL = {
+    "needs_review",
+    "completed",
+    "failed",
+    "cancelled",
+    "timed_out",
+    "interrupted",
+    "unknown",
+}
+LOCAL_RESULT_RETENTION_SECONDS = 30 * 86400
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -75,7 +93,11 @@ def validate_server(server):
     parsed = urllib.parse.urlsplit(server)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Provide an explicit HTTP(S) broker URL without credentials")
-    if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+    if parsed.scheme != "https" and parsed.hostname not in {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+    }:
         raise ValueError("A remote broker requires HTTPS; HTTP is allowed only on loopback")
     if parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
         raise ValueError("Broker URL must contain only its origin")
@@ -88,11 +110,19 @@ def enroll(server, pair_code, root, config_path=None, broker_proxy=None):
     config_path = Path(config_path or root / "pull-config.json")
     if config_path.exists():
         raise ValueError("Connector is already enrolled; retain its existing device identity")
-    config = {"server": server.rstrip("/"), "root": str(root), "device_token": secrets.token_urlsafe(48)}
+    config = {
+        "server": server.rstrip("/"),
+        "root": str(root),
+        "device_token": secrets.token_urlsafe(48),
+    }
     if broker_proxy:
         broker_opener(broker_proxy)
         config["broker_proxy"] = broker_proxy
-    result = api(config, "enroll", {"pair_code": pair_code, "device_token": config["device_token"]})
+    result = api(
+        config,
+        "enroll",
+        {"pair_code": pair_code, "device_token": config["device_token"]},
+    )
     config["node"] = result.get("node", result.get("name"))
     write_json(config_path, config)
     try:
@@ -108,7 +138,14 @@ def enroll(server, pair_code, root, config_path=None, broker_proxy=None):
             )
             sid = next(csv.reader(who.splitlines()))[-1]
             result_acl = subprocess.run(
-                ["icacls.exe", str(config_path), "/inheritance:r", "/grant:r", "*" + sid + ":F", "*S-1-5-18:F"],
+                [
+                    "icacls.exe",
+                    str(config_path),
+                    "/inheritance:r",
+                    "/grant:r",
+                    "*" + sid + ":F",
+                    "*S-1-5-18:F",
+                ],
                 capture_output=True,
                 timeout=15,
                 creationflags=no_window,
@@ -171,13 +208,20 @@ class Connector:
         if not project:
             raise ValueError("Register the local working directory first")
         configured = dict(
-            project, model=binding["model"], effort=binding["effort"], timeout=int(binding.get("timeout", 120))
+            project,
+            model=binding["model"],
+            effort=binding["effort"],
+            timeout=int(binding.get("timeout", 120)),
         )
         validate_project(configured)
         stages = binding.get("stages", ["discuss"])
         if not isinstance(stages, list) or not stages or set(stages) - {"discuss", "review", "implement"}:
             raise ValueError("Invalid locally permitted stages")
-        binding.update(timeout=configured["timeout"], enabled=bool(binding.get("enabled")), stages=stages)
+        binding.update(
+            timeout=configured["timeout"],
+            enabled=bool(binding.get("enabled")),
+            stages=stages,
+        )
         with lock(self.root / "local-policy.lock"):
             bindings = self.bindings()
             if any(
@@ -195,17 +239,57 @@ class Connector:
         for binding in self.bindings():
             item = {
                 k: binding[k]
-                for k in ("project_id", "backend_project", "model", "effort", "timeout", "enabled", "stages")
+                for k in (
+                    "project_id",
+                    "backend_project",
+                    "model",
+                    "effort",
+                    "timeout",
+                    "enabled",
+                    "stages",
+                )
             }
             item["name"] = binding.get("name", binding["backend_project"])
             item["templates"] = list(
-                read_json(self.root / "projects" / binding["backend_project"] / "execution_templates.json", {})
+                read_json(
+                    self.root / "projects" / binding["backend_project"] / "execution_templates.json",
+                    {},
+                )
             )
             result.append(item)
         return result
 
     def receipt_path(self, job_id):
         return self.root / "pull-receipts" / (hashlib.sha256(job_id.encode()).hexdigest() + ".json")
+
+    def prune_local_results(self, now=None):
+        """Remove old, centrally reported receipts and their fixed local job directories."""
+
+        now = time.time() if now is None else now
+        removed = 0
+        receipts = self.root / "pull-receipts"
+        for path in receipts.glob("*.json"):
+            receipt = read_json(path, {})
+            if not receipt.get("reported_terminal"):
+                continue
+            finished = receipt.get("finished_at")
+            if not isinstance(finished, (int, float)):
+                try:
+                    finished = path.stat().st_mtime
+                except OSError:
+                    continue
+            if finished > now - LOCAL_RESULT_RETENTION_SECONDS:
+                continue
+            local_id = receipt.get("local_id")
+            if isinstance(local_id, str) and re.fullmatch(r"pull-[a-f0-9]{48}", local_id):
+                area = "executions" if receipt.get("job", {}).get("kind") == "execution" else "jobs"
+                parent = (self.root / area).resolve()
+                target = (parent / local_id).resolve()
+                if target.parent == parent and target.is_dir() and not target.is_symlink():
+                    shutil.rmtree(target)
+            path.unlink(missing_ok=True)
+            removed += 1
+        return removed
 
     def approve(self, job_id, approved, expected_template=None):
         with lock(self.root / "pull-receipts.lock"):
@@ -254,7 +338,15 @@ class Connector:
                 result={
                     k: v
                     for k, v in result.items()
-                    if k in {"status", "report", "error", "exit_code", "stdout_tail", "stderr_tail"}
+                    if k
+                    in {
+                        "status",
+                        "report",
+                        "error",
+                        "exit_code",
+                        "stdout_tail",
+                        "stderr_tail",
+                    }
                 },
                 reported_terminal=False,
             )
@@ -277,7 +369,8 @@ class Connector:
             raise ValueError("Missing durable job identity")
         digest = hashlib.sha256(
             json.dumps(
-                {k: v for k, v in job.items() if k not in {"lease_id", "state", "status"}}, sort_keys=True
+                {k: v for k, v in job.items() if k not in {"lease_id", "state", "status"}},
+                sort_keys=True,
             ).encode()
         ).hexdigest()
         path = self.receipt_path(job_id)
@@ -323,7 +416,14 @@ class Connector:
             if set(request) - (
                 {"template"}
                 if execution
-                else {"prompt", "stage", "scope", "acceptance", "validation", "session_channel"}
+                else {
+                    "prompt",
+                    "stage",
+                    "scope",
+                    "acceptance",
+                    "validation",
+                    "session_channel",
+                }
             ):
                 raise ValueError("Broker assignment contains forbidden configuration")
             binding = self.binding_for(job) if receipt["phase"] in {"received", "waiting_local_approval"} else None
@@ -332,7 +432,8 @@ class Connector:
             elif receipt["phase"] == "received":
                 if execution:
                     templates = read_json(
-                        self.root / "projects" / binding["backend_project"] / "execution_templates.json", {}
+                        self.root / "projects" / binding["backend_project"] / "execution_templates.json",
+                        {},
                     )
                     if request.get("template") not in templates:
                         raise ValueError("Template is not registered by the local owner")
@@ -369,10 +470,17 @@ class Connector:
                     receipt["phase"] = "running"
             elif receipt["phase"] == "waiting_local_approval":
                 if receipt.get("approval") is False:
-                    receipt.update(phase="terminal", result={"status": "cancelled", "error": "Rejected by local owner"})
+                    receipt.update(
+                        phase="terminal",
+                        result={
+                            "status": "cancelled",
+                            "error": "Rejected by local owner",
+                        },
+                    )
                 elif receipt.get("approval") is True:
                     current = read_json(
-                        self.root / "projects" / binding["backend_project"] / "execution_templates.json", {}
+                        self.root / "projects" / binding["backend_project"] / "execution_templates.json",
+                        {},
                     ).get(request["template"])
                     if not current or current != receipt.get("approved_template"):
                         raise ValueError("Template changed after local approval; submit a new request")
@@ -425,7 +533,10 @@ class Connector:
             if receipt["phase"] in {"running", "launching"}:
                 # Observation failures are not cancellation authority.  Keep
                 # the durable local ID and reconcile it on a later cycle.
-                receipt.update(phase="running", result={"status": "unknown", "error": str(exc)[:2000]})
+                receipt.update(
+                    phase="running",
+                    result={"status": "unknown", "error": str(exc)[:2000]},
+                )
                 write_json(path, receipt)
                 return receipt
             receipt.update(
@@ -438,11 +549,17 @@ class Connector:
         write_json(path, receipt)
         return receipt
 
-    def cycle(self):
-        data = self.transport(self.config, "poll", {"bindings": self.advertisements()})
+    def cycle(self, wait_seconds=10):
+        health = self._health()
+        data = self.transport(
+            self.config,
+            "poll",
+            {"bindings": self.advertisements(), "wait_seconds": wait_seconds, "health": health},
+        )
+        ensure_hub_compatible(data)
         write_json(self.root / "broker-projects.json", data.get("projects", []))
         if data.get("owner_commands"):
-            from owner_worker import OwnerControl
+            from agent_harness.owner_worker import OwnerControl
 
             if not self.config.get("owner_account_id"):
                 raise PermissionError("This receiver has no enrolled account identity; pair it again")
@@ -476,9 +593,22 @@ class Connector:
                         "result": result,
                     },
                 )
+
                 if receipt["phase"] == "terminal":
                     receipt["reported_terminal"] = True
+                    receipt["finished_at"] = time.time()
                     write_json(path, receipt)
+            self.prune_local_results()
+
+    def _health(self):
+        """Build a privacy-bounded heartbeat; paths and exception text stay local."""
+        components = [component("receiver", "healthy", HealthCode.OK, "接收端运行正常")]
+        cli = read_json(self.root / "codex-cli.json", {})
+        if not isinstance(cli, dict) or not isinstance(cli.get("path"), str) or not cli["path"]:
+            components.append(component("codex", "degraded", HealthCode.NOT_CONFIGURED, "尚未配置 Codex"))
+        else:
+            components.append(component("codex", "healthy", HealthCode.OK, "Codex 已配置"))
+        return report(components)
 
 
 def main():
@@ -518,14 +648,21 @@ def main():
     with lock(connector.root / "pull-worker.lock"):
         while True:
             try:
-                connector.cycle()
+                connector.cycle(0 if args.once else 10)
             except Exception as exc:
                 write_json(
                     connector.root / "connector-status.json",
-                    {"online": False, "error": type(exc).__name__, "updated": time.time()},
+                    {
+                        "online": False,
+                        "error": type(exc).__name__,
+                        "updated": time.time(),
+                    },
                 )
             else:
-                write_json(connector.root / "connector-status.json", {"online": True, "updated": time.time()})
+                write_json(
+                    connector.root / "connector-status.json",
+                    {"online": True, "updated": time.time()},
+                )
             if args.once:
                 break
             time.sleep(1)

@@ -1,11 +1,13 @@
 """Local application lifecycle; never stop an unrelated listener or agent job."""
 
+import json
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from common import lock, read_json
-from desktop_runtime import DesktopRuntime
+from agent_harness.common import lock, read_json
+from agent_harness.desktop_runtime import DesktopRuntime
+from agent_harness.health import HealthCode, component, report
 
 
 def split_windows_command(command):
@@ -57,7 +59,12 @@ class Lifecycle:
         for runtime in self.receivers():
             for pattern in ("jobs/*/state.json", "projects/*/executions/*/state.json"):
                 for path in runtime.root.glob(pattern):
-                    if read_json(path, {}).get("status") in {"starting", "running", "unknown", "launching"}:
+                    if read_json(path, {}).get("status") in {
+                        "starting",
+                        "running",
+                        "unknown",
+                        "launching",
+                    }:
                         return True
         return False
 
@@ -67,15 +74,44 @@ class Lifecycle:
         if not host["running"]:
             try:
                 with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
-                    "http://127.0.0.1:8765/api/session", timeout=0.5
+                    "http://127.0.0.1:8765/healthz", timeout=0.5
                 ) as response:
-                    unmanaged = response.status == 200
+                    value = json.load(response)
+                    unmanaged = (
+                        response.status == 200
+                        and value.get("ok") is True
+                        and value.get("service") == "agent-harness-hub"
+                    )
             except (OSError, ValueError):
                 pass
+        receivers = [{"running": r.status()["running"]} for r in self.receivers()]
+        components = [
+            component(
+                "hub",
+                "healthy" if host["running"] or unmanaged else "degraded",
+                HealthCode.OK if host["running"] or unmanaged else HealthCode.OFFLINE,
+                "本机协作服务正在运行" if host["running"] or unmanaged else "本机协作服务未运行",
+                not (host["running"] or unmanaged),
+            )
+        ]
+        components.extend(
+            component(
+                f"receiver:{index}",
+                "healthy" if receiver["running"] else "degraded",
+                HealthCode.OK if receiver["running"] else HealthCode.OFFLINE,
+                "接收服务正在运行" if receiver["running"] else "接收服务未运行",
+                not receiver["running"],
+            )
+            for index, receiver in enumerate(receivers, 1)
+        )
         return {
-            "receivers": [{"running": r.status()["running"]} for r in self.receivers()],
-            "host": {"running": host["running"] or unmanaged, "managed": host["running"]},
+            "receivers": receivers,
+            "host": {
+                "running": host["running"] or unmanaged,
+                "managed": host["running"],
+            },
             "active_jobs": self.active_jobs(),
+            "health": report(components),
         }
 
     def stop(self):
@@ -96,7 +132,8 @@ class Lifecycle:
             # one slow receiver cannot multiply the full-exit delay by the
             # number of paired machines.  map preserves stable error ordering.
             with ThreadPoolExecutor(
-                max_workers=min(8, len(receiver_paths)), thread_name_prefix="stop-receiver"
+                max_workers=min(8, len(receiver_paths)),
+                thread_name_prefix="stop-receiver",
             ) as pool:
                 errors.extend(error for error in pool.map(stop_receiver, enumerate(receiver_paths, 1)) if error)
         try:

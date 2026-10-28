@@ -6,9 +6,9 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from app_bridge import AppBridge
-from collaboration_store import Store
-from panel import handler_for
+from agent_harness.app_bridge import AppBridge
+from agent_harness.collaboration_store import Store
+from agent_harness.panel import handler_for
 
 
 class QuietBridge(AppBridge):
@@ -77,10 +77,18 @@ class MultiServiceIdentityTests(unittest.TestCase):
                 member = QuietBridge(root / "member")
                 host = QuietBridge(root / "host")
                 linked = QuietBridge(root / "linked")
-                call(member, "register", {"username": "Member", "password": "local", "server": home_url})
+                call(
+                    member,
+                    "register",
+                    {"username": "Member", "password": "local", "server": home_url},
+                )
                 member_account = member.identity["account_id"]
                 Store(root / "home").claim_local_host(member_account, member.profile["node"])
-                call(host, "register", {"username": "Host", "password": "local", "server": team_url})
+                call(
+                    host,
+                    "register",
+                    {"username": "Host", "password": "local", "server": team_url},
+                )
                 Store(root / "team").claim_local_host(host.identity["account_id"], host.profile["node"])
                 project = call(host, "new-project", {"name": "Team project"})["id"]
                 invite = call(host, "invite", {"project": project})["invite"]
@@ -89,20 +97,34 @@ class MultiServiceIdentityTests(unittest.TestCase):
                 self.assertEqual(joined["server"], team_url)
                 dashboard = call(member, "dashboard")
                 self.assertEqual(dashboard["user"]["id"], member_account)
-                self.assertEqual(next(p for p in dashboard["projects"] if p["id"] == project)["server"], team_url)
-                call(member, "message", {"project": project, "body": "Existing identity works"})
                 self.assertEqual(
-                    call(host, "project", {"id": project})["messages"][-1]["body"], "Existing identity works"
+                    next(p for p in dashboard["projects"] if p["id"] == project)["server"],
+                    team_url,
+                )
+                call(
+                    member,
+                    "message",
+                    {"project": project, "body": "Existing identity works"},
+                )
+                self.assertEqual(
+                    call(host, "project", {"id": project})["messages"][-1]["body"],
+                    "Existing identity works",
                 )
                 self.assertFalse(next(s for s in dashboard["services"] if s["server"] == team_url)["hosted_by_me"])
                 rejected = member.invoke("new-project", {"name": "Member project", "server": team_url})
                 self.assertFalse(rejected["ok"])
                 self.assertIn("只能", rejected["error"])
-                own_project = call(member, "new-project", {"name": "Member project", "server": home_url})
+                own_project = call(
+                    member,
+                    "new-project",
+                    {"name": "Member project", "server": home_url},
+                )
                 self.assertEqual(own_project["server"], home_url)
 
                 request = call(
-                    linked, "device-request", {"name": "Second device", "password": "other", "server": home_url}
+                    linked,
+                    "device-request",
+                    {"name": "Second device", "password": "other", "server": home_url},
                 )
                 call(member, "device-inspect", {"code": request["code"]})
                 call(member, "device-approve", {"request_id": request["request_id"]})
@@ -110,7 +132,8 @@ class MultiServiceIdentityTests(unittest.TestCase):
                 linked_dashboard = call(linked, "dashboard")
                 self.assertEqual(linked.identity["account_id"], member_account)
                 self.assertEqual(
-                    next(p for p in linked_dashboard["projects"] if p["id"] == project)["server"], team_url
+                    next(p for p in linked_dashboard["projects"] if p["id"] == project)["server"],
+                    team_url,
                 )
                 self.assertEqual(call(linked, "project", {"id": project})["project"]["id"], project)
                 self.assertEqual(linked_dashboard["services"][1]["attached"], False)
@@ -131,7 +154,8 @@ class MultiServiceIdentityTests(unittest.TestCase):
                 offline_dashboard = call(member, "dashboard")
                 self.assertIn(home_url, offline_dashboard["unavailable_services"])
                 self.assertEqual(
-                    next(p for p in offline_dashboard["projects"] if p["id"] == project)["server"], team_url
+                    next(p for p in offline_dashboard["projects"] if p["id"] == project)["server"],
+                    team_url,
                 )
             finally:
                 for server, thread in hosts:

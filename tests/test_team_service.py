@@ -1,14 +1,18 @@
-import tempfile, unittest
+import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch, Mock
-from common import write_json
-from team_service import TeamService, TARGET, run_cli, cli_environment
+from agent_harness.common import write_json
+from agent_harness.team_service import TeamService, TARGET, run_cli, cli_environment
 
 HOST = "laptop.example.ts.net"
 
 
 def config():
-    return {"TCP": {"443": {"HTTPS": True}}, "Web": {HOST + ":443": {"Handlers": {"/": {"Proxy": TARGET}}}}}
+    return {
+        "TCP": {"443": {"HTTPS": True}},
+        "Web": {HOST + ":443": {"Handlers": {"/": {"Proxy": TARGET}}}},
+    }
 
 
 class Runner:
@@ -32,11 +36,14 @@ class Runner:
 class TeamServiceTests(unittest.TestCase):
     def test_macos_calls_force_cli_mode_without_changing_parent_environment(self):
         with (
-            patch("team_service.sys.platform", "darwin"),
+            patch("agent_harness.team_service.sys.platform", "darwin"),
             patch.dict("os.environ", {"TAILSCALE_BE_CLI": "0"}),
-            patch("team_service.executable", return_value="/Applications/Tailscale.app/Contents/MacOS/Tailscale"),
             patch(
-                "team_service.subprocess.run",
+                "agent_harness.team_service.executable",
+                return_value="/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+            ),
+            patch(
+                "agent_harness.team_service.subprocess.run",
                 return_value=Mock(returncode=0, stdout='{"BackendState":"Running"}', stderr=""),
             ) as run,
         ):
@@ -49,8 +56,11 @@ class TeamServiceTests(unittest.TestCase):
         for output in ("", "   ", "The Tailscale GUI failed to start", "[]", "null"):
             with (
                 self.subTest(output=output),
-                patch("team_service.executable", return_value="tailscale"),
-                patch("team_service.subprocess.run", return_value=Mock(returncode=0, stdout=output, stderr="")),
+                patch("agent_harness.team_service.executable", return_value="tailscale"),
+                patch(
+                    "agent_harness.team_service.subprocess.run",
+                    return_value=Mock(returncode=0, stdout=output, stderr=""),
+                ),
             ):
                 with self.assertRaisesRegex(RuntimeError, "Tailscale"):
                     run_cli(["serve", "status", "--json"])
@@ -120,7 +130,7 @@ class TeamServiceTests(unittest.TestCase):
     def test_failure_closed_when_status_unreadable(self):
         service = TeamService(self.root, TARGET, Mock(side_effect=RuntimeError("unreadable")))
         self.assertEqual(service.status()["state"], "error")
-        with patch("team_service.subprocess.Popen") as popen:
+        with patch("agent_harness.team_service.subprocess.Popen") as popen:
             with self.assertRaises(ValueError):
                 service.create()
             popen.assert_not_called()
@@ -135,16 +145,23 @@ class TeamServiceTests(unittest.TestCase):
                 "updated": __import__("time").time(),
             },
         )
-        with patch("team_service.webbrowser.open") as browser:
+        with patch("agent_harness.team_service.webbrowser.open") as browser:
             with self.assertRaises(ValueError):
                 service.authorize()
             browser.assert_not_called()
         url = "https://login.tailscale.com/f/serve?node=example-id"
         write_json(
             service.job,
-            {"state": "needs_authorization", "authorization_url": url, "updated": __import__("time").time()},
+            {
+                "state": "needs_authorization",
+                "authorization_url": url,
+                "updated": __import__("time").time(),
+            },
         )
-        with patch("team_service.webbrowser.open") as browser, patch("team_service.subprocess.Popen") as popen:
+        with (
+            patch("agent_harness.team_service.webbrowser.open") as browser,
+            patch("agent_harness.team_service.subprocess.Popen") as popen,
+        ):
             self.assertEqual(service.create()["state"], "needs_authorization")
             popen.assert_not_called()
             service.authorize()
@@ -152,7 +169,10 @@ class TeamServiceTests(unittest.TestCase):
 
     def test_launch_uses_sidecar_background_fixed_target(self):
         service = TeamService(self.root, TARGET, Runner())
-        with patch("team_service.subprocess.Popen") as popen, patch("team_service.threading.Thread"):
+        with (
+            patch("agent_harness.team_service.subprocess.Popen") as popen,
+            patch("agent_harness.team_service.threading.Thread"),
+        ):
             self.assertEqual(service.create()["state"], "starting")
             args = popen.call_args.args[0]
             self.assertIn("--create", args)
@@ -161,8 +181,11 @@ class TeamServiceTests(unittest.TestCase):
 
     def test_mutation_success_does_not_require_json(self):
         with (
-            patch("team_service.executable", return_value="tailscale.exe"),
-            patch("team_service.subprocess.run", return_value=Mock(returncode=0, stdout="Serve disabled\n", stderr="")),
+            patch("agent_harness.team_service.executable", return_value="tailscale.exe"),
+            patch(
+                "agent_harness.team_service.subprocess.run",
+                return_value=Mock(returncode=0, stdout="Serve disabled\n", stderr=""),
+            ),
         ):
             self.assertEqual(run_cli(["serve", "--bg", "--https=443", "off"]), {})
 

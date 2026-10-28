@@ -6,7 +6,6 @@ import os
 import py_compile
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 
@@ -29,115 +28,50 @@ def main():
     os.environ["LOCALAPPDATA"] = str(local)
     os.environ["CODEX_HOME"] = str(scratch / "codex-home")
     client = package / "client"
+    client_package = client / "agent_harness"
     runtime = package / "runtime" / ("bin/python3" if app else "python.exe")
     required = (
         app / "Contents/MacOS/AgentHarness" if app else package / "AgentHarness.exe",
         runtime,
-        client / "app_bridge.py",
-        client / "mcp_adapter.py",
+        client_package / "app_bridge.py",
+        client_package / "mcp_adapter.py",
         package / "VERSION",
     )
     if not all(path.is_file() for path in required):
         raise RuntimeError("release is incomplete")
     if (package / "VERSION").read_text(encoding="utf-8").strip() != expected_version:
         raise RuntimeError("wrong release version")
-    sys.path.insert(0, str(client))
-    sys.dont_write_bytecode = True
     compiled = scratch / "compiled"
     compiled.mkdir()
-    for source in client.glob("*.py"):
+    for source in client_package.glob("*.py"):
         py_compile.compile(str(source), cfile=str(compiled / (source.name + "c")), doraise=True)
-
-    from app_bridge import AppBridge, MCP_DELEGATE_SCOPES
-    from account_identity import generate_identity
-    from collaboration_store import Store
-    from common import write_json
-    from service_install import install_bundle
-
-    bridge = AppBridge()
-    expected_root = (local / "AgentHarness" / "data").resolve()
-    if bridge.root != expected_root or bridge._host_state_root() != expected_root / "team-service":
-        raise RuntimeError("fresh data root is not package independent")
-    store = Store(bridge._host_state_root())
-    if not (expected_root / "team-service" / "collaboration.sqlite3").is_file() or not store.service_id():
-        raise RuntimeError("fresh host database was not created in stable state")
-
-    installed = install_bundle(package, local / "AgentHarness" / "service-runtime")
-    if (installed / "client" / "VERSION").read_text(encoding="utf-8").strip() != expected_version:
-        raise RuntimeError("installed runtime is not this release")
-    forbidden = (str(Path(__file__).resolve().parents[1]),)
-    for source in (installed / "client").glob("*.py"):
-        text = source.read_text(encoding="utf-8")
-        if any(value in text for value in forbidden):
-            raise RuntimeError("old installation reference in " + source.name)
-
-    identity = generate_identity()
-    identity["account_id"] = "cleanroom-account"
-    grant = scratch / "new-grant.json"
-    write_json(
-        grant,
-        {
-            "version": 1,
-            "profile_id": "cleanroom-profile",
-            "username": "cleanroom",
-            "identity": identity,
-            "scopes": list(MCP_DELEGATE_SCOPES),
-            "servers": ["http://127.0.0.1:1"],
-        },
-    )
-    requests = (
-        "\n".join(
-            (
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "initialize",
-                        "params": {
-                            "protocolVersion": "2025-03-26",
-                            "capabilities": {},
-                            "clientInfo": {"name": "cleanroom", "version": "1"},
-                        },
-                    }
-                ),
-                json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
-            )
-        )
-        + "\n"
-    )
+    probe = Path(__file__).with_name("cleanroom_runtime_probe.py")
     result = subprocess.run(
         [
-            str(installed / "runtime" / ("bin/python3" if app else "python.exe")),
+            str(runtime),
             "-X",
             "utf8",
-            str(installed / "client" / "mcp_adapter.py"),
-            "--grant",
-            str(grant),
+            str(probe),
+            str(package),
+            str(scratch),
+            expected_version,
+            str(Path(__file__).resolve().parents[1]),
+            *(["--macos"] if app else []),
         ],
-        input=requests,
         text=True,
         encoding="utf-8",
         capture_output=True,
-        timeout=20,
+        timeout=40,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
     if result.returncode:
-        raise RuntimeError("fresh MCP failed: " + result.stderr[-500:])
-    responses = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-    tools = next(item for item in responses if item.get("id") == 2)["result"]["tools"]
-    if len(tools) != 6:
-        raise RuntimeError("fresh MCP tool catalog is incomplete")
-    print(
-        json.dumps(
-            {
-                "version": expected_version,
-                "compiled_modules": len(list(client.glob("*.py"))),
-                "mcp_tools": len(tools),
-                "host_data": str(bridge._host_state_root()),
-                "installed_bundle": installed.name,
-            },
-            ensure_ascii=False,
-        )
-    )
+        raise RuntimeError("packaged runtime probe failed: " + result.stderr[-1000:])
+    report = json.loads(result.stdout.strip())
+    if report.get("version") != expected_version or report.get("compiled_modules") != len(
+        list(client_package.glob("*.py"))
+    ):
+        raise RuntimeError("packaged runtime probe returned inconsistent metadata")
+    print(json.dumps(report, ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import warm_worker
-import worker
-from common import write_json
+from agent_harness import warm_worker
+from agent_harness import worker
+from agent_harness.common import write_json
 
 
 class WarmWorkerAuthTests(unittest.TestCase):
@@ -41,7 +41,10 @@ class WarmWorkerAuthTests(unittest.TestCase):
                 patch.object(
                     warm_worker,
                     "codex_login_status",
-                    return_value={"logged_in": False, "login_error": "Codex CLI 尚未登录"},
+                    return_value={
+                        "logged_in": False,
+                        "login_error": "Codex CLI 尚未登录",
+                    },
                 ),
                 patch.object(manager, "ensure_server") as start,
             ):

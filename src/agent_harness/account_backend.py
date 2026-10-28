@@ -4,10 +4,24 @@ import hashlib
 import json
 import secrets
 import time
-from account_identity import account_id, decode, verify_envelope, canonical
-from collaboration_store import digest
-from owner_backend import OwnerBackend
-from owner_worker import execution_project
+from agent_harness.account_identity import (
+    account_id,
+    decode,
+    verify_envelope,
+    canonical,
+)
+from agent_harness.collaboration_store import digest
+from agent_harness.owner_backend import OwnerBackend
+from agent_harness.owner_worker import execution_project
+from agent_harness.protocol import hub_advertisement
+from agent_harness.hub_api import HubAccountAPI
+from agent_harness.health import HealthCode, safe_message
+from agent_harness.common import read_json
+
+
+MAX_ACTIVE_CHALLENGES = 4096
+MAX_PENDING_DEVICE_REQUESTS = 1000
+MAX_PENDING_REQUESTS_PER_KEY = 5
 
 
 def device_node(public):
@@ -15,20 +29,21 @@ def device_node(public):
 
 
 class AccountBackend:
-    def __init__(self, store, backend, action_callback=None):
-        self.store, self.backend, self.action_callback = store, backend, action_callback
+    def __init__(self, store, backend):
+        self.store, self.backend = store, backend
         self.owners = OwnerBackend(store)
-        with store.connect() as db:
-            db.executescript("""
-            CREATE TABLE IF NOT EXISTS account_devices(public_key TEXT PRIMARY KEY,account_id TEXT NOT NULL,name TEXT NOT NULL,chain TEXT NOT NULL,revoked INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS account_delegates(public_key TEXT PRIMARY KEY,account_id TEXT NOT NULL,name TEXT NOT NULL,scopes TEXT NOT NULL,chain TEXT NOT NULL,revoked INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS account_challenges(nonce TEXT PRIMARY KEY,public_key TEXT NOT NULL,expires REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS account_requests(id TEXT PRIMARY KEY,code_hash TEXT UNIQUE NOT NULL,public_key TEXT NOT NULL,name TEXT NOT NULL,expires REAL NOT NULL,account_id TEXT,chain TEXT,claimed INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS account_project_visits(account_id TEXT NOT NULL,project_id TEXT NOT NULL,visited REAL NOT NULL,PRIMARY KEY(account_id,project_id));
-            CREATE TABLE IF NOT EXISTS account_services(account_id TEXT NOT NULL,server TEXT NOT NULL,joined_at REAL NOT NULL,PRIMARY KEY(account_id,server));
-            """)
+        self.account_api = HubAccountAPI(self._api)
+
+    @staticmethod
+    def _cleanup_ephemeral(db, now=None):
+        now = time.time() if now is None else now
+        db.execute("DELETE FROM account_challenges WHERE expires<?", (now,))
+        db.execute("DELETE FROM account_requests WHERE expires<?", (now,))
 
     def api(self, data):
+        return self.account_api.dispatch(data)
+
+    def _api(self, data):
         if not isinstance(data, dict):
             raise ValueError("Expected account request")
         action = data.get("action")
@@ -37,12 +52,19 @@ class AccountBackend:
             decode(public, 32)
             nonce = secrets.token_urlsafe(32)
             with self.store.connect() as db:
-                db.execute("DELETE FROM account_challenges WHERE expires<?", (time.time(),))
-                db.execute("INSERT INTO account_challenges VALUES(?,?,?)", (nonce, public, time.time() + 60))
+                db.execute("BEGIN IMMEDIATE")
+                self._cleanup_ephemeral(db)
+                if db.execute("SELECT COUNT(*) FROM account_challenges").fetchone()[0] >= MAX_ACTIVE_CHALLENGES:
+                    raise RuntimeError("服务当前关联请求过多，请稍后重试")
+                db.execute(
+                    "INSERT INTO account_challenges VALUES(?,?,?)",
+                    (nonce, public, time.time() + 60),
+                )
             return {
                 "nonce": nonce,
                 "expires_in": 60,
                 "service_id": self.store.service_id(),
+                "protocol": hub_advertisement(),
                 "features": [
                     "mention_agent_id",
                     "anchored_reply_draft",
@@ -51,6 +73,9 @@ class AccountBackend:
                     "codex_mcp_v1",
                     "employee_delete_v1",
                     "chat_attachments_v1",
+                    "event_cursor_v1",
+                    "health_v1",
+                    "account_recovery_v1",
                 ],
             }
         if action == "request-device":
@@ -60,6 +85,18 @@ class AccountBackend:
             code = secrets.token_urlsafe(24)
             rid = "request-" + secrets.token_hex(16)
             with self.store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                self._cleanup_ephemeral(db)
+                if db.execute("SELECT COUNT(*) FROM account_requests").fetchone()[0] >= MAX_PENDING_DEVICE_REQUESTS:
+                    raise RuntimeError("服务当前设备关联请求过多，请稍后重试")
+                if (
+                    db.execute(
+                        "SELECT COUNT(*) FROM account_requests WHERE public_key=?",
+                        (public,),
+                    ).fetchone()[0]
+                    >= MAX_PENDING_REQUESTS_PER_KEY
+                ):
+                    raise RuntimeError("这台设备已有过多待处理关联请求，请等待过期后重试")
                 db.execute(
                     "INSERT INTO account_requests(id,code_hash,public_key,name,expires) VALUES(?,?,?,?,?)",
                     (rid, digest(code), public, name, time.time() + 600),
@@ -77,7 +114,8 @@ class AccountBackend:
                 if not row["account_id"]:
                     return {"state": "pending", "status": "pending"}
                 device = db.execute(
-                    "SELECT revoked FROM account_devices WHERE public_key=?", (row["public_key"],)
+                    "SELECT revoked FROM account_devices WHERE public_key=?",
+                    (row["public_key"],),
                 ).fetchone()
                 if not device or device["revoked"]:
                     raise PermissionError("Device approval revoked")
@@ -91,7 +129,12 @@ class AccountBackend:
                     "public_key": row["public_key"],
                     "chain": json.loads(row["chain"]),
                 }
-        if action not in {"register", "rpc", "accept-project-invite", "activate-device"}:
+        if action not in {
+            "register",
+            "rpc",
+            "accept-project-invite",
+            "activate-device",
+        }:
             raise ValueError("Unknown account operation")
         verified = verify_envelope(data["envelope"])
         body = verified["body"]
@@ -120,8 +163,8 @@ class AccountBackend:
                 db.execute("BEGIN IMMEDIATE")
                 if not db.execute("SELECT 1 FROM users WHERE id=?", (user,)).fetchone():
                     db.execute(
-                        "INSERT INTO users VALUES(?,?,?,?)",
-                        (user, name + " · " + user[-8:], secrets.token_hex(16), secrets.token_hex(64)),
+                        "INSERT INTO users(id,username) VALUES(?,?)",
+                        (user, name + " · " + user[-8:]),
                     )
                 self._register_chain(db, verified, data["envelope"].get("chain", []), device_name)
             return {
@@ -140,7 +183,12 @@ class AccountBackend:
                 if not db.execute("SELECT 1 FROM users WHERE id=?", (user,)).fetchone():
                     raise PermissionError("此身份尚未加入该服务的项目")
                 self._register_chain(db, verified, data["envelope"].get("chain", []), device_name)
-            return {"account_id": user, "node": device_node(public)}
+                username = self._username(db, user)
+            return {
+                "account_id": user,
+                "node": device_node(public),
+                "username": username,
+            }
         if action == "accept-project-invite":
             if verified.get("delegate_scopes") is not None:
                 raise PermissionError("A delegate cannot accept project invitations")
@@ -155,20 +203,34 @@ class AccountBackend:
             with self.store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 invitation = db.execute(
-                    "SELECT * FROM invitations WHERE hash=? AND used=0 AND expires>?", (digest(token), time.time())
+                    "SELECT * FROM invitations WHERE hash=? AND used=0 AND expires>?",
+                    (digest(token), time.time()),
                 ).fetchone()
                 if not invitation:
                     raise PermissionError("邀请无效或已使用")
                 if not db.execute("SELECT 1 FROM users WHERE id=?", (user,)).fetchone():
                     db.execute(
-                        "INSERT INTO users VALUES(?,?,?,?)",
-                        (user, name + " · " + user[-8:], secrets.token_hex(16), secrets.token_hex(64)),
+                        "INSERT INTO users(id,username) VALUES(?,?)",
+                        (user, name + " · " + user[-8:]),
                     )
                 self._register_chain(db, verified, data["envelope"].get("chain", []), device_name)
-                db.execute("INSERT OR IGNORE INTO project_users VALUES(?,?)", (invitation["project_id"], user))
+                db.execute(
+                    "INSERT OR IGNORE INTO project_users VALUES(?,?)",
+                    (invitation["project_id"], user),
+                )
                 db.execute("UPDATE invitations SET used=1 WHERE hash=?", (digest(token),))
-                self.store.log(db, user, "accept_project_invite", {"project": invitation["project_id"]})
-                return {"project": invitation["project_id"], "account_id": user, "node": device_node(public)}
+                self.store.log(
+                    db,
+                    user,
+                    "accept_project_invite",
+                    {"project": invitation["project_id"]},
+                )
+                self.store.emit_project_event(db, invitation["project_id"], "membership")
+                return {
+                    "project": invitation["project_id"],
+                    "account_id": user,
+                    "node": device_node(public),
+                }
         with self.store.connect() as db:
             delegate_scopes = verified.get("delegate_scopes")
             device_keys = (
@@ -176,13 +238,15 @@ class AccountBackend:
             )
             for key in device_keys:
                 device = db.execute(
-                    "SELECT * FROM account_devices WHERE public_key=? AND account_id=?", (key, user)
+                    "SELECT * FROM account_devices WHERE public_key=? AND account_id=?",
+                    (key, user),
                 ).fetchone()
                 if not device or device["revoked"]:
                     raise PermissionError("Device is not authorized")
             if delegate_scopes is not None:
                 delegate = db.execute(
-                    "SELECT * FROM account_delegates WHERE public_key=? AND account_id=?", (public, user)
+                    "SELECT * FROM account_delegates WHERE public_key=? AND account_id=?",
+                    (public, user),
                 ).fetchone()
                 if (
                     not delegate
@@ -194,6 +258,8 @@ class AccountBackend:
                     "service-links": "collaboration.read",
                     "dashboard": "collaboration.read",
                     "project": "collaboration.read",
+                    "events-wait": "collaboration.read",
+                    "health-status": "collaboration.read",
                     "message": "collaboration.message",
                     "conversation-read": "collaboration.read",
                     "task": "collaboration.task",
@@ -214,18 +280,27 @@ class AccountBackend:
         device_chain = chain[:-1] if delegate_scopes is not None else chain
         keys = [verified["root_public_key"]] + [cert["body"]["child"] for cert in device_chain]
         for index, key in enumerate(keys):
-            row = db.execute("SELECT account_id,revoked FROM account_devices WHERE public_key=?", (key,)).fetchone()
+            row = db.execute(
+                "SELECT account_id,revoked FROM account_devices WHERE public_key=?",
+                (key,),
+            ).fetchone()
             if row and (row["account_id"] != user or row["revoked"]):
                 raise PermissionError("设备授权已撤销或属于其他账户")
             if not row:
                 db.execute(
                     "INSERT INTO account_devices VALUES(?,?,?,?,0)",
-                    (key, user, device_name if key == public else "关联设备", json.dumps(device_chain[:index])),
+                    (
+                        key,
+                        user,
+                        device_name if key == public else "关联设备",
+                        json.dumps(device_chain[:index]),
+                    ),
                 )
             self._node(db, key, user)
         if delegate_scopes is not None:
             row = db.execute(
-                "SELECT account_id,revoked,scopes FROM account_delegates WHERE public_key=?", (public,)
+                "SELECT account_id,revoked,scopes FROM account_delegates WHERE public_key=?",
+                (public,),
             ).fetchone()
             encoded = json.dumps(list(delegate_scopes), ensure_ascii=False)
             if row and (row["account_id"] != user or row["revoked"] or row["scopes"] != encoded):
@@ -237,23 +312,35 @@ class AccountBackend:
                 )
 
     def _operation(self, user, public, op, p, delegate_scopes=None):
+        if op == "health-status":
+            return self.store.health_status()
+        if op == "events-wait":
+            return self.store.events_wait(
+                user,
+                p.get("cursor", 0),
+                p.get("wait_seconds", 0),
+            )
         if op == "service-links":
             with self.store.connect() as db:
                 return {
                     "servers": [
                         row["server"]
                         for row in db.execute(
-                            "SELECT server FROM account_services WHERE account_id=? ORDER BY joined_at", (user,)
+                            "SELECT server FROM account_services WHERE account_id=? ORDER BY joined_at",
+                            (user,),
                         )
                     ]
                 }
         if op == "link-service":
-            from pull_worker import validate_server
+            from agent_harness.pull_worker import validate_server
 
             server = p["server"].rstrip("/")
             validate_server(server)
             with self.store.connect() as db:
-                db.execute("INSERT OR IGNORE INTO account_services VALUES(?,?,?)", (user, server, time.time()))
+                db.execute(
+                    "INSERT OR IGNORE INTO account_services VALUES(?,?,?)",
+                    (user, server, time.time()),
+                )
             return {"server": server}
         if op == "dashboard":
             result = self.store.snapshot(user)
@@ -266,13 +353,20 @@ class AccountBackend:
                 result["user"] = {"id": user, "username": self._username(db, user)}
                 visits = {
                     r["project_id"]: r["visited"]
-                    for r in db.execute("SELECT * FROM account_project_visits WHERE account_id=?", (user,))
+                    for r in db.execute(
+                        "SELECT * FROM account_project_visits WHERE account_id=?",
+                        (user,),
+                    )
                 }
                 for project in result["projects"]:
                     project["last_entered"] = visits.get(project["id"])
                 devices = []
-                for row in db.execute("SELECT * FROM account_devices WHERE account_id=? AND revoked=0", (user,)):
+                for row in db.execute(
+                    "SELECT * FROM account_devices WHERE account_id=? AND revoked=0",
+                    (user,),
+                ):
                     node = self._node(db, row["public_key"], user)
+                    config = read_json(self.store.root / "nodes" / (node + ".json"), {})
                     seen = db.execute("SELECT last_seen FROM pull_devices WHERE node=?", (node,)).fetchone()
                     last_seen = seen["last_seen"] if seen else None
                     devices.append(
@@ -284,6 +378,7 @@ class AccountBackend:
                             "is_root": account_id(row["public_key"]) == user,
                             "online": bool(last_seen and last_seen > time.time() - 45),
                             "last_seen": last_seen,
+                            "health": config.get("health") if isinstance(config.get("health"), dict) else None,
                         }
                     )
                 result["devices"] = devices
@@ -304,21 +399,46 @@ class AccountBackend:
                     ):
                         if json.loads(row["envelope"])["body"]["data"].get("id") == employee["id"]:
                             if row["state"] == "failed":
-                                employee["last_error"] = json.loads(row["result"] or "{}").get("error", "操作失败")
+                                employee["last_error"] = safe_message(
+                                    json.loads(row["result"] or "{}").get("error", "操作失败"),
+                                    "操作失败",
+                                )
+                                employee["status_code"] = HealthCode.EXECUTION_FAILED
                             break
                     employee["pending"] = pending
                     employee["online"] = device_map.get(employee["node"], {}).get("online", False)
+                    employee["health"] = device_map.get(employee["node"], {}).get("health")
+                    health = employee["health"]
+                    health_code = None
+                    if isinstance(health, dict):
+                        components = health.get("components")
+                        if isinstance(components, list):
+                            health_code = next(
+                                (
+                                    item.get("code")
+                                    for item in components
+                                    if isinstance(item, dict) and item.get("code") not in {None, HealthCode.OK}
+                                ),
+                                None,
+                            )
                     if pending:
                         employee["status"] = "pending"
+                        employee["status_code"] = HealthCode.NOT_CONFIGURED
+                    elif health_code:
+                        employee["status"] = "error" if health.get("overall") == "unavailable" else "degraded"
+                        employee["status_code"] = health_code
                     elif not employee["online"]:
                         employee["status"] = "offline"
+                        employee["status_code"] = HealthCode.OFFLINE
+                    else:
+                        employee.setdefault("status_code", HealthCode.OK)
             return result
         if op == "project":
             project = p.get("project", p.get("id"))
             if p.get("active_conversation_id"):
                 self.store.mark_conversation_read(user, project, p["active_conversation_id"])
             result = self.store.project_view(user, project)
-            from project_memory import ProjectMemory
+            from agent_harness.project_memory import ProjectMemory
 
             result["project_memory"] = ProjectMemory(self.store).snapshot(user, project)
             with self.store.connect() as db:
@@ -350,7 +470,10 @@ class AccountBackend:
                         ),
                         None,
                     )
-                    seen = db.execute("SELECT last_seen FROM pull_devices WHERE node=?", (member["node"],)).fetchone()
+                    seen = db.execute(
+                        "SELECT last_seen FROM pull_devices WHERE node=?",
+                        (member["node"],),
+                    ).fetchone()
                     member["online"] = bool(seen and seen["last_seen"] > time.time() - 45)
                 result["members"] = [
                     m
@@ -378,7 +501,7 @@ class AccountBackend:
                 p.get("attachment_ids"),
             )
         if op in {"attachment-upload", "attachment-get"}:
-            from attachments import Attachments
+            from agent_harness.attachments import Attachments
 
             files = Attachments(self.store)
             if op == "attachment-upload":
@@ -400,11 +523,11 @@ class AccountBackend:
                     raise PermissionError("无权查看此任务")
                 return dict(row)
         if op == "memory-note-add":
-            from project_memory import ProjectMemory
+            from agent_harness.project_memory import ProjectMemory
 
             return ProjectMemory(self.store).add_note(user, p["project"], p["body"])
         if op == "memory-note-delete":
-            from project_memory import ProjectMemory
+            from agent_harness.project_memory import ProjectMemory
 
             return ProjectMemory(self.store).delete_note(user, p["project"], p.get("id", p.get("note_id")))
         if op == "set-admin":
@@ -414,14 +537,19 @@ class AccountBackend:
                 project = self.store.require_member(db, p["project"], user)
                 if project["owner_id"] != user:
                     raise PermissionError("只有群主可以指定管理员")
-                db.execute("UPDATE projects SET admin_agent_id=NULL WHERE id=?", (p["project"],))
+                db.execute(
+                    "UPDATE projects SET admin_agent_id=NULL WHERE id=?",
+                    (p["project"],),
+                )
+                self.store.emit_project_event(db, p["project"], "project")
             return {"updated": True}
         if op == "owner-command":
             verified = verify_envelope(p["envelope"], user)
             with self.store.connect() as db:
                 for key in verified["chain_keys"]:
                     row = db.execute(
-                        "SELECT revoked FROM account_devices WHERE public_key=? AND account_id=?", (key, user)
+                        "SELECT revoked FROM account_devices WHERE public_key=? AND account_id=?",
+                        (key, user),
                     ).fetchone()
                     if not row or row["revoked"]:
                         raise PermissionError("Owner command signer was revoked")
@@ -465,7 +593,8 @@ class AccountBackend:
                 )
                 self._node(db, row["public_key"], user)
                 db.execute(
-                    "UPDATE account_requests SET account_id=?,chain=? WHERE id=?", (user, json.dumps(chain), row["id"])
+                    "UPDATE account_requests SET account_id=?,chain=? WHERE id=?",
+                    (user, json.dumps(chain), row["id"]),
                 )
             return {"approved": True, "request_id": row["id"]}
         if op == "revoke-device":
@@ -475,13 +604,17 @@ class AccountBackend:
                     target = next(
                         (
                             r["public_key"]
-                            for r in db.execute("SELECT public_key FROM account_devices WHERE account_id=?", (user,))
+                            for r in db.execute(
+                                "SELECT public_key FROM account_devices WHERE account_id=?",
+                                (user,),
+                            )
                             if device_node(r["public_key"]) == p.get("id")
                         ),
                         None,
                     )
                 row = db.execute(
-                    "SELECT * FROM account_devices WHERE public_key=? AND account_id=?", (target, user)
+                    "SELECT * FROM account_devices WHERE public_key=? AND account_id=?",
+                    (target, user),
                 ).fetchone()
                 if not row:
                     raise PermissionError("Unknown device")
@@ -490,18 +623,25 @@ class AccountBackend:
                 if account_id(target) == user:
                     raise ValueError("Cannot revoke the root identity device; account recovery is not yet supported")
                 revoked_keys = {target}
-                for candidate in db.execute("SELECT public_key,chain FROM account_devices WHERE account_id=?", (user,)):
+                for candidate in db.execute(
+                    "SELECT public_key,chain FROM account_devices WHERE account_id=?",
+                    (user,),
+                ):
                     ancestors = {cert["body"]["parent"] for cert in json.loads(candidate["chain"])}
                     if target in ancestors:
                         revoked_keys.add(candidate["public_key"])
                 revoked_nodes = {device_node(key) for key in revoked_keys}
                 for key in revoked_keys:
-                    db.execute("UPDATE account_devices SET revoked=1 WHERE public_key=?", (key,))
+                    db.execute(
+                        "UPDATE account_devices SET revoked=1 WHERE public_key=?",
+                        (key,),
+                    )
                     node = device_node(key)
                     db.execute("DELETE FROM pull_devices WHERE node=?", (node,))
                     db.execute("UPDATE agents SET enabled=0 WHERE node=?", (node,))
                 for command in db.execute(
-                    "SELECT id,envelope FROM owner_commands WHERE owner_id=? AND state IN ('queued','claimed')", (user,)
+                    "SELECT id,envelope FROM owner_commands WHERE owner_id=? AND state IN ('queued','claimed')",
+                    (user,),
                 ).fetchall():
                     envelope = json.loads(command["envelope"])
                     keys = [envelope.get("public_key")] + [cert["body"]["parent"] for cert in envelope.get("chain", [])]
@@ -510,18 +650,25 @@ class AccountBackend:
                     ):
                         db.execute(
                             "UPDATE owner_commands SET state='failed',result=? WHERE id=?",
-                            (canonical({"error": "Device revoked"}).decode(), command["id"]),
+                            (
+                                canonical({"error": "Device revoked"}).decode(),
+                                command["id"],
+                            ),
                         )
             return {"revoked": True}
         if op == "revoke-delegate":
             target = p.get("public_key")
             with self.store.connect() as db:
                 row = db.execute(
-                    "SELECT * FROM account_delegates WHERE public_key=? AND account_id=?", (target, user)
+                    "SELECT * FROM account_delegates WHERE public_key=? AND account_id=?",
+                    (target, user),
                 ).fetchone()
                 if not row:
                     return {"revoked": True, "already_absent": True}
-                db.execute("UPDATE account_delegates SET revoked=1 WHERE public_key=?", (target,))
+                db.execute(
+                    "UPDATE account_delegates SET revoked=1 WHERE public_key=?",
+                    (target,),
+                )
             return {"revoked": True}
         raise ValueError("Unsupported signed account operation")
 

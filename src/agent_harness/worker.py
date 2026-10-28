@@ -11,7 +11,18 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common import apply_local_proxy, events, identifier, lock, outcome, read_json, tail, validate_project, write_json
+from agent_harness.common import (
+    apply_local_proxy,
+    events,
+    identifier,
+    lock,
+    outcome,
+    read_json,
+    tail,
+    validate_project,
+    write_json,
+)
+from agent_harness.node_api import NodeExecutionAPI, NodeJobActions, NodeLocalActions, NodeProjectActions
 
 ROOT = Path(__file__).resolve().parent
 TERMINAL = {"needs_review", "failed", "cancelled", "timed_out", "interrupted"}
@@ -55,7 +66,10 @@ def process_stamp(pid):
     kernel.OpenProcess.restype = wintypes.HANDLE
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
     kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
     handle = kernel.OpenProcess(0x1000, False, int(pid))
     if not handle:
@@ -142,13 +156,19 @@ def codex_login_status(exe, root=None):
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
     except subprocess.TimeoutExpired:
-        return {"logged_in": False, "login_error": "Codex 登录状态检查超时；请检查本机代理"}
+        return {
+            "logged_in": False,
+            "login_error": "Codex 登录状态检查超时；请检查本机代理",
+        }
     except OSError:
         return {"logged_in": False, "login_error": "无法检查 Codex 登录状态"}
     output = (result.stdout + "\n" + result.stderr).casefold()
     if result.returncode == 0 and "not logged in" not in output:
         return {"logged_in": True}
-    return {"logged_in": False, "login_error": "Codex CLI 尚未登录；请使用当前系统用户完成登录"}
+    return {
+        "logged_in": False,
+        "login_error": "Codex CLI 尚未登录；请使用当前系统用户完成登录",
+    }
 
 
 def cli_status(root=None):
@@ -159,11 +179,24 @@ def cli_status(root=None):
     explicit = read_json(root / "executor.json", {}).get("cli_path")
     if explicit:
         if not isinstance(explicit, str) or not Path(explicit).is_absolute() or not Path(explicit).is_file():
-            return {"found": False, "configured": True, "error": "设置的 Codex 路径已失效，请重新选择程序"}
+            return {
+                "found": False,
+                "configured": True,
+                "error": "设置的 Codex 路径已失效，请重新选择程序",
+            }
         version = codex_version(explicit)
         if version is None:
-            return {"found": False, "configured": True, "error": "所选程序无法运行 Codex CLI，请重新选择"}
-        return {"found": True, "configured": True, "path": explicit, "version": ".".join(map(str, version))}
+            return {
+                "found": False,
+                "configured": True,
+                "error": "所选程序无法运行 Codex CLI，请重新选择",
+            }
+        return {
+            "found": True,
+            "configured": True,
+            "path": explicit,
+            "version": ".".join(map(str, version)),
+        }
     paths = []
     if os.name == "nt":
         local = os.environ.get("LOCALAPPDATA")
@@ -207,7 +240,12 @@ def cli_status(root=None):
             "error": "未找到可运行的 Codex CLI；请在本机安装 Codex，或在设置中选择程序",
         }
     version, path = max(valid)
-    return {"found": True, "configured": False, "path": path, "version": ".".join(map(str, version))}
+    return {
+        "found": True,
+        "configured": False,
+        "path": path,
+        "version": ".".join(map(str, version)),
+    }
 
 
 def cli_path(root=None):
@@ -224,7 +262,12 @@ def launch_supervisor(job):
     if os.name != "nt":
         with output_path.open("ab") as output:
             child = subprocess.Popen(
-                argv, stdin=subprocess.DEVNULL, stdout=output, stderr=output, start_new_session=True, close_fds=True
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=output,
+                start_new_session=True,
+                close_fds=True,
             )
         return child.pid
     import base64
@@ -318,7 +361,12 @@ class ManagedRuntime:
         directory = project_dir(project)
         startup = read_json(directory / "startup-error.json", {}) or {}
         self_exit = read_json(directory / "worker-self-exit.json", {}) or {}
-        evidence = {"generation": generation, "pid": child.pid, "exit_code": code, "finished_at": now()}
+        evidence = {
+            "generation": generation,
+            "pid": child.pid,
+            "exit_code": code,
+            "finished_at": now(),
+        }
         if self_exit.get("generation") == generation and self_exit.get("error"):
             evidence["error"] = self_exit.get("error")
         elif startup.get("generation") == generation:
@@ -429,7 +477,11 @@ def reconcile(active):
         write_json(path / "state.json", state)
         return None
     if generation and startup.get("generation") == generation:
-        state.update(status="failed", finished_at=now(), error=startup.get("error") or "Managed worker startup failed")
+        state.update(
+            status="failed",
+            finished_at=now(),
+            error=startup.get("error") or "Managed worker startup failed",
+        )
         write_json(path / "state.json", state)
         return None
     stamp = process_stamp(active["pid"])
@@ -442,7 +494,12 @@ def reconcile(active):
         # Two HTTP fetches in the same UI refresh are not independent process
         # observations. Require a real wall-clock interval before escalation.
         if observations < 1 or not isinstance(unknown_at, (int, float)):
-            return dict(active, unknown_observations=1, unknown_since=now(), unknown_observed_at=observed_at)
+            return dict(
+                active,
+                unknown_observations=1,
+                unknown_since=now(),
+                unknown_observed_at=observed_at,
+            )
         if observed_at - unknown_at < PROCESS_MISSING_CONFIRM_SECONDS:
             return active
         state.update(
@@ -474,7 +531,12 @@ def require_worktree(project):
         raise ValueError("Git is required to verify worktree isolation")
 
     def value(*args):
-        result = subprocess.run([git, "-C", str(path), "rev-parse", *args], capture_output=True, text=True, timeout=15)
+        result = subprocess.run(
+            [git, "-C", str(path), "rev-parse", *args],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
         if result.returncode:
             raise ValueError("Git worktree validation failed")
         return result.stdout.strip()
@@ -485,6 +547,103 @@ def require_worktree(project):
     if top != path.resolve() or git_dir == common:
         raise ValueError("Implementation directory is not the root of a linked Git worktree")
     return {"worktree": str(top), "git_dir": str(git_dir), "common_dir": str(common)}
+
+
+def _git_executable():
+    import shutil
+
+    git = shutil.which("git")
+    if not git:
+        fallback = Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "Git" / "cmd" / "git.exe"
+        if fallback.is_file():
+            git = str(fallback)
+    if not git:
+        raise ValueError("Git is required for strict worktree mode")
+    return git
+
+
+def _worktree_status(root):
+    """Return changed repo-relative paths from porcelain status."""
+    result = subprocess.run(
+        [_git_executable(), "-C", str(root), "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        capture_output=True,
+        timeout=30,
+    )
+    if result.returncode:
+        raise ValueError("Git worktree status failed")
+    chunks = result.stdout.decode("utf-8", errors="replace").split("\0")
+    paths = []
+    index = 0
+    while index < len(chunks):
+        chunk = chunks[index]
+        index += 1
+        if len(chunk) < 4:
+            continue
+        paths.append(chunk[3:].replace("\\", "/"))
+        # Porcelain -z emits the destination as a second path for renames/copies.
+        if any(flag in {"R", "C"} for flag in chunk[:2]) and index < len(chunks) and chunks[index]:
+            paths.append(chunks[index].replace("\\", "/"))
+            index += 1
+    return sorted(set(paths))
+
+
+def _strict_allowed_files(value):
+    """Parse strict-mode allowlist: one repo-relative path per line."""
+    if not isinstance(value, str):
+        raise ValueError("Strict worktree mode requires one allowed file per line")
+    result = []
+    for raw in value.splitlines():
+        item = raw.strip().replace("\\", "/")
+        if not item:
+            continue
+        if item.startswith("/") or ":" in item or item == "." or item.startswith("../") or "/../" in item:
+            raise ValueError("Strict worktree allowlist must contain repository-relative paths")
+        directory = item.endswith("/")
+        result.append(item.rstrip("/") + ("/" if directory else ""))
+    if not result:
+        raise ValueError("Strict worktree mode requires at least one allowed file")
+    return sorted(set(result))
+
+
+def _strict_guard(project, contract):
+    if not project.get("strict_worktree") or contract.get("stage") != "implement":
+        return None
+    details = require_worktree(project)
+    root = Path(details["worktree"])
+    changed = _worktree_status(root)
+    if changed:
+        raise ValueError("Strict worktree must be clean before implementation: " + ", ".join(changed[:5]))
+    return {
+        "root": str(root),
+        "head": subprocess.check_output(
+            [_git_executable(), "-C", str(root), "rev-parse", "HEAD"], text=True, timeout=15
+        ).strip(),
+        "allowed_files": _strict_allowed_files(contract.get("allowed_files")),
+    }
+
+
+def _check_strict_guard(guard):
+    if not guard:
+        return None
+    root = Path(guard["root"])
+    head = subprocess.run(
+        [_git_executable(), "-C", str(root), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if head.returncode or head.stdout.strip() != guard.get("head"):
+        return "Strict worktree HEAD changed during implementation"
+    changed = _worktree_status(root)
+    allowed = guard["allowed_files"]
+    violations = [
+        path
+        for path in changed
+        if not any(path == item or (item.endswith("/") and path.startswith(item)) for item in allowed)
+    ]
+    if violations:
+        return "Strict worktree changed files outside allowed_files: " + ", ".join(violations[:10])
+    return None
 
 
 def _await_ready(directory, child, token, generation, timeout=10):
@@ -532,47 +691,22 @@ def _cleanup_failed_managed_launch(directory, generation, child=None):
 
 
 def rpc(request, managed_runtime=None):
-    action = request["action"]
-    if action.startswith("execution_"):
-        from jobrunner import rpc as execution_rpc
+    from agent_harness.jobrunner import rpc as execution_rpc
 
-        return execution_rpc(ROOT, request)
-    if action == "probe":
-        exe = cli_path()
-        return {
-            "hostname": os.environ.get("COMPUTERNAME"),
-            "python": sys.executable,
-            "cli": exe,
-            "version": subprocess.check_output(
-                [exe, "--version"], text=True, encoding="utf-8", errors="replace"
-            ).strip(),
-        }
-    if action == "mkdir_demo":
-        path = ROOT / "demo-project"
-        path.mkdir(exist_ok=True)
-        return {"path": str(path)}
-    if action == "project":
-        directory = project_dir(request["project"])
-        with lock(ROOT / "registry.lock"):
-            project = read_json(directory / "project.json")
-            if not project:
-                raise ValueError("Project not registered")
-            return {
-                "project": project,
-                "memory": read_json(directory / "memory.json"),
-                "session": read_json(directory / "session.json"),
-            }
-    if action == "register":
-        data = validate_project(request["project"])
-        directory = project_dir(data["name"])
-        with lock(ROOT / "registry.lock"):
-            if (directory / "project.json").exists():
-                raise ValueError("Project already registered; do not replace an existing session")
-            write_json(directory / "project.json", data)
-            write_json(directory / "session.json", {"thread_id": None})
-            write_json(directory / "memory.json", request["memory"])
-        return {"registered": data["name"]}
-    if action in {"start", "memory", "configure"}:
+    return NodeExecutionAPI(
+        lambda validated: _rpc(validated, managed_runtime),
+        lambda validated: execution_rpc(ROOT, validated),
+        (
+            NodeLocalActions(ROOT, cli_path),
+            NodeProjectActions(ROOT, reconcile),
+            NodeJobActions(ROOT, reconcile, TERMINAL),
+        ),
+    ).dispatch(request)
+
+
+def _rpc(request, managed_runtime=None):
+    action = request["action"]
+    if action == "start":
         directory = project_dir(request["project"])
         with lock(ROOT / "registry.lock"):
             project = read_json(directory / "project.json")
@@ -582,21 +716,6 @@ def rpc(request, managed_runtime=None):
             write_json(directory / "active.json", active)
             if active:
                 raise ValueError("Project already has an active job: " + active["job"])
-            if action == "configure":
-                for key in ("model", "effort", "timeout"):
-                    project[key] = request[key]
-                validate_project(project)
-                write_json(directory / "project.json", project)
-                return {"project": project, "applies": "next turn; existing session retained"}
-            if action == "memory":
-                old = read_json(directory / "memory.json")
-                if request["expected_revision"] != old["revision"]:
-                    raise ValueError("Memory revision conflict")
-                memory = request["memory"]
-                if memory["revision"] != old["revision"] + 1:
-                    raise ValueError("Memory revision must increment exactly once")
-                write_json(directory / "memory.json", memory)
-                return {"revision": memory["revision"]}
             # Avoid two different registered projects writing the same remote tree.
             for other in (ROOT / "projects").glob("*/project.json"):
                 if other.parent == directory:
@@ -615,11 +734,12 @@ def rpc(request, managed_runtime=None):
                         raise ValueError("Remote directory is busy in another project")
             validate_project(project)
             contract = json.loads(request["prompt"])
+            strict_guard = _strict_guard(project, contract)
             # A pull receiver uses a directory chosen and enabled by its
             # machine owner. Keep the linked-worktree requirement for legacy
             # centrally configured workers, while allowing local execution in
             # that selected workspace (still under Codex workspace-write).
-            if contract.get("stage") == "implement" and not project.get("local_control"):
+            if contract.get("stage") == "implement" and (strict_guard or not project.get("local_control")):
                 require_worktree(project)
             job = identifier(request["job"])
             path = job_dir(job)
@@ -638,10 +758,17 @@ def rpc(request, managed_runtime=None):
                 "thread_id": session["thread_id"],
                 "session_file": session_file,
                 "managed_turn": bool(channel),
+                "strict_guard": strict_guard,
             }
             write_json(path / "request.json", config)
             write_json(
-                path / "state.json", {"job": job, "project": project["name"], "status": "starting", "created_at": now()}
+                path / "state.json",
+                {
+                    "job": job,
+                    "project": project["name"],
+                    "status": "starting",
+                    "created_at": now(),
+                },
             )
             try:
                 if config["managed_turn"] and project.get("local_control"):
@@ -693,11 +820,22 @@ def rpc(request, managed_runtime=None):
                             ready = _await_ready(directory, child, launch_token, generation)
                             pid, stamp = ready["pid"], ready["stamp"]
                             write_json(
-                                warm_path, {"pid": pid, "stamp": stamp, "token": launch_token, "generation": generation}
+                                warm_path,
+                                {
+                                    "pid": pid,
+                                    "stamp": stamp,
+                                    "token": launch_token,
+                                    "generation": generation,
+                                },
                             )
                             write_json(
                                 directory / "active.json",
-                                {"job": job, "pid": pid, "stamp": stamp, "generation": generation},
+                                {
+                                    "job": job,
+                                    "pid": pid,
+                                    "stamp": stamp,
+                                    "generation": generation,
+                                },
                             )
                             write_json(launch_path, None)
                         except Exception:
@@ -724,52 +862,6 @@ def rpc(request, managed_runtime=None):
                     active_record["generation"] = generation
                 write_json(directory / "active.json", active_record)
             return {"job": job, "status": "starting", "supervisor_pid": pid}
-    if action in {"status", "cancel", "fetch"}:
-        path = job_dir(request["job"])
-        state = read_json(path / "state.json")
-        if not state:
-            raise ValueError("Unknown job")
-        directory = project_dir(state["project"])
-        with lock(ROOT / "registry.lock"):
-            active = read_json(directory / "active.json")
-            owned = bool(active and active["job"] == request["job"])
-            if owned:
-                active = reconcile(active)
-                write_json(directory / "active.json", active)
-            else:
-                current_state = read_json(path / "state.json", {})
-            if not owned and current_state.get("status") not in TERMINAL:
-                # A non-terminal turn without the project's durable ownership
-                # record cannot still be managed safely.  The start path holds
-                # this same lock until active.json is committed, and workers
-                # write their terminal state before clearing it, so observing
-                # this combination after acquiring the lock proves the turn
-                # was orphaned by a crash or an older broken launcher.
-                current_state.update(
-                    status="interrupted",
-                    finished_at=now(),
-                    error="No active worker owns this non-terminal job; start a new turn explicitly",
-                )
-                write_json(path / "state.json", current_state)
-            state = read_json(path / "state.json")
-            if action == "cancel" and state["status"] not in TERMINAL:
-                write_json(path / "cancel.json", {"requested_at": now()})
-        cancel = read_json(path / "cancel.json")
-        if cancel:
-            state["cancel_requested_at"] = cancel["requested_at"]
-        state["session"] = read_json(directory / "session.json")
-        if action == "fetch":
-            state["report"] = tail(path / "report.txt", 262144)
-            state["stderr"] = tail(path / "stderr.log")
-            state["supervisor_log"] = tail(path / "supervisor.log")
-            request_config = read_json(path / "request.json", {}) or {}
-            if request_config.get("managed_turn"):
-                # These files are shared by sequential warm turns, so expose
-                # only bounded tails and only for managed jobs on this project.
-                state["app_server_stderr"] = tail(directory / "app-server-stderr.log", 32768)
-                state["warm_supervisor_log"] = tail(directory / "warm-supervisor.log", 32768)
-        state["recent_events"] = events(tail(path / "events.jsonl"))[-30:]
-        return state
     raise ValueError("Unknown action")
 
 
@@ -900,7 +992,12 @@ def run(job):
                 {
                     "reply": {"type": "string"},
                     "done": {"type": "boolean"},
-                    "messages": array({"recipient": {"type": ["string", "null"]}, "body": {"type": "string"}}),
+                    "messages": array(
+                        {
+                            "recipient": {"type": ["string", "null"]},
+                            "body": {"type": "string"},
+                        }
+                    ),
                     "tasks": array(
                         {
                             key: {"type": "string"}
@@ -934,7 +1031,10 @@ def run(job):
         )
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
         env = executor_environment(ROOT)
-        with (path / "prompt.txt").open("rb") as source, (path / "stderr.log").open("wb") as error:
+        with (
+            (path / "prompt.txt").open("rb") as source,
+            (path / "stderr.log").open("wb") as error,
+        ):
             proc = subprocess.Popen(
                 command,
                 stdin=source,
@@ -1025,11 +1125,20 @@ def run(job):
             if state["status"] == "needs_review" and not reports:
                 state.update(status="failed", error="No report returned")
             if state.get("effective_model") and state["effective_model"] != state["requested_model"]:
-                state.update(status="failed", error="Effective model differs from requested model")
+                state.update(
+                    status="failed",
+                    error="Effective model differs from requested model",
+                )
+            violation = _check_strict_guard(config.get("strict_guard"))
+            if violation:
+                state.update(status="failed", error=violation)
     except Exception as exc:
         if proc and proc.poll() is None:
             if os.name == "nt":
-                subprocess.run(["taskkill.exe", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+                subprocess.run(
+                    ["taskkill.exe", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True,
+                )
             else:
                 import signal
 

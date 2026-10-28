@@ -3,35 +3,40 @@
 import json
 import hashlib
 import time
-from account_identity import verify_owner_command
+from agent_harness.account_identity import verify_owner_command
 
 ACTIONS = {"create", "configure", "dispatch", "withdraw", "browse", "delete"}
 TERMINAL = {"applied", "failed"}
 
 
 def canonical(value):
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
 
 class OwnerBackend:
     def __init__(self, store):
         self.store = store
-        with store.connect() as db:
-            db.executescript("""
-            CREATE TABLE IF NOT EXISTS employees(id TEXT PRIMARY KEY,name TEXT NOT NULL,owner_id TEXT NOT NULL,node TEXT NOT NULL,settings TEXT NOT NULL,status TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS owner_commands(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,node TEXT NOT NULL,envelope TEXT NOT NULL,state TEXT NOT NULL,result TEXT,created_at REAL NOT NULL);
-            """)
 
     def snapshot(self, user):
         with self.store.connect() as db:
             rows = db.execute(
-                "SELECT * FROM employees WHERE owner_id=? AND status<>'deleted' ORDER BY name,id", (user,)
+                "SELECT * FROM employees WHERE owner_id=? AND status<>'deleted' ORDER BY name,id",
+                (user,),
             ).fetchall()
             return {"employees": [dict(r, settings=json.loads(r["settings"])) for r in rows]}
 
     def command(self, user, command_id):
         with self.store.connect() as db:
-            row = db.execute("SELECT * FROM owner_commands WHERE id=? AND owner_id=?", (command_id, user)).fetchone()
+            row = db.execute(
+                "SELECT * FROM owner_commands WHERE id=? AND owner_id=?",
+                (command_id, user),
+            ).fetchone()
             if not row:
                 raise PermissionError("Unknown owner command")
             return {
@@ -115,7 +120,10 @@ class OwnerBackend:
             (device["node"], device["owner_id"]),
         ).fetchall()
         for row in rows:
-            db.execute("UPDATE owner_commands SET state='claimed' WHERE id=? AND state='queued'", (row["id"],))
+            db.execute(
+                "UPDATE owner_commands SET state='claimed' WHERE id=? AND state='queued'",
+                (row["id"],),
+            )
         return [json.loads(row["envelope"]) for row in rows]
 
     def _device(self, db, device):
@@ -145,9 +153,18 @@ class OwnerBackend:
         if action != "browse":
             if state == "applied" and action == "delete":
                 for agent in self._employee_agents(db, data["id"], row["owner_id"], row["node"]):
-                    db.execute("UPDATE agents SET enabled=0,configuring=0 WHERE id=?", (agent["id"],))
-                    db.execute("UPDATE projects SET admin_agent_id=NULL WHERE admin_agent_id=?", (agent["id"],))
-                db.execute("UPDATE employees SET status='deleted',revision=revision+1 WHERE id=?", (data["id"],))
+                    db.execute(
+                        "UPDATE agents SET enabled=0,configuring=0 WHERE id=?",
+                        (agent["id"],),
+                    )
+                    db.execute(
+                        "UPDATE projects SET admin_agent_id=NULL WHERE admin_agent_id=?",
+                        (agent["id"],),
+                    )
+                db.execute(
+                    "UPDATE employees SET status='deleted',revision=revision+1 WHERE id=?",
+                    (data["id"],),
+                )
             elif state == "applied" and action in {"create", "configure"}:
                 settings = result.get("settings", {})
                 if not isinstance(settings, dict):
@@ -163,6 +180,12 @@ class OwnerBackend:
                     ),
                 )
             elif state == "failed" and action == "create":
-                db.execute("UPDATE employees SET status='failed' WHERE id=? AND status<>'deleted'", (data["id"],))
-        db.execute("UPDATE owner_commands SET state=?,result=? WHERE id=?", (state, encoded, command_id))
+                db.execute(
+                    "UPDATE employees SET status='failed' WHERE id=? AND status<>'deleted'",
+                    (data["id"],),
+                )
+        db.execute(
+            "UPDATE owner_commands SET state=?,result=? WHERE id=?",
+            (state, encoded, command_id),
+        )
         return {"ok": True}

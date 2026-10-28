@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app_bridge import AppBridge
-from common import read_json, write_json
-from worker import cli_status
+from agent_harness.app_bridge import AppBridge
+from agent_harness.common import read_json, write_json
+from agent_harness.worker import cli_status
 
 
 class CodexCliDiscoveryTests(unittest.TestCase):
@@ -17,10 +17,22 @@ class CodexCliDiscoveryTests(unittest.TestCase):
             shim = root / "roaming" / "npm" / "codex.cmd"
             shim.parent.mkdir(parents=True)
             shim.write_bytes(b"@echo off\r\necho codex-cli 0.300.1\r\n")
-            env = {"APPDATA": str(root / "roaming"), "LOCALAPPDATA": str(root / "local"), "PATH": ""}
+            env = {
+                "APPDATA": str(root / "roaming"),
+                "LOCALAPPDATA": str(root / "local"),
+                "PATH": "",
+            }
             with patch.dict(os.environ, env), patch("shutil.which", return_value=None):
                 result = cli_status(root / "receiver")
-            self.assertEqual(result, {"found": True, "configured": False, "path": str(shim), "version": "0.300.1"})
+            self.assertEqual(
+                result,
+                {
+                    "found": True,
+                    "configured": False,
+                    "path": str(shim),
+                    "version": "0.300.1",
+                },
+            )
 
     def test_invalid_explicit_path_has_actionable_status(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -38,8 +50,13 @@ class CodexCliDiscoveryTests(unittest.TestCase):
             bridge = AppBridge(root)
             bridge.profile = {"node": "device-local", "server": "http://127.0.0.1:8765"}
             bridge.identity = {"account_id": "local"}
-            detected = {"found": True, "configured": False, "path": str(executable), "version": "0.300.1"}
-            with patch("worker.cli_status", return_value=detected) as probe:
+            detected = {
+                "found": True,
+                "configured": False,
+                "path": str(executable),
+                "version": "0.300.1",
+            }
+            with patch("agent_harness.worker.cli_status", return_value=detected) as probe:
                 self.assertTrue(bridge.invoke("codex-cli-status")["result"]["found"])
                 self.assertTrue(bridge.invoke("codex-cli-status")["result"]["found"])
                 self.assertEqual(probe.call_count, 1)
@@ -54,8 +71,14 @@ class CodexCliDiscoveryTests(unittest.TestCase):
             shim = root / "custom" / "codex.cmd"
             shim.parent.mkdir()
             shim.write_bytes(b"@echo off\r\necho codex-cli 0.301.0\r\n")
-            env = {"APPDATA": str(root / "empty-roaming"), "LOCALAPPDATA": str(root / "empty-local")}
-            with patch.dict(os.environ, env), patch("shutil.which", return_value=str(shim)):
+            env = {
+                "APPDATA": str(root / "empty-roaming"),
+                "LOCALAPPDATA": str(root / "empty-local"),
+            }
+            with (
+                patch.dict(os.environ, env),
+                patch("shutil.which", return_value=str(shim)),
+            ):
                 result = cli_status(root / "receiver")
             self.assertTrue(result["found"])
             self.assertEqual(result["path"], str(shim))
@@ -81,7 +104,10 @@ class CodexCliDiscoveryTests(unittest.TestCase):
             self.assertTrue(cleared["ok"])
             self.assertEqual(read_json(root / "codex-cli.json")["mode"], "auto")
             if cleared["result"]["found"]:
-                self.assertEqual(read_json(receiver / "executor.json")["cli_path"], cleared["result"]["path"])
+                self.assertEqual(
+                    read_json(receiver / "executor.json")["cli_path"],
+                    cleared["result"]["path"],
+                )
 
 
 if __name__ == "__main__":

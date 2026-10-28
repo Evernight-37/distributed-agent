@@ -5,8 +5,8 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from common import lock
-from runtime_paths import application_home
+from agent_harness.common import lock
+from agent_harness.runtime_paths import application_home
 
 _installed = None
 
@@ -43,7 +43,9 @@ def install_bundle(bundle, destination):
                 digest.update(b"\0")
                 digest.update(hashlib.sha256(path.read_bytes()).digest())
                 files.append((path, relative))
-    if not runtime_python(bundle).is_file() or not (bundle / "client/desktop_service.py").is_file():
+    package_entry = bundle / "client/agent_harness/desktop_service.py"
+    legacy_entry = bundle / "client/desktop_service.py"
+    if not runtime_python(bundle).is_file() or not (package_entry.is_file() or legacy_entry.is_file()):
         raise RuntimeError("应用安装不完整：缺少后台入口")
     version = digest.hexdigest()
     # Keep the installed runtime path short. Windows can copy files through a

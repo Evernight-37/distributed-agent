@@ -10,45 +10,18 @@ import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-APP_SOURCE = PROJECT_ROOT / "src" / "agent_harness"
+SOURCE_ROOT = PROJECT_ROOT / "src"
+APP_SOURCE = SOURCE_ROOT / "agent_harness"
 WEB_SOURCE = PROJECT_ROOT / "assets" / "web"
 PYTHON_VERSION = "3.14.7"
 URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-amd64.zip"
 # SHA-256 published on the Python.org release page; never run an unverified download.
 SHA256 = "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15"
-CLIENT_FILES = (
-    "broker_transport.py",
-    "attachments.py",
-    "common.py",
-    "pull_worker.py",
-    "local_panel.py",
-    "desktop_service.py",
-    "desktop_runtime.py",
-    "service_install.py",
-    "host_control.py",
-    "app_lifecycle.py",
-    "worker.py",
-    "jobrunner.py",
-    "warm_worker.py",
-    "appserver_client.py",
-    "release_info.py",
-    "panel.py",
-    "broker.py",
-    "collaboration_store.py",
-    "coordinator.py",
-    "project_memory.py",
-    "runtime_paths.py",
-    "account_identity.py",
-    "account_backend.py",
-    "owner_backend.py",
-    "owner_worker.py",
-    "app_bridge.py",
-    "production_app.py",
-    "team_service.py",
-    "mcp_server.py",
-    "mcp_adapter.py",
-)
-CRYPTOGRAPHY_VERSION = "46.0.3"
+# The service bundle is a complete copy of the production package.  Discovering
+# modules here prevents a newly imported runtime module from being silently
+# omitted by one platform's hand-maintained allowlist.
+CLIENT_FILES = tuple(item.name for item in sorted(APP_SOURCE.glob("*.py")) if item.name != "__init__.py")
+CRYPTOGRAPHY_VERSION = "50.0.2"
 
 
 def application_version(source=PROJECT_ROOT):
@@ -110,7 +83,7 @@ def main(output_root=None):
             "--distpath",
             str(output_root),
             "--paths",
-            str(APP_SOURCE),
+            str(SOURCE_ROOT),
             "--collect-all",
             "webview",
             "--collect-all",
@@ -177,11 +150,12 @@ def main(output_root=None):
         check=True,
     )
     client = destination / "client"
-    client.mkdir(exist_ok=True)
-    for name in CLIENT_FILES:
-        shutil.copyfile(APP_SOURCE / name, client / name)
-    shutil.copyfile(PROJECT_ROOT / "VERSION", client / "VERSION")
-    shutil.copytree(WEB_SOURCE, client / "web", dirs_exist_ok=True)
+    package = client / "agent_harness"
+    package.mkdir(parents=True, exist_ok=True)
+    for name in ("__init__.py", *CLIENT_FILES):
+        shutil.copyfile(APP_SOURCE / name, package / name)
+    shutil.copyfile(PROJECT_ROOT / "VERSION", package / "VERSION")
+    shutil.copytree(WEB_SOURCE, package / "web", dirs_exist_ok=True)
     app_version = write_release_metadata(destination)
     (destination / "开始使用.txt").write_text(getting_started_text(app_version), encoding="utf-8-sig")
     print(destination)

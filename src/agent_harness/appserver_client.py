@@ -12,7 +12,7 @@ import subprocess
 import threading
 import time
 
-from release_info import version as application_version
+from agent_harness.release_info import version as application_version
 
 
 class PublicReplyDecoder:

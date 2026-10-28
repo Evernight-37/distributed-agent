@@ -9,9 +9,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from app_lifecycle import Lifecycle
-from host_control import managed_handler
-from service_install import install_bundle
+from agent_harness.app_lifecycle import Lifecycle
+from agent_harness.host_control import managed_handler
+from agent_harness.service_install import install_bundle
 
 
 class ServiceInstallTests(unittest.TestCase):
@@ -70,7 +70,7 @@ class ManagedHostTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             server = ThreadingHTTPServer(("127.0.0.1", 0), Base)
-            with mock.patch("host_control.protect"):
+            with mock.patch("agent_harness.host_control.protect"):
                 server.RequestHandlerClass = managed_handler(Base, server, Path(directory) / "control.json")
             data = json.loads((Path(directory) / "control.json").read_text())
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -97,7 +97,10 @@ class ManagedHostTests(unittest.TestCase):
 
             try:
                 self.assertEqual(request("GET", "/desktop/status")[0], 403)
-                self.assertEqual(request("POST", "/desktop/stop", data["key"], "https://foreign.example")[0], 403)
+                self.assertEqual(
+                    request("POST", "/desktop/stop", data["key"], "https://foreign.example")[0],
+                    403,
+                )
                 self.assertTrue(request("GET", "/desktop/status", data["key"])[1]["result"]["running"])
                 self.assertEqual(request("POST", "/desktop/stop", data["key"], data["url"])[0], 200)
                 thread.join(timeout=5)
@@ -117,7 +120,7 @@ class ExitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "app"
             host_root = Path(directory) / "data"
-            with mock.patch("app_lifecycle.HostRuntime") as host_class:
+            with mock.patch("agent_harness.app_lifecycle.HostRuntime") as host_class:
                 host_class.return_value.status.return_value = {"running": False}
                 Lifecycle(root, host_root=host_root).status()
                 self.assertEqual(host_class.call_args.args[0], host_root.resolve())
@@ -138,8 +141,8 @@ class ExitTests(unittest.TestCase):
             for name in ("device-a", "device-b"):
                 (root / "receivers" / name).mkdir(parents=True)
             with (
-                mock.patch("app_lifecycle.DesktopRuntime") as receiver_class,
-                mock.patch("app_lifecycle.HostRuntime") as host_class,
+                mock.patch("agent_harness.app_lifecycle.DesktopRuntime") as receiver_class,
+                mock.patch("agent_harness.app_lifecycle.HostRuntime") as host_class,
             ):
                 host_class.return_value.status.return_value = {"running": True}
                 result = Lifecycle(root).stop()
@@ -162,8 +165,8 @@ class ExitTests(unittest.TestCase):
                 return runtime
 
             with (
-                mock.patch("app_lifecycle.DesktopRuntime", side_effect=receiver),
-                mock.patch("app_lifecycle.HostRuntime") as host_class,
+                mock.patch("agent_harness.app_lifecycle.DesktopRuntime", side_effect=receiver),
+                mock.patch("agent_harness.app_lifecycle.HostRuntime") as host_class,
             ):
                 host_class.return_value.status.return_value = {"running": True}
                 host_class.return_value.stop_and_wait.side_effect = RuntimeError("host failure")
@@ -188,8 +191,8 @@ class ExitTests(unittest.TestCase):
                 return good
 
             with (
-                mock.patch("app_lifecycle.DesktopRuntime", side_effect=receiver),
-                mock.patch("app_lifecycle.HostRuntime") as host_class,
+                mock.patch("agent_harness.app_lifecycle.DesktopRuntime", side_effect=receiver),
+                mock.patch("agent_harness.app_lifecycle.HostRuntime") as host_class,
             ):
                 host_class.return_value.status.return_value = {"running": True}
                 with self.assertRaisesRegex(RuntimeError, "接收服务 1"):
@@ -202,7 +205,11 @@ class ExitTests(unittest.TestCase):
             root = Path(directory)
             for name in ("device-a", "device-b"):
                 (root / "receivers" / name).mkdir(parents=True)
-            slow_started, fast_stopped, release_slow = threading.Event(), threading.Event(), threading.Event()
+            slow_started, fast_stopped, release_slow = (
+                threading.Event(),
+                threading.Event(),
+                threading.Event(),
+            )
             slow, fast = mock.Mock(), mock.Mock()
 
             def wait_slow():
@@ -220,15 +227,18 @@ class ExitTests(unittest.TestCase):
 
             host_status = {"running": False}
             with (
-                mock.patch("app_lifecycle.DesktopRuntime", side_effect=receiver),
-                mock.patch("app_lifecycle.HostRuntime") as host_class,
+                mock.patch("agent_harness.app_lifecycle.DesktopRuntime", side_effect=receiver),
+                mock.patch("agent_harness.app_lifecycle.HostRuntime") as host_class,
             ):
                 host_class.return_value.status.return_value = host_status
                 result = {}
                 thread = threading.Thread(target=lambda: result.setdefault("value", Lifecycle(root).stop()))
                 thread.start()
                 self.assertTrue(slow_started.wait(1))
-                self.assertTrue(fast_stopped.wait(1), "second receiver was serialized behind the slow receiver")
+                self.assertTrue(
+                    fast_stopped.wait(1),
+                    "second receiver was serialized behind the slow receiver",
+                )
                 release_slow.set()
                 thread.join(2)
             self.assertFalse(thread.is_alive())
@@ -236,7 +246,7 @@ class ExitTests(unittest.TestCase):
 
     def test_unmanaged_host_is_not_stopped(self):
         with tempfile.TemporaryDirectory() as directory:
-            with mock.patch("app_lifecycle.HostRuntime") as host_class:
+            with mock.patch("agent_harness.app_lifecycle.HostRuntime") as host_class:
                 host_class.return_value.status.return_value = {"running": False}
                 Lifecycle(directory).stop()
                 host_class.return_value.stop_and_wait.assert_not_called()

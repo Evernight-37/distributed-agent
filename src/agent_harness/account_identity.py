@@ -5,14 +5,28 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, PublicFormat, NoEncryption
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PrivateFormat,
+    PublicFormat,
+    NoEncryption,
+)
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 
 def canonical(value):
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def encode(value):
@@ -192,14 +206,18 @@ def decrypt_profile(data, password):
     try:
         key = Scrypt(salt=decode(data["salt"], 16), length=32, n=32768, r=8, p=1).derive(password.encode("utf-8"))
         return json.loads(
-            AESGCM(key).decrypt(decode(data["nonce"], 12), decode(data["ciphertext"]), b"agent-harness-profile-v1")
+            AESGCM(key).decrypt(
+                decode(data["nonce"], 12),
+                decode(data["ciphertext"]),
+                b"agent-harness-profile-v1",
+            )
         )
     except Exception:
         raise PermissionError("Unable to unlock local account") from None
 
 
 def save_profile(path, profile, password):
-    from common import write_json
+    from agent_harness.common import write_json
 
     write_json(path, encrypt_profile(profile, password))
 
@@ -218,8 +236,26 @@ def approve_delegate(identity, child_public_key, scopes):
 
 
 def encrypt_identity(identity, password):
-    return encrypt_profile(identity, password)
+    encrypted = encrypt_profile(identity, password)
+    from agent_harness.os_secrets import protect
+
+    protected = protect(canonical(encrypted))
+    if protected is None:
+        return encrypted
+    return {"version": 2, "protected": protected}
 
 
 def decrypt_identity(blob, password):
-    return decrypt_profile(blob, password)
+    if blob.get("version") == 1:
+        return decrypt_profile(blob, password)
+    if blob.get("version") != 2 or not isinstance(blob.get("protected"), dict):
+        raise ValueError("Unsupported profile version")
+    from agent_harness.os_secrets import unprotect
+
+    try:
+        encrypted = json.loads(unprotect(blob["protected"]))
+    except PermissionError:
+        raise
+    except Exception:
+        raise PermissionError("Unable to unlock local account") from None
+    return decrypt_profile(encrypted, password)

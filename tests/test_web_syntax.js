@@ -17,4 +17,18 @@ for (const name of fs
   }
 }
 
+function javascriptFiles(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) return javascriptFiles(target);
+    return entry.isFile() && entry.name.endsWith(".js") ? [target] : [];
+  });
+}
+
+for (const file of javascriptFiles(webRoot)) {
+  new vm.Script(fs.readFileSync(file, "utf8"), {
+    filename: path.relative(webRoot, file),
+  });
+}
+
 console.log("web syntax tests passed");

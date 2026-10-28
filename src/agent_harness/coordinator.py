@@ -6,9 +6,9 @@ import time
 import logging
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
-from collaboration_store import uid
-from broker import PullBackend
-from project_memory import ProjectMemory
+from agent_harness.collaboration_store import uid
+from agent_harness.broker import PullBackend
+from agent_harness.project_memory import ProjectMemory
 
 TERMINAL = {"needs_review", "failed", "cancelled", "timed_out", "interrupted"}
 
@@ -40,6 +40,7 @@ class Coordinator:
                                 task["id"],
                             ),
                         )
+                        self.store.emit_task_event(db, task)
                         self.consumed(db, task)
                         completed.append(task["id"])
                         continue
@@ -57,6 +58,7 @@ class Coordinator:
                             task["id"],
                         ),
                     )
+                    self.store.emit_task_event(db, task)
                     if state in TERMINAL:
                         self.consumed(db, task)
                         completed.append(task["id"])
@@ -65,6 +67,7 @@ class Coordinator:
                         "UPDATE tasks SET state='unknown',error='Controller restarted during launch; reconcile stored job ID before retry' WHERE id=?",
                         (task["id"],),
                     )
+                    self.store.emit_task_event(db, task)
         # Finalization opens its own transaction and must run after the recovery
         # transaction releases the SQLite writer lock.
         for task_id in completed:
@@ -76,7 +79,10 @@ class Coordinator:
             "INSERT INTO agent_cursors(agent_id,channel,last_message) VALUES(?,?,?) ON CONFLICT(agent_id,channel) DO UPDATE SET last_message=MAX(last_message,excluded.last_message)",
             (task["agent_id"], channel, task["cutoff"]),
         )
-        db.execute("UPDATE agents SET last_message=MAX(last_message,?) WHERE id=?", (task["cutoff"], task["agent_id"]))
+        db.execute(
+            "UPDATE agents SET last_message=MAX(last_message,?) WHERE id=?",
+            (task["cutoff"], task["agent_id"]),
+        )
 
     def agent_context(self, agent, task):
         with self.store.connect() as db:
@@ -104,7 +110,11 @@ class Coordinator:
                     "name": agent["name"],
                     "role": "admin" if project["admin_agent_id"] == agent["id"] else "peer",
                 },
-                "project": {"id": project["id"], "name": project["name"], "admin_agent_id": project["admin_agent_id"]},
+                "project": {
+                    "id": project["id"],
+                    "name": project["name"],
+                    "admin_agent_id": project["admin_agent_id"],
+                },
                 "members": members,
                 "visible_messages": visible,
                 "project_memory": shared_memory,
@@ -161,7 +171,8 @@ Use only authorized conversation context and local project evidence; you cannot 
                     other = candidate["sender_id"] if candidate["recipient_id"] else None
                     if candidate["sender_type"] == "system":
                         execution = db.execute(
-                            "SELECT reply_to FROM executions WHERE id=?", (candidate["sender_id"],)
+                            "SELECT reply_to FROM executions WHERE id=?",
+                            (candidate["sender_id"],),
                         ).fetchone()
                         other = execution["reply_to"] if execution else None
                     channel = channel_for({"private_turn": bool(other), "reply_to": other})
@@ -172,7 +183,12 @@ Use only authorized conversation context and local project evidence; you cannot 
                     continue
                 # Addressed messages take priority over general group chatter.
                 pending.append(
-                    (0 if source["recipient_id"] or source["mention_agent_id"] else 1, source["id"], dict(r), partner)
+                    (
+                        0 if source["recipient_id"] or source["mention_agent_id"] else 1,
+                        source["id"],
+                        dict(r),
+                        partner,
+                    )
                 )
             for _, _, r, partner in sorted(pending, key=lambda item: (item[0], item[1])):
                 project = dict(db.execute("SELECT * FROM projects WHERE id=?", (r["project_id"],)).fetchone())
@@ -207,11 +223,13 @@ Use only authorized conversation context and local project evidence; you cannot 
                 agent = dict(db.execute("SELECT * FROM agents WHERE id=?", (task["agent_id"],)).fetchone())
                 if (
                     db.execute(
-                        "UPDATE tasks SET state='starting',job=? WHERE id=? AND state='queued'", (job, task["id"])
+                        "UPDATE tasks SET state='starting',job=? WHERE id=? AND state='queued'",
+                        (job, task["id"]),
                     ).rowcount
                     != 1
                 ):
                     continue
+                self.store.emit_task_event(db, task)
             contract = json.loads(task["contract"])
             try:
                 channel = channel_for(contract)
@@ -228,7 +246,11 @@ Use only authorized conversation context and local project evidence; you cannot 
                     **kwargs,
                 )
                 with self.store.connect() as db:
-                    db.execute("UPDATE tasks SET state='running',job=? WHERE id=?", (result["job"], task["id"]))
+                    db.execute(
+                        "UPDATE tasks SET state='running',job=? WHERE id=?",
+                        (result["job"], task["id"]),
+                    )
+                    self.store.emit_task_event(db, task)
             except Exception as exc:
                 # Submission is idempotent and records remote uncertainty; do not blindly resubmit.
                 text = str(exc)
@@ -242,8 +264,14 @@ Use only authorized conversation context and local project evidence; you cannot 
                 with self.store.connect() as db:
                     db.execute(
                         "UPDATE tasks SET state=?,job=?,error=?,processed=1 WHERE id=?",
-                        ("unknown" if uncertain else "failed", job, text[:4000], task["id"]),
+                        (
+                            "unknown" if uncertain else "failed",
+                            job,
+                            text[:4000],
+                            task["id"],
+                        ),
                     )
+                    self.store.emit_task_event(db, task)
                     self.store.clear_draft(db, task["id"])
                     self.consumed(db, task)
                     self.store._message(
@@ -281,8 +309,14 @@ Use only authorized conversation context and local project evidence; you cannot 
             with self.store.connect() as db:
                 db.execute(
                     "UPDATE tasks SET state=?,report=?,error=?,processed=0 WHERE id=?",
-                    (result["status"], result.get("report", ""), result.get("error"), task["id"]),
+                    (
+                        result["status"],
+                        result.get("report", ""),
+                        result.get("error"),
+                        task["id"],
+                    ),
                 )
+                self.store.emit_task_event(db, task)
                 self.consumed(db, task)
             self.process_completed(task["id"])
 
@@ -323,7 +357,15 @@ Use only authorized conversation context and local project evidence; you cannot 
                     reply = ""
                 if reply:
                     if not self.store.finalize_draft(db, task_id, reply, reply_to):
-                        self.store._message(db, project["id"], agent["id"], "agent", reply, reply_to, task_id)
+                        self.store._message(
+                            db,
+                            project["id"],
+                            agent["id"],
+                            "agent",
+                            reply,
+                            reply_to,
+                            task_id,
+                        )
                     notice = (
                         agent["name"]
                         + " 已生成回复，但本机执行状态为 "
@@ -339,7 +381,13 @@ Use only authorized conversation context and local project evidence; you cannot 
                         + "。请由机器所有者检查 Codex、客户端版本和超时设置。"
                     )
                 self.store._message(
-                    db, project["id"], "system", "system", notice, reply_to if private else None, task_id
+                    db,
+                    project["id"],
+                    "system",
+                    "system",
+                    notice,
+                    reply_to if private else None,
+                    task_id,
                 )
                 return
             try:
@@ -370,7 +418,15 @@ Use only authorized conversation context and local project evidence; you cannot 
                 reply = ""
             if reply:
                 if not self.store.finalize_draft(db, task_id, reply, reply_to):
-                    self.store._message(db, project["id"], agent["id"], "agent", reply, reply_to, task_id)
+                    self.store._message(
+                        db,
+                        project["id"],
+                        agent["id"],
+                        "agent",
+                        reply,
+                        reply_to,
+                        task_id,
+                    )
             else:
                 self.store.clear_draft(db, task_id)
             if not private and answer.get("memory_notes"):
@@ -382,10 +438,19 @@ Use only authorized conversation context and local project evidence; you cannot 
                 if not isinstance(message, dict):
                     continue
                 try:
-                    if private and message.get("recipient") not in {reply_to, agent["id"]}:
+                    if private and message.get("recipient") not in {
+                        reply_to,
+                        agent["id"],
+                    }:
                         raise ValueError("Private turn cannot broadcast or forward to other agents")
                     self.store._message(
-                        db, project["id"], agent["id"], "agent", message["body"], message.get("recipient"), task_id
+                        db,
+                        project["id"],
+                        agent["id"],
+                        "agent",
+                        message["body"],
+                        message.get("recipient"),
+                        task_id,
                     )
                 except (ValueError, KeyError, TypeError):
                     self.store.log(db, "scheduler", "rejected_message", {"task": task_id})
@@ -417,7 +482,12 @@ Use only authorized conversation context and local project evidence; you cannot 
                             )
                         self.store._task(
                             db,
-                            dict(db.execute("SELECT * FROM projects WHERE id=?", (project["id"],)).fetchone()),
+                            dict(
+                                db.execute(
+                                    "SELECT * FROM projects WHERE id=?",
+                                    (project["id"],),
+                                ).fetchone()
+                            ),
                             dict(target),
                             assignment,
                             agent["id"],
@@ -427,7 +497,10 @@ Use only authorized conversation context and local project evidence; you cannot 
                         db.execute("ROLLBACK TO delegation")
                         db.execute("RELEASE delegation")
                         self.store.log(
-                            db, "scheduler", "rejected_delegation", {"task": task_id, "reason": str(exc)[:500]}
+                            db,
+                            "scheduler",
+                            "rejected_delegation",
+                            {"task": task_id, "reason": str(exc)[:500]},
                         )
             elif answer.get("tasks"):
                 self.store.log(db, "scheduler", "rejected_nonadmin_delegation", {"task": task_id})
@@ -448,7 +521,14 @@ Use only authorized conversation context and local project evidence; you cannot 
                         reply_to if private else None,
                     ),
                 )
-                self.store.log(db, agent["id"], "execution_requested", {"execution": execution, "template": template})
+                execution_row = db.execute("SELECT * FROM executions WHERE id=?", (execution,)).fetchone()
+                self.store.emit_execution_event(db, execution_row)
+                self.store.log(
+                    db,
+                    agent["id"],
+                    "execution_requested",
+                    {"execution": execution, "template": template},
+                )
 
     def executions(self, execution_id=None):
         with self.store.connect() as db:
@@ -467,11 +547,13 @@ Use only authorized conversation context and local project evidence; you cannot 
                     with self.store.connect() as db:
                         if (
                             db.execute(
-                                "UPDATE executions SET state='starting' WHERE id=? AND state='approved'", (row["id"],)
+                                "UPDATE executions SET state='starting' WHERE id=? AND state='approved'",
+                                (row["id"],),
                             ).rowcount
                             != 1
                         ):
                             continue
+                        self.store.emit_execution_event(db, row)
                     result = backend.rpc(
                         {
                             "action": "execution_start",
@@ -493,8 +575,16 @@ Use only authorized conversation context and local project evidence; you cannot 
                         "UPDATE executions SET state=?,result=? WHERE id=?",
                         (state, json.dumps(result, ensure_ascii=False), row["id"]),
                     )
+                    self.store.emit_execution_event(db, row)
                     if (
-                        state in {"completed", "failed", "cancelled", "timed_out", "interrupted"}
+                        state
+                        in {
+                            "completed",
+                            "failed",
+                            "cancelled",
+                            "timed_out",
+                            "interrupted",
+                        }
                         and not row["notified"]
                     ):
                         self.store._message(
@@ -519,6 +609,7 @@ Use only authorized conversation context and local project evidence; you cannot 
                         "UPDATE executions SET state=?,result=? WHERE id=?",
                         ("unknown", json.dumps({"error": str(exc)[:2000]}), row["id"]),
                     )
+                    self.store.emit_execution_event(db, row)
 
     def tick(self):
         self.collect()

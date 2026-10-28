@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from broker import PullBackend
-from collaboration_store import Store
-from coordinator import Coordinator
+from agent_harness.broker import PullBackend
+from agent_harness.collaboration_store import Store
+from agent_harness.coordinator import Coordinator
+from tests.helpers import provision_account
 
 
 class FakeBackend:
@@ -29,7 +30,10 @@ class FakeBackend:
         return {"job": job}
 
     def status(self, job, fetch=True):
-        return {"status": "needs_review", "report": self.report or json.dumps({"reply": "已完成"})}
+        return {
+            "status": "needs_review",
+            "report": self.report or json.dumps({"reply": "已完成"}),
+        }
 
 
 class CollaborationTests(unittest.TestCase):
@@ -40,12 +44,12 @@ class CollaborationTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.store = Store(self.root)
-        self.owner = self.store.signup("owner", "owner-password-12", bootstrap=True)
-        self.other = self.store.signup("other", "other-password-12", bootstrap=True) if False else None
+        self.owner = provision_account(self.store, "owner", bootstrap=True)
+        self.other = None
         self.project = self.store.project_create(self.owner["id"], "研究项目")["id"]
         token = self.store.invite(self.owner["id"], self.project)["invite"]
-        # Invitations are consumed by signup, which also creates project membership.
-        self.other = self.store.signup("peer", "peer-password-12", invite=token)
+        # Invitations are consumed by the signed-account test fixture, which creates membership.
+        self.other = provision_account(self.store, "peer", invite=token)
         PullBackend(self.store).create_pair(self.owner["id"], "lab")
         self.backend = FakeBackend()
         self.backend.projects["backend-a"] = {"node": "lab"}
@@ -71,12 +75,24 @@ class CollaborationTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.store.configure_agent(
                 self.other["id"],
-                {"agent": agent, "model": "bad", "effort": "high", "timeout": 1, "enabled": True},
+                {
+                    "agent": agent,
+                    "model": "bad",
+                    "effort": "high",
+                    "timeout": 1,
+                    "enabled": True,
+                },
                 self.backend,
             )
         self.store.configure_agent(
             self.owner["id"],
-            {"agent": agent, "model": "gpt-new", "effort": "high", "timeout": 45, "enabled": True},
+            {
+                "agent": agent,
+                "model": "gpt-new",
+                "effort": "high",
+                "timeout": 45,
+                "enabled": True,
+            },
             self.backend,
         )
         self.assertEqual(self.backend.configured[-1], ("backend-a", "gpt-new", "high", 45))
@@ -157,7 +173,10 @@ class CollaborationTests(unittest.TestCase):
             },
         )
         self.backend.report = json.dumps(
-            {"reply": "[CHECKPOINT] 正在整理上下文", "messages": [{"recipient": None, "body": "这是最终回复"}]}
+            {
+                "reply": "[CHECKPOINT] 正在整理上下文",
+                "messages": [{"recipient": None, "body": "这是最终回复"}],
+            }
         )
         coordinator = Coordinator(self.store, self.backend)
         coordinator.dispatch()

@@ -1,6 +1,6 @@
 # macOS 应用
 
-当前版本为 1.0.3。Apple Silicon 构建已在 macOS 上验证；Intel Mac 应在 Intel 机器使用对应架构的运行时重新构建。
+当前源码版本为 2.0.0。Apple Silicon 构建已在 macOS 上验证；Intel Mac 应在 Intel 机器使用对应架构的运行时重新构建。
 
 ## 安装与升级
 
@@ -14,7 +14,7 @@
 
 ## 修复内容
 
-- 群聊文件、拖入附件、粘贴截图、图片预览与下载；单文件最多 5 MB，客户端与托管端均需升级至 1.0.3。
+- 群聊文件、拖入附件、粘贴截图、图片预览与下载；单文件最多 5 MB，客户端与托管端需使用兼容版本。
 - Linux 服务器接收端可在 Mac 中管理，使用服务器自己的项目目录和 Codex 环境。
 - 使用原生 Cocoa 窗口，并把可写状态放在用户数据目录。
 - 保留后台解释器的执行权限，为私有目录设置 `700`、文件设置 `600`，修复锁文件权限错误。
@@ -22,7 +22,7 @@
 - 从 Finder 启动也能发现应用包或 Homebrew 中的 Codex CLI。
 - 使用 macOS 进程创建时间跟踪任务。
 - 从 Tailscale 应用包调用命令行时设置 `TAILSCALE_BE_CLI=1`，避免把 GUI 启动输出当作 JSON 解析。
-- 包含两个平台共享的 [1.0.1 群聊与员工管理修复](IMPROVEMENTS-1.0.1.md)、[1.0.2 附件与 Linux 接收端](IMPROVEMENTS-1.0.2.md) 和 [1.0.3 项目检查与实现任务](IMPROVEMENTS-1.0.3.md)。
+- 与 Windows 共享群聊、附件、员工管理、项目检查和实现任务能力。
 
 ## 从源码构建
 
@@ -36,7 +36,7 @@
   --output-root /private/tmp/agentharness-release
 ```
 
-产物为 `/private/tmp/agentharness-release/AgentHarness.app`。脚本验证独立运行时的 SSL、SQLite 和签名依赖，并在本机临时目录执行 ad-hoc 签名。公开分发时可用开发者证书签名并公证。
+产物为 `/private/tmp/agentharness-release/AgentHarness.app`。脚本验证独立运行时的 SSL、SQLite 和运行依赖，并执行 macOS 本地运行所需的 ad-hoc 签名；项目不要求开发者证书或公证。
 
 构建后验证：
 

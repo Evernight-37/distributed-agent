@@ -4,9 +4,10 @@ import unittest
 import uuid
 from pathlib import Path
 
-from broker import PullBackend
-from collaboration_store import Store
-from coordinator import Coordinator
+from agent_harness.broker import PullBackend
+from agent_harness.collaboration_store import Store
+from agent_harness.coordinator import Coordinator
+from tests.helpers import provision_account
 
 
 class RecoveryAndMessageIdempotencyTests(unittest.TestCase):
@@ -15,7 +16,7 @@ class RecoveryAndMessageIdempotencyTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.store = Store(self.root)
-        self.user = self.store.signup("owner", "", bootstrap=True)["id"]
+        self.user = provision_account(self.store, "owner", bootstrap=True)["id"]
         self.project = self.store.project_create(self.user, "project")["id"]
 
     def agent_and_task(self):
@@ -23,7 +24,17 @@ class RecoveryAndMessageIdempotencyTests(unittest.TestCase):
             db.execute("INSERT INTO nodes VALUES(?,?)", ("node", self.user))
             db.execute(
                 "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout,enabled) VALUES(?,?,?,?,?,?,?,?,?,1)",
-                ("agent", self.project, "Agent", self.user, "node", "backend", "model", "low", 30),
+                (
+                    "agent",
+                    self.project,
+                    "Agent",
+                    self.user,
+                    "node",
+                    "backend",
+                    "model",
+                    "low",
+                    30,
+                ),
             )
             project = dict(db.execute("SELECT * FROM projects WHERE id=?", (self.project,)).fetchone())
             agent = dict(db.execute("SELECT * FROM agents WHERE id=?", ("agent",)).fetchone())
@@ -47,7 +58,10 @@ class RecoveryAndMessageIdempotencyTests(unittest.TestCase):
         task = self.agent_and_task()
         backend = PullBackend(self.store)
         with self.store.connect() as db:
-            db.execute("UPDATE tasks SET state='starting',job='job-never-created' WHERE id=?", (task,))
+            db.execute(
+                "UPDATE tasks SET state='starting',job='job-never-created' WHERE id=?",
+                (task,),
+            )
         coordinator = Coordinator(self.store, backend)
         coordinator.recover()
         coordinator.wake_messages()
@@ -66,25 +80,52 @@ class RecoveryAndMessageIdempotencyTests(unittest.TestCase):
         task = self.agent_and_task()
         backend = PullBackend(self.store)
         with self.store.connect() as db:
-            db.execute("UPDATE tasks SET state='starting',job='job-present' WHERE id=?", (task,))
+            db.execute(
+                "UPDATE tasks SET state='starting',job='job-present' WHERE id=?",
+                (task,),
+            )
             db.execute(
                 "INSERT INTO pull_jobs(id,node,agent_id,kind,request,state,lease_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
                 ("job-present", "node", "agent", "task", "{}", "claimed", "lease", 1),
             )
         Coordinator(self.store, backend).recover()
         with self.store.connect() as db:
-            self.assertEqual(db.execute("SELECT state FROM tasks WHERE id=?", (task,)).fetchone()[0], "running")
+            self.assertEqual(
+                db.execute("SELECT state FROM tasks WHERE id=?", (task,)).fetchone()[0],
+                "running",
+            )
 
     def test_existing_terminal_pull_job_is_finalized_during_recovery(self):
         task = self.agent_and_task()
         backend = PullBackend(self.store)
-        report = json.dumps({"reply": "recovered reply", "done": True, "messages": [], "tasks": [], "executions": []})
+        report = json.dumps(
+            {
+                "reply": "recovered reply",
+                "done": True,
+                "messages": [],
+                "tasks": [],
+                "executions": [],
+            }
+        )
         result = json.dumps({"status": "needs_review", "report": report})
         with self.store.connect() as db:
-            db.execute("UPDATE tasks SET state='starting',job='job-complete' WHERE id=?", (task,))
+            db.execute(
+                "UPDATE tasks SET state='starting',job='job-complete' WHERE id=?",
+                (task,),
+            )
             db.execute(
                 "INSERT INTO pull_jobs(id,node,agent_id,kind,request,state,lease_id,result,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                ("job-complete", "node", "agent", "task", "{}", "needs_review", "lease", result, 1),
+                (
+                    "job-complete",
+                    "node",
+                    "agent",
+                    "task",
+                    "{}",
+                    "needs_review",
+                    "lease",
+                    result,
+                    1,
+                ),
             )
         coordinator = Coordinator(self.store, backend)
         coordinator.recover()
@@ -95,7 +136,8 @@ class RecoveryAndMessageIdempotencyTests(unittest.TestCase):
         self.assertEqual((row["state"], row["processed"], row["report"]), ("needs_review", 1, report))
         self.assertEqual(count, 1)
         self.assertIn(
-            "recovered reply", [m["body"] for m in self.store.project_view(self.user, self.project)["messages"]]
+            "recovered reply",
+            [m["body"] for m in self.store.project_view(self.user, self.project)["messages"]],
         )
 
     def test_human_message_uuid_is_idempotent_and_content_bound(self):

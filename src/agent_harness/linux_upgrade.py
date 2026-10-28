@@ -11,8 +11,8 @@ import tempfile
 from contextlib import ExitStack, contextmanager
 from pathlib import Path, PurePosixPath
 
-from common import lock, read_json, write_json
-from linux_service import ServiceManager
+from agent_harness.common import lock, read_json, write_json
+from agent_harness.linux_service import ServiceManager
 
 
 VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+")
@@ -121,6 +121,9 @@ def _record_path(root):
 
 def _runtime(release):
     release = Path(release).resolve()
+    executable = release / "harness"
+    if executable.is_file():
+        return executable, None
     python = release / ".venv" / "bin" / "python"
     script = release / "client" / "linux_receiver.py"
     if not python.is_file() or not script.is_file():
@@ -133,17 +136,25 @@ def _current_runtime(root):
     record = read_json(_record_path(root), {})
     current = record.get("current") if isinstance(record, dict) else None
     if current is not None:
-        if not isinstance(current, dict) or not all(
-            isinstance(current.get(key), str) for key in ("release", "python", "script")
+        if (
+            not isinstance(current, dict)
+            or not isinstance(current.get("release"), str)
+            or not isinstance(current.get("python"), str)
         ):
             raise ValueError("Linux 安装状态中的当前版本无效")
         release = Path(current["release"]).expanduser().resolve()
-        python, script = _runtime(release)
-        recorded_python = Path(current["python"]).expanduser().absolute()
-        recorded_script = Path(current["script"]).expanduser().absolute()
-        if python != recorded_python or script != recorded_script:
-            raise ValueError("Linux 安装状态中的运行路径不匹配")
+        python = Path(current["python"]).expanduser().resolve()
+        script_value = current.get("script")
+        script = Path(script_value).expanduser().resolve() if isinstance(script_value, str) and script_value else None
+        if not python.is_file() or (script is not None and not script.is_file()):
+            raise ValueError("Linux 安装状态中的运行路径无效")
         return release, python, script
+    if getattr(sys, "frozen", False):
+        return (
+            Path(sys.executable).resolve().parent,
+            Path(sys.executable).resolve(),
+            None,
+        )
     return (
         Path(__file__).resolve().parent.parent,
         Path(sys.executable).resolve(),
@@ -159,6 +170,67 @@ def _write_bundle_marker(release, digest):
     marker = _bundle_marker(release)
     marker.write_text(digest + "\n", encoding="ascii")
     marker.chmod(0o600)
+
+
+def _refresh_launchers(refresh_launchers, root, executable, script):
+    refresh_launchers(
+        root,
+        python=executable,
+        adapter=script.parent / "mcp_adapter.py" if script is not None else None,
+        standalone=script is None,
+    )
+
+
+def _record_runtime(release, executable, script):
+    return {
+        "release": str(release),
+        "python": str(executable),
+        "script": str(script) if script is not None else None,
+        "kind": "standalone" if script is None else "python",
+    }
+
+
+def _runtime_from_record(value):
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("release"), str)
+        or not isinstance(value.get("python"), str)
+    ):
+        raise ValueError("Linux 安装状态无效")
+    release = Path(value["release"]).expanduser().resolve()
+    executable = Path(value["python"]).expanduser().resolve()
+    script_value = value.get("script")
+    script = Path(script_value).expanduser().resolve() if isinstance(script_value, str) and script_value else None
+    if not executable.is_file() or (script is not None and not script.is_file()):
+        raise ValueError("Linux 安装状态中的版本文件已不存在")
+    return release, executable, script
+
+
+def _prune_releases(releases, keep, limit=3):
+    """Keep current/previous plus the newest rollback candidates."""
+
+    releases = Path(releases).resolve()
+    keep = {Path(item).resolve() for item in keep}
+    candidates = sorted(
+        (
+            path
+            for path in releases.iterdir()
+            if path.is_dir() and VERSION_PATTERN.fullmatch(path.name) and path.resolve().parent == releases
+        ),
+        key=lambda path: (
+            path.stat().st_mtime,
+            tuple(int(part) for part in path.name.split(".")),
+        ),
+        reverse=True,
+    )
+    retained = {path for path in keep if path.parent == releases}
+    for path in candidates:
+        if len(retained) >= limit:
+            break
+        retained.add(path.resolve())
+    for path in candidates:
+        if path.resolve() not in retained:
+            shutil.rmtree(path)
 
 
 def upgrade(root, bundle, expected_sha256, refresh_launchers, retry=False):
@@ -179,7 +251,9 @@ def upgrade(root, bundle, expected_sha256, refresh_launchers, retry=False):
     reused = False
     with tempfile.TemporaryDirectory(dir=releases) as temporary:
         unpacked = _extract(bundle, temporary)
-        version_file = unpacked / "client" / "VERSION"
+        version_file = unpacked / "VERSION"
+        if not version_file.is_file():
+            version_file = unpacked / "client" / "VERSION"
         if not version_file.is_file():
             raise ValueError("升级包缺少 VERSION")
         version = version_file.read_text(encoding="utf-8").strip()
@@ -198,17 +272,20 @@ def upgrade(root, bundle, expected_sha256, refresh_launchers, retry=False):
             os.replace(unpacked, destination)
     if not reused:
         try:
-            # Virtual environments embed absolute interpreter paths and must be
-            # created only after the release reaches its final location.
-            subprocess.run([sys.executable, str(destination / "install.py")], cwd=destination, check=True)
+            installer = destination / "install.py"
+            if installer.is_file():
+                # Legacy 1.1 bundles embed absolute venv paths and must be
+                # installed only after reaching their final location.
+                subprocess.run([sys.executable, str(installer)], cwd=destination, check=True)
+            _runtime(destination)
             _write_bundle_marker(destination, expected)
-        except (OSError, subprocess.CalledProcessError) as exc:
+        except (OSError, subprocess.CalledProcessError, ValueError) as exc:
             cleanup_error = None
             try:
                 shutil.rmtree(destination)
             except OSError as cleanup_exc:
                 cleanup_error = cleanup_exc
-            message = "新版本依赖安装失败；当前服务未切换"
+            message = "新版本准备失败；当前服务未切换"
             if cleanup_error is not None:
                 message += f"；失败目录清理也未完成（{type(cleanup_error).__name__}）"
             raise RuntimeError(message) from exc
@@ -217,20 +294,31 @@ def upgrade(root, bundle, expected_sha256, refresh_launchers, retry=False):
     old_manager = ServiceManager(root, old_python, old_script)
     try:
         with quiesced_receivers(root):
-            refresh_launchers(root, python=new_python, adapter=new_script.parent / "mcp_adapter.py")
+            _refresh_launchers(refresh_launchers, root, new_python, new_script)
             new_manager.install()
     except Exception:
-        refresh_launchers(root, python=old_python, adapter=old_script.parent / "mcp_adapter.py")
+        _refresh_launchers(refresh_launchers, root, old_python, old_script)
         old_manager.install()
         raise
     record = {
-        "current": {"release": str(destination), "python": str(new_python), "script": str(new_script)},
-        "previous": {"release": str(old_release), "python": str(old_python), "script": str(old_script)},
+        "current": _record_runtime(destination, new_python, new_script),
+        "previous": _record_runtime(old_release, old_python, old_script),
     }
     path = _record_path(root)
     write_json(path, record)
     path.chmod(0o600)
-    return {"version": version, "release": str(destination), "rollback_available": True, "reused": reused}
+    try:
+        _prune_releases(releases, {destination, old_release})
+    except OSError:
+        # A stale release held by another process is harmless. A later
+        # successful upgrade will retry retention without blocking service.
+        pass
+    return {
+        "version": version,
+        "release": str(destination),
+        "rollback_available": True,
+        "reused": reused,
+    }
 
 
 def rollback(root, refresh_launchers):
@@ -241,20 +329,23 @@ def rollback(root, refresh_launchers):
     current = record.get("current") if isinstance(record, dict) else None
     if not isinstance(previous, dict) or not isinstance(current, dict):
         raise ValueError("没有可回滚的 Linux 接收端版本")
-    python, script = Path(previous.get("python", "")), Path(previous.get("script", ""))
-    if not python.is_file() or not script.is_file():
-        raise ValueError("上一版本文件已不存在，无法回滚")
+    try:
+        _, python, script = _runtime_from_record(previous)
+    except ValueError as exc:
+        raise ValueError("上一版本文件已不存在，无法回滚") from exc
     if active_jobs(root):
         raise RuntimeError("仍有未结束任务；请等待完成后回滚")
-    current_python = Path(current.get("python", ""))
-    current_script = Path(current.get("script", ""))
+    try:
+        _, current_python, current_script = _runtime_from_record(current)
+    except ValueError:
+        current_python = current_script = None
     try:
         with quiesced_receivers(root):
-            refresh_launchers(root, python=python, adapter=script.parent / "mcp_adapter.py")
+            _refresh_launchers(refresh_launchers, root, python, script)
             ServiceManager(root, python, script).install()
     except Exception:
-        if current_python.is_file() and current_script.is_file():
-            refresh_launchers(root, python=current_python, adapter=current_script.parent / "mcp_adapter.py")
+        if current_python is not None:
+            _refresh_launchers(refresh_launchers, root, current_python, current_script)
             ServiceManager(root, current_python, current_script).install()
         raise
     write_json(path, {"current": previous, "previous": current})

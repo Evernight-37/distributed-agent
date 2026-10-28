@@ -3,11 +3,18 @@
 import hashlib
 import os
 from pathlib import Path
-from account_identity import verify_owner_command
-from common import lock, read_json, write_json, validate_project
-from owner_backend import canonical
+from agent_harness.account_identity import verify_owner_command
+from agent_harness.common import lock, read_json, write_json, validate_project
+from agent_harness.owner_backend import canonical
 
-END_STATES = {"needs_review", "completed", "failed", "cancelled", "timed_out", "interrupted"}
+END_STATES = {
+    "needs_review",
+    "completed",
+    "failed",
+    "cancelled",
+    "timed_out",
+    "interrupted",
+}
 
 
 def key(value):
@@ -47,7 +54,10 @@ class OwnerControl:
                         "error": "Interrupted owner action requires local reconciliation; it will not be repeated"
                     },
                 }
-                write_json(receipt, {"fingerprint": fingerprint, "phase": "done", "response": response})
+                write_json(
+                    receipt,
+                    {"fingerprint": fingerprint, "phase": "done", "response": response},
+                )
                 return response
             write_json(receipt, {"fingerprint": fingerprint, "phase": "started"})
             try:
@@ -55,7 +65,10 @@ class OwnerControl:
                 response = {"state": "applied", "result": result}
             except Exception as exc:
                 response = {"state": "failed", "result": {"error": str(exc)}}
-            write_json(receipt, {"fingerprint": fingerprint, "phase": "done", "response": response})
+            write_json(
+                receipt,
+                {"fingerprint": fingerprint, "phase": "done", "response": response},
+            )
             return response
 
     def _employees(self):
@@ -77,7 +90,7 @@ class OwnerControl:
                     raise ValueError("Employee has an unresolved job")
 
     def _settings(self, settings):
-        allowed = {"remote_path", "model", "effort", "timeout", "stages", "enabled"}
+        allowed = {"remote_path", "model", "effort", "timeout", "stages", "enabled", "strict_worktree"}
         if not isinstance(settings, dict) or set(settings) - allowed:
             raise ValueError("Unsupported employee setting")
         checked = validate_project(dict(settings, name="owner-validation"))
@@ -86,10 +99,13 @@ class OwnerControl:
             raise ValueError("Invalid employee stages")
         if not isinstance(settings.get("enabled", False), bool):
             raise ValueError("enabled must be boolean")
+        if not isinstance(settings.get("strict_worktree", False), bool):
+            raise ValueError("strict_worktree must be boolean")
         return {k: checked[k] for k in ("remote_path", "model", "effort")} | {
             "timeout": checked.get("timeout", 1800),
             "stages": stages,
             "enabled": settings.get("enabled", False),
+            "strict_worktree": settings.get("strict_worktree", False),
         }
 
     def _run(self, action, data):
@@ -110,7 +126,11 @@ class OwnerControl:
             name = data.get("name")
             if not isinstance(name, str) or not 1 <= len(name.strip()) <= 120:
                 raise ValueError("Invalid employee name")
-            current = {"id": employee, "name": name.strip(), "settings": {"enabled": False}}
+            current = {
+                "id": employee,
+                "name": name.strip(),
+                "settings": {"enabled": False},
+            }
             employees[employee] = current
             self._save(employees)
             return current
@@ -145,12 +165,12 @@ class OwnerControl:
                     {
                         "action": "configure",
                         "project": binding["backend_project"],
-                        **{k: settings[k] for k in ("model", "effort", "timeout")},
+                        **{k: settings[k] for k in ("model", "effort", "timeout", "strict_worktree")},
                     }
                 )
                 updated = dict(
                     binding,
-                    **{k: settings[k] for k in ("model", "effort", "timeout", "stages")},
+                    **{k: settings[k] for k in ("model", "effort", "timeout", "stages", "strict_worktree")},
                     name=data.get("name", current["name"]),
                 )
                 updated["enabled"] = settings["enabled"] and binding.get("assigned", True)
@@ -162,7 +182,10 @@ class OwnerControl:
         if not isinstance(project_id, str) or not 1 <= len(project_id) <= 120:
             raise ValueError("Invalid shared project")
         backend = execution_project(employee, project_id)
-        existing = next((b for b in self._bindings(employee) if b["backend_project"] == backend), None)
+        existing = next(
+            (b for b in self._bindings(employee) if b["backend_project"] == backend),
+            None,
+        )
         if action == "withdraw":
             if existing:
                 self.connector.save_binding(dict(existing, enabled=False, assigned=False))
@@ -180,9 +203,15 @@ class OwnerControl:
                 {
                     "action": "register",
                     "project": dict(
-                        name=backend, **{k: settings[k] for k in ("remote_path", "model", "effort", "timeout")}
+                        name=backend,
+                        **{k: settings[k] for k in ("remote_path", "model", "effort", "timeout", "strict_worktree")},
                     ),
-                    "memory": {"revision": 0, "facts": [], "decisions": [], "open_questions": []},
+                    "memory": {
+                        "revision": 0,
+                        "facts": [],
+                        "decisions": [],
+                        "open_questions": [],
+                    },
                 }
             )
         else:
@@ -190,7 +219,11 @@ class OwnerControl:
             if Path(registered["remote_path"]).resolve() != Path(settings["remote_path"]).resolve():
                 raise ValueError("Existing project directory differs; preserve its session")
             self.connector.executor(
-                {"action": "configure", "project": backend, **{k: settings[k] for k in ("model", "effort", "timeout")}}
+                {
+                    "action": "configure",
+                    "project": backend,
+                    **{k: settings[k] for k in ("model", "effort", "timeout", "strict_worktree")},
+                }
             )
         binding = {
             "assigned": True,
@@ -198,10 +231,15 @@ class OwnerControl:
             "project_id": project_id,
             "backend_project": backend,
             "name": current["name"],
-            **{k: settings[k] for k in ("model", "effort", "timeout", "stages", "enabled")},
+            **{k: settings[k] for k in ("model", "effort", "timeout", "stages", "enabled", "strict_worktree")},
         }
         self.connector.save_binding(binding)
-        return {"id": employee, "project_id": project_id, "backend_project": backend, "enabled": settings["enabled"]}
+        return {
+            "id": employee,
+            "project_id": project_id,
+            "backend_project": backend,
+            "enabled": settings["enabled"],
+        }
 
     def _browse(self, path):
         if path is None:
