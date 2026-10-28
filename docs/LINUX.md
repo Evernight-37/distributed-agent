@@ -4,7 +4,9 @@ Linux 接收端把服务器作为你账户名下的一台执行机器。Windows 
 
 不熟悉 Linux 命令时，推荐在桌面 Harness **账户 → 添加 Linux 服务器** 中复制配置提示词，粘贴给服务器 Codex。发布包根目录的 `交给AI安装.md` 也包含同一份受限任务说明；Codex 会执行下面的流程，并在外部账号和权限节点暂停让人确认。说明见 [AI 配置流程](AI-SETUP-LINUX.md)。
 
-需要可运行且已登录的 Codex CLI，以及到协作服务的网络连接。发布包已经包含 Harness 所需运行时，不要求安装 Python、pip 或 venv，不修改系统 Python，也不需要 Linux 桌面环境。服务器项目文件始终留在服务器。安装和运行均使用普通用户；不要使用 `sudo` 或 root 运行 Harness、Codex 或 MCP。
+需要可运行且已登录的 Codex CLI，以及到协作服务的网络连接。发布包已经包含 Harness 所需运行时，不要求安装 Python、pip 或 venv，不修改系统 Python，也不需要 Linux 桌面环境。服务器项目工作目录始终留在服务器；Windows 或 macOS 控制台可让 Linux 为项目建立本机默认工作目录。文件速传选择 Linux 为目标后，由 Linux 后台断点接收，不会阻塞 Agent 轮询。账户所有者可在任意桌面控制台的“文件速传 → 接收设置”中填写 Linux 上已经存在的绝对目录；未设置时使用该接收端数据目录下的 `received-files`。
+
+Linux 无界面端目前负责接收文件，不提供远程浏览服务器文件或从桌面端填写 Linux 路径发送文件的能力。需要从 Linux 主动发送文件时，应先在 Linux 本机明确选择文件；当前版本尚未提供该 CLI 入口。
 
 ## 首次安装
 

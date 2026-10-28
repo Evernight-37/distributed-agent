@@ -716,7 +716,10 @@ def _rpc(request, managed_runtime=None):
             write_json(directory / "active.json", active)
             if active:
                 raise ValueError("Project already has an active job: " + active["job"])
-            # Avoid two different registered projects writing the same remote tree.
+            contract = json.loads(request["prompt"])
+            current_stage = contract.get("stage", "discuss")
+            # Read-only discussion/review turns may share a tree. Any implement
+            # turn remains exclusive across identical or nested workspaces.
             for other in (ROOT / "projects").glob("*/project.json"):
                 if other.parent == directory:
                     continue
@@ -730,10 +733,11 @@ def _rpc(request, managed_runtime=None):
                 ):
                     other_active = reconcile(read_json(other.parent / "active.json"))
                     write_json(other.parent / "active.json", other_active)
-                    if other_active:
+                    if other_active and (
+                        current_stage == "implement" or other_active.get("stage", "implement") == "implement"
+                    ):
                         raise ValueError("Remote directory is busy in another project")
             validate_project(project)
-            contract = json.loads(request["prompt"])
             strict_guard = _strict_guard(project, contract)
             # A pull receiver uses a directory chosen and enabled by its
             # machine owner. Keep the linked-worktree requirement for legacy
@@ -835,6 +839,7 @@ def _rpc(request, managed_runtime=None):
                                     "pid": pid,
                                     "stamp": stamp,
                                     "generation": generation,
+                                    "stage": current_stage,
                                 },
                             )
                             write_json(launch_path, None)
@@ -857,7 +862,7 @@ def _rpc(request, managed_runtime=None):
             # fresh launch already committed its ownership record.
             committed_active = read_json(directory / "active.json", {}) or {}
             if not (config["managed_turn"] and project.get("local_control") and committed_active.get("job") == job):
-                active_record = {"job": job, "pid": pid, "stamp": stamp}
+                active_record = {"job": job, "pid": pid, "stamp": stamp, "stage": current_stage}
                 if config["managed_turn"] and project.get("local_control") and generation:
                     active_record["generation"] = generation
                 write_json(directory / "active.json", active_record)

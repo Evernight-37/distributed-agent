@@ -127,7 +127,7 @@ function teamServiceCard(initial) {
     } else
       note(
         card,
-        "为本机工作台创建稳定的 HTTPS 团队入口，让已获网络访问权限的设备连接。不会上传或同步项目文件。",
+        "为本机工作台创建稳定的 HTTPS 团队入口，让已获网络访问权限的设备连接。不会上传或同步项目工作目录。",
       );
     if (last.state === "conflict")
       note(
@@ -195,7 +195,7 @@ function teamServiceCard(initial) {
             );
             note(
               body,
-              "恢复前应用会自动保存当前数据库；本机 Agent 设置和项目文件不会被覆盖。恢复期间其他成员会短暂断开。",
+              "恢复前应用会自动保存当前数据库；本机 Agent 设置和项目工作目录不会被覆盖。恢复期间其他成员会短暂断开。",
             );
             actions.append(
               button("取消", closeModal),

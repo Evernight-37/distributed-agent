@@ -86,16 +86,29 @@ class LinuxAISetupTests(unittest.TestCase):
             (runtime / "harness").write_text("binary", encoding="utf-8")
             return runtime
 
+        def fake_service_bundle(root):
+            python = root / "runtime" / "bin" / "python3"
+            python.parent.mkdir(parents=True)
+            python.write_text("python", encoding="utf-8")
+            client = root / "client" / "agent_harness"
+            client.mkdir(parents=True)
+            (client / "desktop_service.py").write_text("service", encoding="utf-8")
+            (client / "headless_transfers.py").write_text("transfers", encoding="utf-8")
+
         with (
             tempfile.TemporaryDirectory() as directory,
             patch.object(build_linux_receiver.sys, "platform", "linux"),
             patch.object(build_linux_receiver, "_architecture", return_value="x64"),
             patch.object(build_linux_receiver, "_build_runtime", side_effect=fake_runtime),
+            patch.object(build_linux_receiver, "_build_service_bundle", side_effect=fake_service_bundle),
         ):
             archive = build_linux_receiver.build(Path(directory))
             with tarfile.open(archive, "r:gz") as bundle:
                 names = set(bundle.getnames())
                 self.assertIn("AgentHarness-linux/交给AI安装.md", names)
+                self.assertIn("AgentHarness-linux/runtime/bin/python3", names)
+                self.assertIn("AgentHarness-linux/client/agent_harness/desktop_service.py", names)
+                self.assertIn("AgentHarness-linux/client/agent_harness/headless_transfers.py", names)
                 prompt = bundle.extractfile("AgentHarness-linux/交给AI安装.md").read().decode("utf-8")
             self.assertEqual(prompt.count(PLACEHOLDER), 1)
 

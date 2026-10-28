@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 from pathlib import Path
 from agent_harness.account_identity import verify_owner_command
 from agent_harness.common import lock, read_json, write_json, validate_project
@@ -77,6 +78,165 @@ class OwnerControl:
     def _save(self, employees):
         write_json(self.root / "owner-employees.json", {"employees": employees})
 
+    def _workspace_file(self):
+        return self.root / "project-workspaces.json"
+
+    def _workspaces(self):
+        """Return local project-to-directory mappings, migrating legacy bindings.
+
+        Absolute paths are deliberately kept in this receiver-local file.  A
+        binding/advertisement contains only the shared project id and therefore
+        cannot disclose a machine owner's filesystem layout to the Hub.
+        """
+
+        document = read_json(self._workspace_file(), {"version": 1, "workspaces": {}})
+        if not isinstance(document, dict) or not isinstance(document.get("workspaces"), dict):
+            raise ValueError("Invalid local project workspace registry")
+        changed = document.get("version") != 1
+        document["version"] = 1
+        workspaces = document["workspaces"]
+        by_project = {}
+        for binding in self.connector.bindings():
+            project_id = binding.get("project_id")
+            backend = binding.get("backend_project")
+            if not isinstance(project_id, str) or not isinstance(backend, str):
+                continue
+            project = read_json(self.root / "projects" / backend / "project.json", {})
+            remote = project.get("remote_path") if isinstance(project, dict) else None
+            if not isinstance(remote, str):
+                continue
+            try:
+                path = Path(remote).resolve()
+            except OSError:
+                continue
+            by_project.setdefault(project_id, set()).add(str(path))
+        for project_id, candidates in by_project.items():
+            if project_id in workspaces:
+                continue
+            ordered = sorted(candidates, key=str.casefold)
+            if len(ordered) == 1:
+                workspaces[project_id] = {"status": "ready", "remote_path": ordered[0]}
+            else:
+                workspaces[project_id] = {"status": "needs_choice", "candidates": ordered}
+            changed = True
+        if changed:
+            write_json(self._workspace_file(), document)
+        return workspaces
+
+    def _workspace(self, project_id):
+        workspace = self._workspaces().get(project_id)
+        if not workspace:
+            raise ValueError("请先为这个项目在本机选择工作目录")
+        if workspace.get("status") != "ready":
+            raise ValueError("旧版员工为这个项目使用了不同目录，请先选择项目工作目录")
+        path = Path(workspace.get("remote_path", ""))
+        if not path.is_absolute() or path == Path(path.anchor) or not path.is_dir():
+            raise ValueError("项目工作目录不存在，请重新选择")
+        return str(path.resolve())
+
+    def _configure_workspace(self, data):
+        project_id = data.get("project_id")
+        if not isinstance(project_id, str) or not 1 <= len(project_id) <= 120:
+            raise ValueError("Invalid shared project")
+        remote = data.get("path")
+        if not isinstance(remote, str):
+            raise ValueError("Choose an existing absolute directory")
+        path = Path(remote)
+        if not path.is_absolute() or path == Path(path.anchor) or not path.is_dir():
+            raise ValueError("Choose an existing absolute directory, not a drive root")
+        resolved = path.resolve()
+        if resolved == Path(resolved.anchor):
+            raise ValueError("Choose an existing absolute directory, not a drive root")
+        remote = str(resolved)
+        bindings = [b for b in self.connector.bindings() if b.get("project_id") == project_id]
+        # Preserve each backend project's independent Codex sessions while all
+        # employees dispatched to this shared project use the same local tree.
+        with lock(self.root / "registry.lock"):
+            for binding in bindings:
+                self._idle(binding["backend_project"])
+            document = read_json(self._workspace_file(), {"version": 1, "workspaces": {}})
+            if not isinstance(document, dict) or not isinstance(document.get("workspaces"), dict):
+                raise ValueError("Invalid local project workspace registry")
+            document["version"] = 1
+            document["workspaces"][project_id] = {"status": "ready", "remote_path": remote}
+            for binding in bindings:
+                project_path = self.root / "projects" / binding["backend_project"] / "project.json"
+                project = read_json(project_path)
+                if project:
+                    project["remote_path"] = remote
+                    validate_project(project)
+                    write_json(project_path, project)
+            write_json(self._workspace_file(), document)
+        return {"project_id": project_id, "configured": True}
+
+    def _configure_default_workspace(self, data):
+        """Create a receiver-local default without disclosing its path to the Hub."""
+
+        project_id = data.get("project_id")
+        if not isinstance(project_id, str) or not 1 <= len(project_id) <= 120:
+            raise ValueError("Invalid shared project")
+        receiver_root = self.root.resolve()
+        workspace_root = receiver_root / "workspaces"
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        resolved_root = workspace_root.resolve()
+        if not resolved_root.is_relative_to(receiver_root):
+            raise ValueError("Default workspace root must remain inside the receiver data directory")
+        target = (resolved_root / ("project-" + key(project_id)[:32])).resolve()
+        if not target.is_relative_to(resolved_root):
+            raise ValueError("Invalid default workspace")
+
+        bindings = [b for b in self.connector.bindings() if b.get("project_id") == project_id]
+        with lock(self.root / "registry.lock"):
+            document = read_json(self._workspace_file(), {"version": 1, "workspaces": {}})
+            if not isinstance(document, dict) or not isinstance(document.get("workspaces"), dict):
+                raise ValueError("Invalid local project workspace registry")
+            existing = document["workspaces"].get(project_id)
+            if isinstance(existing, dict) and existing.get("status") == "ready":
+                current = Path(existing.get("remote_path", ""))
+                if current.is_absolute() and current.is_dir():
+                    return {"project_id": project_id, "configured": True, "existing": True}
+            for binding in bindings:
+                self._idle(binding["backend_project"])
+            target.mkdir(parents=True, exist_ok=True)
+            document["version"] = 1
+            document["workspaces"][project_id] = {
+                "status": "ready",
+                "remote_path": str(target),
+            }
+            for binding in bindings:
+                project_path = self.root / "projects" / binding["backend_project"] / "project.json"
+                project = read_json(project_path)
+                if project:
+                    project["remote_path"] = str(target)
+                    validate_project(project)
+                    write_json(project_path, project)
+            write_json(self._workspace_file(), document)
+        return {"project_id": project_id, "configured": True, "default": True}
+
+    def _configure_receive_directory(self, data):
+        """Persist an owner-selected receive directory only on this receiver."""
+
+        remote = data.get("path")
+        if not isinstance(remote, str) or not 1 <= len(remote) <= 4096 or "\0" in remote:
+            raise ValueError("Choose an existing absolute directory")
+        path = Path(remote)
+        if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+            raise ValueError("Choose an existing absolute directory, not a symbolic link")
+        resolved = path.resolve()
+        if resolved == Path(resolved.anchor):
+            raise ValueError("Choose an existing absolute directory, not a filesystem root")
+        settings = self.root / "file-transfer-settings.json"
+        write_json(
+            settings,
+            {"version": 1, "receive_folder": str(resolved)},
+        )
+        try:
+            os.chmod(settings, 0o600)
+        except OSError:
+            # Windows receiver data ACLs are applied by the desktop bootstrap.
+            pass
+        return {"configured": True}
+
     def _bindings(self, employee):
         return [b for b in self.connector.bindings() if b.get("employee_id") == employee]
 
@@ -90,10 +250,21 @@ class OwnerControl:
                     raise ValueError("Employee has an unresolved job")
 
     def _settings(self, settings):
+        # remote_path is accepted only so an installed pre-v2 employee record
+        # can be read and rewritten.  It is never returned or used for a new
+        # dispatch; directories now belong to project x machine.
         allowed = {"remote_path", "model", "effort", "timeout", "stages", "enabled", "strict_worktree"}
         if not isinstance(settings, dict) or set(settings) - allowed:
             raise ValueError("Unsupported employee setting")
-        checked = validate_project(dict(settings, name="owner-validation"))
+        model = settings.get("model")
+        if not isinstance(model, str) or not re.fullmatch(r"[a-zA-Z0-9_.-]+", model):
+            raise ValueError("An explicit model is required")
+        effort = settings.get("effort")
+        if effort not in {"low", "medium", "high", "xhigh", "max", "ultra"}:
+            raise ValueError("Invalid reasoning effort")
+        timeout = settings.get("timeout", 1800)
+        if not isinstance(timeout, int) or isinstance(timeout, bool) or not 30 <= timeout <= 86400:
+            raise ValueError("Timeout must be between 30 and 86400 seconds")
         stages = settings.get("stages", ["discuss"])
         if not isinstance(stages, list) or not stages or set(stages) - {"discuss", "review", "implement"}:
             raise ValueError("Invalid employee stages")
@@ -101,8 +272,8 @@ class OwnerControl:
             raise ValueError("enabled must be boolean")
         if not isinstance(settings.get("strict_worktree", False), bool):
             raise ValueError("strict_worktree must be boolean")
-        return {k: checked[k] for k in ("remote_path", "model", "effort")} | {
-            "timeout": checked.get("timeout", 1800),
+        return {"model": model, "effort": effort} | {
+            "timeout": timeout,
             "stages": stages,
             "enabled": settings.get("enabled", False),
             "strict_worktree": settings.get("strict_worktree", False),
@@ -113,6 +284,12 @@ class OwnerControl:
             raise ValueError("Invalid command data")
         if action == "browse":
             return self._browse(data.get("path"))
+        if action == "workspace-configure":
+            return self._configure_workspace(data)
+        if action == "workspace-default":
+            return self._configure_default_workspace(data)
+        if action == "transfer-receive-directory":
+            return self._configure_receive_directory(data)
         if action not in {"create", "configure", "dispatch", "withdraw", "delete"}:
             raise ValueError("Unsupported owner action")
         employee = data.get("id")
@@ -155,11 +332,6 @@ class OwnerControl:
             bindings = self._bindings(employee)
             for binding in bindings:
                 self._idle(binding["backend_project"])
-                project = read_json(self.root / "projects" / binding["backend_project"] / "project.json")
-                if not project or Path(project["remote_path"]).resolve() != Path(settings["remote_path"]).resolve():
-                    raise ValueError(
-                        "A dispatched employee directory cannot change; withdraw and use a new employee to preserve project history"
-                    )
             for binding in bindings:
                 self.connector.executor(
                     {
@@ -197,6 +369,7 @@ class OwnerControl:
                 "existing_jobs": "continue to completion",
             }
         settings = self._settings(current["settings"])
+        workspace = self._workspace(project_id)
         self._idle(backend)
         if not (self.root / "projects" / backend / "project.json").exists():
             self.connector.executor(
@@ -204,7 +377,8 @@ class OwnerControl:
                     "action": "register",
                     "project": dict(
                         name=backend,
-                        **{k: settings[k] for k in ("remote_path", "model", "effort", "timeout", "strict_worktree")},
+                        remote_path=workspace,
+                        **{k: settings[k] for k in ("model", "effort", "timeout", "strict_worktree")},
                     ),
                     "memory": {
                         "revision": 0,
@@ -216,8 +390,8 @@ class OwnerControl:
             )
         else:
             registered = read_json(self.root / "projects" / backend / "project.json")
-            if Path(registered["remote_path"]).resolve() != Path(settings["remote_path"]).resolve():
-                raise ValueError("Existing project directory differs; preserve its session")
+            if Path(registered["remote_path"]).resolve() != Path(workspace).resolve():
+                raise ValueError("Existing project directory differs; choose the project workspace again")
             self.connector.executor(
                 {
                     "action": "configure",

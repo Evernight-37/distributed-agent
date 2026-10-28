@@ -9,6 +9,7 @@ from agent_harness.panel import handler_for
 from agent_harness.app_bridge import AppBridge
 from agent_harness.collaboration_store import Store
 from agent_harness.pull_worker import enroll, Connector
+from agent_harness.owner_worker import OwnerControl
 from agent_harness.common import read_json, write_json
 
 
@@ -251,13 +252,18 @@ class ProductionFlow(unittest.TestCase):
                         "name": "第二台员工",
                         "model": "gpt-5.6-sol",
                         "effort": "medium",
-                        "path": str(work),
                         "enabled": False,
                         "stages": ["discuss"],
                         "timeout": 600,
                     },
                 )
                 connector.cycle()
+                OwnerControl(connector)._configure_workspace({"project_id": pid, "path": str(work)})
+                b._rpc("workspace-ready", {"project": pid})
+                workspace_view = call(a, "project", {"id": pid})["workspaces"]
+                self.assertEqual(workspace_view[0]["status"], "ready")
+                self.assertNotIn("path", workspace_view[0])
+                self.assertNotIn("remote_path", workspace_view[0])
                 call(a, "employee-dispatch", {"id": employee, "project": pid})
                 connector.cycle()
                 connector.cycle()
@@ -280,7 +286,6 @@ class ProductionFlow(unittest.TestCase):
                         "name": "第二台员工",
                         "model": "gpt-5.6-sol",
                         "effort": "medium",
-                        "path": str(work),
                         "enabled": True,
                         "stages": ["discuss"],
                         "timeout": 600,
@@ -289,22 +294,8 @@ class ProductionFlow(unittest.TestCase):
                 connector.cycle()
                 connector.cycle()
                 self.assertFalse(connector.bindings()[0]["enabled"])
-                call(
-                    a,
-                    "employee-configure",
-                    {
-                        "id": employee,
-                        "name": "第二台员工",
-                        "model": "gpt-5.6-sol",
-                        "effort": "medium",
-                        "path": str(root / "missing"),
-                        "enabled": True,
-                        "stages": ["discuss"],
-                        "timeout": 600,
-                    },
-                )
-                connector.cycle()
-                self.assertIn("does not exist", call(a, "dashboard")["employees"][0]["last_error"])
+                with self.assertRaisesRegex(ValueError, "existing absolute directory"):
+                    OwnerControl(connector)._configure_workspace({"project_id": pid, "path": str(root / "missing")})
                 call(a, "device-revoke", {"id": b.profile["node"]})
                 self.assertFalse(b.invoke("dashboard")["ok"])
                 with self.assertRaises(Exception):

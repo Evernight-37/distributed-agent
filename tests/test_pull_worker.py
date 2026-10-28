@@ -162,6 +162,31 @@ class PullWorkerTests(unittest.TestCase):
             self.connector.cycle()
         self.assertFalse(self.starts())
 
+    def test_transfer_relay_failure_does_not_block_agent_jobs(self):
+        self.jobs = [self.job("turn-with-transfer-outage")]
+
+        class FailingTransfers:
+            def reconcile(self):
+                raise OSError("relay offline")
+
+        self.connector.headless_transfers = FailingTransfers()
+
+        def transport(_config, operation, payload):
+            if operation == "poll":
+                return {
+                    "features": ["device_file_transfers_v1"],
+                    "jobs": self.jobs,
+                    "projects": [],
+                    "cancellations": [],
+                }
+            self.reports.append(payload)
+            return {}
+
+        self.connector.transport = transport
+        with patch.object(pull_worker.sys, "platform", "linux"):
+            self.connector.cycle()
+        self.assertEqual(len(self.starts()), 1)
+
     def test_local_settings_and_duplicate_assignment(self):
         self.jobs = [self.job("turn")]
         for _ in range(4):
@@ -190,7 +215,9 @@ class PullWorkerTests(unittest.TestCase):
 
     def test_optional_display_name_defaults_to_local_project(self):
         self.connector.save_binding(dict(self.binding, name=""))
-        self.assertEqual(self.connector.advertisements()[0]["name"], "local")
+        advertisement = self.connector.advertisements()[0]
+        self.assertEqual(advertisement["name"], "local")
+        self.assertNotIn("remote_path", advertisement)
 
     @unittest.skipUnless(os.name == "nt", "Windows credential permissions")
     def test_failed_credential_acl_removes_new_token_file(self):

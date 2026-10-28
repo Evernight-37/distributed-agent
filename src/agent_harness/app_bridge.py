@@ -25,6 +25,7 @@ from agent_harness.desktop_actions import (
     DesktopIdentityActions,
     DesktopOwnerActions,
     DesktopProjectActions,
+    DesktopTransferActions,
 )
 from agent_harness.runtime_paths import application_home
 from agent_harness.pull_worker import validate_server
@@ -57,7 +58,6 @@ class AppBridge:
         self.inspected = {}
         self.project_servers = {}
         self.employee_servers = {}
-        self.command_servers = {}
         self.job_servers = {}
         self.last_service_sync = 0
         self.activated_services = set()
@@ -74,11 +74,15 @@ class AppBridge:
                 DesktopTeamServiceActions(self),
                 DesktopIdentityActions(self),
                 DesktopOwnerActions(self),
+                DesktopTransferActions(self),
                 DesktopProjectActions(self),
             ),
         )
         self.allow_window_close = False
         self.broker_proxy = read_json(self.root / "broker-network.json", {}).get("proxy")
+        from agent_harness.file_transfer_client import FileTransferManager
+
+        self.file_transfers = FileTransferManager(self)
 
     def _profiles(self):
         return [read_json(p) for p in (self.root / "profiles").glob("*.json")]
@@ -318,6 +322,8 @@ class AppBridge:
             operation.startswith("attachment-") or (payload or {}).get("attachment_ids")
         ) and "chat_attachments_v1" not in features:
             raise RuntimeError("托管端尚不支持附件。请将协作服务升级到当前版本并重启后再试。")
+        if operation.startswith("transfer-") and "device_file_transfers_v1" not in features:
+            raise RuntimeError("协作服务尚不支持文件速传。请将托管端升级到当前版本并重启后再试。")
         if (
             operation
             in {
@@ -885,10 +891,7 @@ class AppBridge:
                 "data": data,
             },
         )
-        result = self._rpc("owner-command", {"envelope": envelope}, server=server)
-        if isinstance(result, dict) and result.get("id"):
-            self.command_servers[result["id"]] = server or self.profile["server"]
-        return result
+        return self._rpc("owner-command", {"envelope": envelope}, server=server)
 
     def _employee(self, eid):
         data = self._dashboard()
@@ -940,12 +943,15 @@ class AppBridge:
                 seen_services.add(service_id)
             listed.append(server)
             hosting[server] = bool(extra.get("hosted_by_me"))
+            for transfer in extra.get("transfers", []):
+                transfer["server"] = server
             if result is None:
                 result = extra
             else:
                 result["projects"].extend(extra.get("projects", []))
                 result["employees"].extend(extra.get("employees", []))
                 result["devices"].extend(extra.get("devices", []))
+                result.setdefault("transfers", []).extend(extra.get("transfers", []))
             for project in extra.get("projects", []):
                 project["server"] = server
                 self.project_servers[project["id"]] = server
@@ -977,6 +983,7 @@ class AppBridge:
             }
             for server in listed
         ]
+        self.file_transfers.reconcile(result.get("transfers", []))
         return result
 
     def _missing(self):

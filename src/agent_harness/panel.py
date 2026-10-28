@@ -7,7 +7,8 @@ import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
+from agent_harness.file_transfers import CHUNK_BYTES, FileTransfers
 from agent_harness.collaboration_store import Store
 from agent_harness.coordinator import Coordinator
 from agent_harness.runtime_paths import ASSET_ROOT, DEFAULT_STATE
@@ -35,6 +36,7 @@ def handler_for(root, backend=None, public_origin=None):
     from agent_harness.account_backend import AccountBackend
 
     accounts = AccountBackend(store, backend)
+    transfers = FileTransfers(store)
 
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
@@ -95,6 +97,23 @@ def handler_for(root, backend=None, public_origin=None):
             self.end_headers()
             self.wfile.write(body)
 
+        def send_bytes(self, status, body, headers=None):
+            self.send_response(status)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def bearer(self):
+            authorization = self.headers.get("Authorization", "")
+            if not authorization.startswith("Bearer "):
+                raise PermissionError("缺少传输凭据")
+            return authorization[7:]
+
         def do_GET(self):
             if not self.allowed():
                 return self.send(403, {"error": "Host/site rejected"})
@@ -117,6 +136,29 @@ def handler_for(root, backend=None, public_origin=None):
                         200,
                         {"ok": True, "service": "agent-harness-hub", "protocol": hub_advertisement()},
                     )
+                match = re.fullmatch(r"/api/transfers/(transfer-[0-9a-f]{32})/content", request_path)
+                if match:
+                    self.connection.settimeout(60)
+                    requested = self.headers.get("Range", "")
+                    range_match = re.fullmatch(r"bytes=(\d+)-(\d+)", requested)
+                    if not range_match:
+                        raise ValueError("文件下载必须使用字节范围")
+                    transfer, start, end, content = transfers.download_chunk(
+                        self.bearer(),
+                        match.group(1),
+                        int(range_match.group(1)),
+                        int(range_match.group(2)),
+                    )
+                    filename = quote(transfer["name"], safe="")
+                    return self.send_bytes(
+                        206,
+                        content,
+                        {
+                            "Accept-Ranges": "bytes",
+                            "Content-Range": f"bytes {start}-{end}/{transfer['size']}",
+                            "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+                        },
+                    )
                 if request_path in RETIRED_BROWSER_APIS:
                     return self.send(410, {"error": "浏览器工作台已停用；请使用 Agent Harness 应用或 Codex MCP"})
                 return self.send(404, {"error": "Not found"})
@@ -126,6 +168,44 @@ def handler_for(root, backend=None, public_origin=None):
                 self.send(400, {"error": str(exc)})
             except Exception:
                 self.send(500, {"error": "后台操作失败，请检查服务日志"})
+
+        def do_PUT(self):
+            if not self.allowed():
+                return self.send(403, {"error": "Host/site rejected"})
+            try:
+                request_path = urlsplit(self.path).path
+                match = re.fullmatch(r"/api/transfers/uploads/(transfer-[0-9a-f]{32})", request_path)
+                if not match:
+                    return self.send(404, {"error": "Not found"})
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= CHUNK_BYTES:
+                    raise ValueError("分块大小无效")
+                content_range = self.headers.get("Content-Range", "")
+                parsed = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+                if not parsed:
+                    raise ValueError("Content-Range 无效")
+                start, end, total = map(int, parsed.groups())
+                if end - start + 1 != size:
+                    raise ValueError("Content-Range 与请求大小不一致")
+                self.connection.settimeout(90)
+                content = self.rfile.read(size)
+                if len(content) != size:
+                    raise ValueError("上传分块不完整")
+                result = transfers.upload_chunk(
+                    self.bearer(),
+                    match.group(1),
+                    start,
+                    total,
+                    content,
+                    self.headers.get("X-Chunk-SHA256", ""),
+                )
+                return self.send(200, result)
+            except PermissionError as exc:
+                return self.send(403, {"error": str(exc)})
+            except (ValueError, KeyError, TypeError, sqlite3.IntegrityError) as exc:
+                return self.send(400, {"error": str(exc)})
+            except Exception:
+                return self.send(500, {"error": "文件传输上传失败"})
 
         def do_POST(self):
             if not self.allowed():

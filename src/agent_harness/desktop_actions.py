@@ -261,12 +261,11 @@ class DesktopOwnerActions:
             "device-revoke",
             "employee-create",
             "employee-delete",
+            "employee-delete-preview",
             "employee-configure",
             "employee-dispatch",
             "employee-withdraw",
-            "browse-folders",
-            "command-status",
-            "choose-folder",
+            "workspace-configure",
             "attachment-save",
         }
     )
@@ -308,6 +307,9 @@ class DesktopOwnerActions:
                 {"id": "employee-" + secrets.token_hex(16), "name": data["name"]},
                 server,
             )
+        if action == "employee-delete-preview":
+            employee = bridge._employee(data["id"])
+            return bridge._rpc("employee-delete-preview", {"id": employee["id"]}, server=employee["server"], timeout=20)
         if action == "employee-delete":
             employee = bridge._employee(data["id"])
             return bridge._owner("delete", employee["node"], {"id": employee["id"]}, employee["server"])
@@ -315,7 +317,6 @@ class DesktopOwnerActions:
             employee = bridge._employee(data["id"])
             settings = {k: data[k] for k in ("model", "effort", "enabled", "stages", "timeout")}
             settings["strict_worktree"] = bool(data.get("strict_worktree", False))
-            settings["remote_path"] = data["path"]
             return bridge._owner(
                 "configure",
                 employee["node"],
@@ -333,18 +334,42 @@ class DesktopOwnerActions:
                 {"id": data["id"], "project_id": data["project"]},
                 employee["server"],
             )
-        if action == "browse-folders":
-            result = bridge._owner("browse", data["node"], {"path": data.get("path")}, data.get("server"))
-            return {"request_id": result["id"]}
-        if action == "command-status":
-            return bridge._rpc("command-status", data, server=bridge.command_servers.get(data["id"]))
-        if action == "choose-folder":
+        if action == "workspace-configure":
+            server = bridge.project_servers.get(data["project"], data.get("server") or bridge.profile["server"])
+            if data["node"] != bridge.profile["node"]:
+                command = bridge._owner(
+                    "workspace-default",
+                    data["node"],
+                    {"project_id": data["project"]},
+                    server=server,
+                )
+                return {"configured": False, "pending": True, "command": command}
             if not bridge.window:
                 raise RuntimeError("文件夹选择器尚未就绪")
             import webview
+            from agent_harness.owner_worker import OwnerControl
+            from agent_harness.pull_worker import Connector
 
             chosen = bridge.window.create_file_dialog(webview.FileDialog.FOLDER)
-            return {"path": chosen[0] if chosen else ""}
+            if not chosen:
+                return {"configured": False}
+            path = chosen[0] if isinstance(chosen, (list, tuple)) else chosen
+            envelope = sign_envelope(
+                bridge.identity,
+                {
+                    "domain": "harness-owner-command-v1",
+                    "account_id": bridge.identity["account_id"],
+                    "target": bridge.profile["node"],
+                    "id": "local-workspace-" + secrets.token_hex(16),
+                    "action": "workspace-configure",
+                    "data": {"project_id": data["project"], "path": path},
+                },
+            )
+            result = OwnerControl(Connector(bridge._runtime(server).config_path)).apply(envelope)
+            if result["state"] != "applied":
+                raise RuntimeError(result.get("result", {}).get("error", "项目工作目录配置失败"))
+            status = bridge._rpc("workspace-ready", {"project": data["project"]}, server=server, timeout=20)
+            return {"configured": True, "status": status}
         if not bridge.window:
             raise RuntimeError("文件保存窗口尚未就绪")
         from agent_harness.attachments import decode_file, safe_name
@@ -358,6 +383,158 @@ class DesktopOwnerActions:
         destination = Path(chosen if isinstance(chosen, str) else chosen[0])
         destination.write_bytes(decode_file(file["base64"]))
         return {"saved": True, "name": destination.name}
+
+
+class DesktopTransferActions:
+    """Account-level machine-to-machine file transfer controls."""
+
+    actions = frozenset(
+        {
+            "file-transfer-dashboard",
+            "file-transfer-send-select",
+            "file-transfer-accept",
+            "file-transfer-reject",
+            "file-transfer-cancel",
+            "file-transfer-receive-folder",
+            "file-transfer-job-status",
+        }
+    )
+
+    def __init__(self, bridge):
+        self.bridge = bridge
+
+    def _dashboard(self):
+        bridge = self.bridge
+        transfers, contacts, devices, unavailable = [], [], [], []
+        services = [item["server"] for item in bridge._dashboard().get("services", [])]
+        for server in services:
+            try:
+                peers = bridge._rpc("transfer-peers", server=server, timeout=10)
+                listing = bridge._rpc("transfer-list", server=server, timeout=10)
+            except (OSError, RuntimeError, ValueError, PermissionError):
+                unavailable.append(server)
+                continue
+            for item in listing.get("transfers", []):
+                transfers.append(dict(item, server=server))
+            for item in peers.get("contacts", []):
+                contacts.append(dict(item, server=server))
+            for item in peers.get("devices", []):
+                devices.append(dict(item, server=server))
+        contact_names = {(item["server"], item["id"]): item["username"] for item in contacts}
+        device_names = {(item["server"], item["node"]): item["name"] for item in devices}
+        account_id = bridge.identity["account_id"]
+        for item in transfers:
+            if item["sender_id"] == item["recipient_id"] == account_id:
+                peer_node = (
+                    item.get("recipient_node")
+                    if item.get("sender_node") == bridge.profile["node"]
+                    else item.get("sender_node")
+                )
+                item["peer_name"] = device_names.get((item["server"], peer_node), "我的另一台机器")
+            else:
+                peer_id = item["recipient_id"] if item["sender_id"] == account_id else item["sender_id"]
+                item["peer_name"] = contact_names.get((item["server"], peer_id), "协作成员")
+        bridge.file_transfers.reconcile(transfers)
+        return {
+            "transfers": transfers,
+            "contacts": contacts,
+            "devices": devices,
+            "jobs": bridge.file_transfers.jobs(),
+            "settings": bridge.file_transfers.settings(),
+            "unavailable_services": unavailable,
+        }
+
+    def invoke(self, action, data):
+        bridge = self.bridge
+        if not bridge.identity:
+            raise PermissionError("请先登录")
+        if action == "file-transfer-dashboard":
+            return self._dashboard()
+        if action == "file-transfer-job-status":
+            return bridge.file_transfers.status(data["id"])
+        if action == "file-transfer-receive-folder":
+            node = data.get("node") or bridge.profile["node"]
+            server = data.get("server") or bridge.profile["server"]
+            if node != bridge.profile["node"]:
+                remote_path = data.get("path")
+                if not isinstance(remote_path, str) or not remote_path.strip():
+                    raise ValueError("请填写目标机器上的绝对接收目录")
+                command = bridge._owner(
+                    "transfer-receive-directory",
+                    node,
+                    {"path": remote_path.strip()},
+                    server=server,
+                )
+                return {"configured": False, "pending": True, "command": command}
+            if not bridge.window:
+                raise RuntimeError("文件夹选择器尚未就绪")
+            import webview
+
+            chosen = bridge.window.create_file_dialog(webview.FileDialog.FOLDER)
+            if not chosen:
+                return {"configured": False}
+            folder = chosen[0] if isinstance(chosen, (list, tuple)) else chosen
+            return {"configured": True, **bridge.file_transfers.set_receive_folder(folder)}
+        if action == "file-transfer-send-select":
+            if not bridge.window:
+                raise RuntimeError("文件选择器尚未就绪")
+            import webview
+
+            server = data["server"]
+            if server not in bridge._services():
+                raise ValueError("请选择当前账户已接入的协作服务")
+            chosen = bridge.window.create_file_dialog(webview.FileDialog.OPEN)
+            if not chosen:
+                return {"selected": False}
+            source = Path(chosen[0] if isinstance(chosen, (list, tuple)) else chosen)
+            return {
+                "selected": True,
+                "job": bridge.file_transfers.send(
+                    server,
+                    data["recipient_id"],
+                    data.get("recipient_node"),
+                    source,
+                ),
+            }
+        if action == "file-transfer-accept":
+            server = data["server"]
+            transfer = bridge._rpc("transfer-status", {"id": data["id"]}, server=server, timeout=20)
+            recipient_node = data.get("recipient_node") or bridge.profile["node"]
+            peers = bridge._rpc("transfer-peers", server=server, timeout=20)
+            owned = {item["node"] for item in peers.get("devices", [])}
+            if recipient_node not in owned:
+                raise PermissionError("接收机器不属于当前账户")
+            if recipient_node != bridge.profile["node"]:
+                accepted = bridge._rpc(
+                    "transfer-decide",
+                    {"id": data["id"], "accept": True, "recipient_node": recipient_node},
+                    server=server,
+                    timeout=20,
+                )
+                return {"accepted": True, "remote": True, "transfer": accepted}
+            if not bridge.window:
+                raise RuntimeError("文件保存窗口尚未就绪")
+            import webview
+            from agent_harness.attachments import safe_name
+
+            chosen = bridge.window.create_file_dialog(
+                webview.FileDialog.SAVE,
+                save_filename=safe_name(transfer["name"]),
+            )
+            if not chosen:
+                return {"accepted": False}
+            destination = Path(chosen[0] if isinstance(chosen, (list, tuple)) else chosen)
+            return {
+                "accepted": True,
+                "job": bridge.file_transfers.accept(server, transfer, destination),
+            }
+        if action == "file-transfer-reject":
+            return bridge._rpc(
+                "transfer-decide", {"id": data["id"], "accept": False}, server=data["server"], timeout=20
+            )
+        if action == "file-transfer-cancel":
+            return bridge._rpc("transfer-cancel", {"id": data["id"]}, server=data["server"], timeout=20)
+        raise ValueError("未知文件传输操作")
 
 
 class DesktopProjectActions:

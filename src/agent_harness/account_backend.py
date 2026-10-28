@@ -72,7 +72,9 @@ class AccountBackend:
                     "service_host_owner_v1",
                     "codex_mcp_v1",
                     "employee_delete_v1",
+                    "employee_delete_preview_v1",
                     "chat_attachments_v1",
+                    "device_file_transfers_v1",
                     "event_cursor_v1",
                     "health_v1",
                     "account_recovery_v1",
@@ -345,6 +347,9 @@ class AccountBackend:
         if op == "dashboard":
             result = self.store.snapshot(user)
             result.update(self.owners.snapshot(user))
+            from agent_harness.file_transfers import FileTransfers
+
+            result["transfers"] = FileTransfers(self.store).list(user)
             host = self.store.host_owner()
             result["hosted_by_me"] = bool(host and host["owner_account_id"] == user)
             result["host_node"] = host["host_node"] if result["hosted_by_me"] else None
@@ -384,8 +389,9 @@ class AccountBackend:
                 result["devices"] = devices
                 device_map = {d["node"]: d for d in devices}
                 for employee in result["employees"]:
-                    employee.update(employee.pop("settings"))
-                    employee["path"] = employee.get("remote_path", "")
+                    settings = employee.pop("settings")
+                    settings.pop("remote_path", None)
+                    employee.update(settings)
                     pending = []
                     for command in db.execute(
                         "SELECT id,envelope,state FROM owner_commands WHERE owner_id=? AND node=? AND state IN ('queued','claimed')",
@@ -481,6 +487,14 @@ class AccountBackend:
                     if dispatch_state.get(m.get("employee_id")) != "withdraw"
                     and not any(e["id"] == m.get("employee_id") and e["status"] == "deleted" for e in employees)
                 ]
+                result["workspaces"] = [
+                    dict(row)
+                    for row in db.execute(
+                        "SELECT project_id,owner_id,node,status,write_policy,updated_at "
+                        "FROM project_workspaces WHERE project_id=? AND owner_id=? ORDER BY node",
+                        (project, user),
+                    )
+                ]
             return result
         if op == "create-project":
             return self.store.project_create(user, p["name"])
@@ -507,6 +521,48 @@ class AccountBackend:
             if op == "attachment-upload":
                 return files.upload(user, p["project"], p["name"], p["base64"])
             return files.download(user, p["project"], p["id"])
+        if op.startswith("transfer-"):
+            if delegate_scopes is not None:
+                raise PermissionError("Codex 委托身份不能操作设备文件传输")
+            from agent_harness.file_transfers import FileTransfers
+
+            files = FileTransfers(self.store)
+            node = device_node(public)
+            if op == "transfer-peers":
+                return files.recipients(user)
+            if op == "transfer-list":
+                return {"transfers": files.list(user)}
+            if op == "transfer-request":
+                return files.request(
+                    user,
+                    node,
+                    p["recipient_id"],
+                    p.get("recipient_node"),
+                    p["name"],
+                    p["size"],
+                    p["sha256"],
+                )
+            if op == "transfer-status":
+                return files.status(user, p["id"])
+            if op == "transfer-decide":
+                return files.decide(
+                    user,
+                    node,
+                    p["id"],
+                    p["accept"],
+                    recipient_node=p.get("recipient_node"),
+                )
+            if op == "transfer-upload-start":
+                return files.upload_start(user, node, p["id"])
+            if op == "transfer-upload-finish":
+                return files.finish(user, node, p["id"])
+            if op == "transfer-download-ticket":
+                return files.download_ticket(user, node, p["id"])
+            if op == "transfer-complete":
+                return files.complete(user, node, p["id"])
+            if op == "transfer-cancel":
+                return files.cancel(user, p["id"])
+            raise ValueError("Unknown file-transfer operation")
         if op == "conversation-read":
             return self.store.mark_conversation_read(user, p["project"], p["conversation_id"])
         if op == "task":
@@ -543,6 +599,75 @@ class AccountBackend:
                 )
                 self.store.emit_project_event(db, p["project"], "project")
             return {"updated": True}
+        if op == "workspace-ready":
+            if delegate_scopes is not None:
+                raise PermissionError("Codex 委托身份不能配置本机项目目录")
+            node = device_node(public)
+            with self.store.connect() as db:
+                self.store.require_member(db, p["project"], user)
+                owned = db.execute(
+                    "SELECT 1 FROM nodes WHERE name=? AND owner_id=?",
+                    (node, user),
+                ).fetchone()
+                if not owned:
+                    raise PermissionError("当前设备尚未接入此协作服务")
+                db.execute(
+                    "INSERT INTO project_workspaces(project_id,owner_id,node,status,write_policy,updated_at) "
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,node) DO UPDATE SET "
+                    "owner_id=excluded.owner_id,status=excluded.status,updated_at=excluded.updated_at",
+                    (p["project"], user, node, "ready", "single_writer", time.time()),
+                )
+            return {"project": p["project"], "node": node, "status": "ready"}
+        if op == "employee-delete-preview":
+            with self.store.connect() as db:
+                employee = db.execute(
+                    "SELECT * FROM employees WHERE id=? AND owner_id=? AND status<>'deleted'",
+                    (p["id"], user),
+                ).fetchone()
+                if not employee:
+                    raise ValueError("员工不存在")
+                projects = []
+                active = []
+                for agent in self.owners._employee_agents(db, employee["id"], user, employee["node"]):
+                    project = db.execute(
+                        "SELECT id,name,admin_agent_id FROM projects WHERE id=?",
+                        (agent["project_id"],),
+                    ).fetchone()
+                    if project:
+                        projects.append(
+                            {
+                                "id": project["id"],
+                                "name": project["name"],
+                                "administrator": project["admin_agent_id"] == agent["id"],
+                            }
+                        )
+                    active.extend(
+                        dict(row)
+                        for row in db.execute(
+                            "SELECT id,title,state FROM tasks WHERE agent_id=? AND state IN ('queued','starting','running','unknown')",
+                            (agent["id"],),
+                        )
+                    )
+                    active.extend(
+                        {
+                            "id": row["id"],
+                            "title": row["template"],
+                            "state": row["state"],
+                            "kind": "execution",
+                        }
+                        for row in db.execute(
+                            "SELECT id,template,state FROM executions WHERE agent_id=? "
+                            "AND state IN ('approved','starting','running','unknown')",
+                            (agent["id"],),
+                        )
+                    )
+                return {
+                    "id": employee["id"],
+                    "name": employee["name"],
+                    "projects": projects,
+                    "active_tasks": active,
+                    "can_delete": not active,
+                }
         if op == "owner-command":
             verified = verify_envelope(p["envelope"], user)
             with self.store.connect() as db:

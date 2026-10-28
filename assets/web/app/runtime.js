@@ -62,6 +62,7 @@ async function refresh(force = false) {
       if (S.page === "project") renderProject();
       else if (S.page === "dashboard") renderDashboard();
       else if (S.page === "account") renderAccount();
+      else if (S.page === "transfers") renderTransfers();
       else if (force) await renderSettings();
     }
   } catch (e) {
@@ -91,6 +92,7 @@ async function boot() {
 }
 $("quitApp").onclick = requestAppClose;
 $("dashboardNav").onclick = () => renderDashboard();
+$("transfersNav").onclick = () => run(renderTransfers);
 $("settingsNav").onclick = () => run(renderSettings);
 $("accountNav").onclick = renderAccount;
 $("logout").onclick = () =>

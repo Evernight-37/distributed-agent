@@ -8,6 +8,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import tempfile
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 if __package__:
     from scripts.build_desktop import (
         APP_SOURCE,
+        CLIENT_FILES,
         PROJECT_ROOT,
         SOURCE_ROOT,
         WEB_SOURCE,
@@ -23,6 +25,7 @@ if __package__:
 else:
     from build_desktop import (
         APP_SOURCE,
+        CLIENT_FILES,
         PROJECT_ROOT,
         SOURCE_ROOT,
         WEB_SOURCE,
@@ -87,6 +90,65 @@ def _build_runtime(work):
     return runtime
 
 
+def _build_service_bundle(root, python_runtime=None):
+    """Add the relocatable interpreter and source bundle used by worker services."""
+
+    python_runtime = Path(python_runtime or sys.base_prefix).resolve()
+    if (python_runtime / "pyvenv.cfg").exists():
+        raise RuntimeError("Build Linux releases with a standalone Python, not a venv")
+    version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    source_stdlib = python_runtime / "lib" / version
+    if not source_stdlib.is_dir():
+        raise RuntimeError("Standalone Python standard library is missing")
+    runtime = root / "runtime"
+    (runtime / "bin").mkdir(parents=True)
+    shutil.copy2(Path(sys.executable).resolve(), runtime / "bin" / "python3")
+    (runtime / "bin" / "python3").chmod(0o755)
+    shutil.copytree(
+        source_stdlib,
+        runtime / "lib" / version,
+        ignore=shutil.ignore_patterns(
+            "site-packages",
+            "__pycache__",
+            "*.pyc",
+            "test",
+            "tests",
+            "idlelib",
+            "tkinter",
+            "ensurepip",
+        ),
+    )
+    for library in (python_runtime / "lib").glob("libpython*.so*"):
+        target = runtime / "lib" / library.name
+        if not target.exists():
+            shutil.copy2(library.resolve(), target)
+    packages = runtime / "lib" / version / "site-packages"
+    packages.mkdir()
+    (packages / "agent_harness.pth").write_text("../../../../client\n", encoding="utf-8")
+    installed = Path(sysconfig.get_path("purelib"))
+    for pattern in (
+        "cryptography",
+        "cryptography-*.dist-info",
+        "cffi",
+        "cffi-*.dist-info",
+        "_cffi_backend*.so",
+        "pycparser",
+        "pycparser-*.dist-info",
+    ):
+        for source in installed.glob(pattern):
+            target = packages / source.name
+            if source.is_dir():
+                shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            else:
+                shutil.copy2(source, target)
+    client = root / "client" / "agent_harness"
+    client.mkdir(parents=True)
+    for name in ("__init__.py", *CLIENT_FILES):
+        shutil.copy2(APP_SOURCE / name, client / name)
+    shutil.copy2(PROJECT_ROOT / "VERSION", client / "VERSION")
+    shutil.copytree(WEB_SOURCE, client / "web")
+
+
 def build(output):
     if not sys.platform.startswith("linux"):
         raise RuntimeError("The Linux distribution must be built on Linux")
@@ -101,6 +163,7 @@ def build(output):
         runtime = _build_runtime(temporary)
         root = temporary / "package" / "AgentHarness-linux"
         shutil.copytree(runtime, root)
+        _build_service_bundle(root)
         shutil.copy2(PROJECT_ROOT / "VERSION", root / "VERSION")
         shutil.copy2(PROJECT_ROOT / "docs/LINUX.md", root / "README.md")
         shutil.copy2(WEB_SOURCE / "linux-ai-setup.md", root / "交给AI安装.md")

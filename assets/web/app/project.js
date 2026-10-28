@@ -737,7 +737,7 @@ function dispatch() {
       b,
       "这里只显示已接入 " +
         serviceName(server) +
-        " 的员工。员工使用各自机器的环境和工作目录。",
+        " 的员工。工作目录按“项目 × 机器”设置；同一机器派到本项目的员工共享该目录，但各自保留独立会话。",
     );
     const checks = [];
     const eligible = S.dash.employees.filter(
@@ -748,6 +748,80 @@ function dispatch() {
         b,
         "该服务还没有你的员工。请先在设置中将机器接入该服务，再添加员工。",
       );
+    const workspaceState = new Map(
+      (S.view.workspaces || []).map((w) => [w.node, w.status === "ready"]),
+    );
+    (S.view.members || [])
+      .filter((member) => member.owner_id === S.dash.user.id)
+      .forEach((member) => workspaceState.set(member.node, true));
+    [...new Set(eligible.map((e) => e.node))].forEach((node) => {
+      const local = (S.dash.devices || []).some(
+          (d) => d.local && (d.node || d.id) === node,
+        ),
+        block = el("div", "note workspace-row"),
+        status = el(
+          "span",
+          workspaceState.get(node) ? "success small" : "pending small",
+          workspaceState.get(node) ? "已配置" : "尚未配置",
+        );
+      block.prepend(
+        el("strong", "", deviceName(node, server) + " · 项目工作目录 "),
+        status,
+      );
+      if (local)
+        block.append(
+          button(
+            workspaceState.get(node) ? "更换目录" : "选择目录",
+            async () => {
+              const result = await api("workspace-configure", {
+                project: S.project,
+                node,
+                server,
+              });
+              if (!result.configured) return;
+              workspaceState.set(node, true);
+              status.className = "success small";
+              status.textContent = "已配置";
+              notify("项目工作目录已保存在本机，不会上传到协作服务。");
+            },
+          ),
+        );
+      else {
+        const configure = button(
+          workspaceState.get(node) ? "已使用本机目录" : "使用默认目录",
+          async () => {
+            configure.disabled = true;
+            try {
+              const result = await api("workspace-configure", {
+                project: S.project,
+                node,
+                server,
+              });
+              if (result.configured && !result.pending) {
+                workspaceState.set(node, true);
+                status.className = "success small";
+                status.textContent = "已配置";
+                configure.textContent = "已使用本机目录";
+                notify("目标机器已创建本机默认工作目录；目录路径不会上传。 ");
+              } else {
+                status.className = "pending small";
+                status.textContent = "配置中";
+                notify("配置指令已发送，目标机器在线后会在本机创建默认目录。 ");
+              }
+            } finally {
+              configure.disabled = workspaceState.get(node) || false;
+            }
+          },
+        );
+        configure.disabled = !!workspaceState.get(node);
+        block.append(configure);
+        note(
+          block,
+          "目标机器会在本机创建默认目录；绝对路径不会经过协作服务。 ",
+        );
+      }
+      b.append(block);
+    });
     eligible.forEach((e) => {
       const row = el(
           "label",
@@ -770,6 +844,15 @@ function dispatch() {
       button(
         "确认派遣",
         async () => {
+          const missing = checks.find(
+            ([e, ch, old]) => ch.checked && !old && !workspaceState.get(e.node),
+          );
+          if (missing)
+            throw Error(
+              "请先为 " +
+                deviceName(missing[0].node, server) +
+                " 设置项目工作目录",
+            );
           for (const [e, ch, old] of checks)
             if (ch.checked !== old)
               await api(

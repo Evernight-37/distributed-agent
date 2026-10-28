@@ -99,6 +99,8 @@ jobs:
           mkdir -p build/linux-smoke
           tar -xzf release/AgentHarness-*-linux-*.tar.gz -C build/linux-smoke
           build/linux-smoke/AgentHarness-linux/harness --help
+          build/linux-smoke/AgentHarness-linux/runtime/bin/python3 -I -c \
+            "import ssl, sqlite3; from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; import agent_harness.desktop_service, agent_harness.headless_transfers; key=Ed25519PrivateKey.generate(); key.public_key().verify(key.sign(b'check'), b'check'); print('Linux service bundle OK')"
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux-${{ matrix.architecture }}

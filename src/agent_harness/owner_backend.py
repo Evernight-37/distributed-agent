@@ -5,7 +5,16 @@ import hashlib
 import time
 from agent_harness.account_identity import verify_owner_command
 
-ACTIONS = {"create", "configure", "dispatch", "withdraw", "browse", "delete"}
+ACTIONS = {
+    "create",
+    "configure",
+    "dispatch",
+    "withdraw",
+    "browse",
+    "delete",
+    "workspace-default",
+    "transfer-receive-directory",
+}
 TERMINAL = {"applied", "failed"}
 
 
@@ -70,7 +79,16 @@ class OwnerBackend:
                 ):
                     raise ValueError("Command id already used")
                 return {"id": cid, "state": previous["state"], "duplicate": True}
-            if action != "browse":
+            if action == "workspace-default":
+                project_id = data.get("project_id")
+                if not isinstance(project_id, str) or not 1 <= len(project_id) <= 120:
+                    raise ValueError("Invalid shared project")
+                self.store.require_member(db, project_id, user)
+            elif action == "transfer-receive-directory":
+                path = data.get("path")
+                if not isinstance(path, str) or not 1 <= len(path) <= 4096 or "\0" in path:
+                    raise ValueError("Invalid receive directory")
+            elif action != "browse":
                 employee = data.get("id")
                 if not isinstance(employee, str) or not 1 <= len(employee) <= 120:
                     raise ValueError("Invalid employee id")
@@ -96,6 +114,11 @@ class OwnerBackend:
                             (agent["id"],),
                         ).fetchone():
                             raise ValueError("员工有未完成任务，请等待任务结束后再删除")
+                        if db.execute(
+                            "SELECT 1 FROM executions WHERE agent_id=? AND state IN ('approved','starting','running','unknown')",
+                            (agent["id"],),
+                        ).fetchone():
+                            raise ValueError("员工有未完成执行，请等待执行结束后再删除")
                 if action in {"dispatch", "withdraw"}:
                     self.store.require_member(db, data.get("project_id"), user)
             db.execute(
@@ -150,8 +173,23 @@ class OwnerBackend:
         body = json.loads(row["envelope"])["body"]
         data = body["data"]
         action = body["action"]
-        if action != "browse":
-            if state == "applied" and action == "delete":
+        if action == "workspace-default":
+            if state == "applied":
+                db.execute(
+                    "INSERT INTO project_workspaces(project_id,owner_id,node,status,write_policy,updated_at) "
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,node) DO UPDATE SET "
+                    "owner_id=excluded.owner_id,status=excluded.status,updated_at=excluded.updated_at",
+                    (data["project_id"], row["owner_id"], row["node"], "ready", "single_writer", time.time()),
+                )
+        elif action not in {"browse", "transfer-receive-directory"}:
+            if state == "applied" and action == "dispatch":
+                db.execute(
+                    "INSERT INTO project_workspaces(project_id,owner_id,node,status,write_policy,updated_at) "
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,node) DO UPDATE SET "
+                    "owner_id=excluded.owner_id,status=excluded.status,updated_at=excluded.updated_at",
+                    (data["project_id"], row["owner_id"], row["node"], "ready", "single_writer", time.time()),
+                )
+            elif state == "applied" and action == "delete":
                 for agent in self._employee_agents(db, data["id"], row["owner_id"], row["node"]):
                     db.execute(
                         "UPDATE agents SET enabled=0,configuring=0 WHERE id=?",
@@ -184,8 +222,19 @@ class OwnerBackend:
                     "UPDATE employees SET status='failed' WHERE id=? AND status<>'deleted'",
                     (data["id"],),
                 )
-        db.execute(
-            "UPDATE owner_commands SET state=?,result=? WHERE id=?",
-            (state, encoded, command_id),
-        )
+        if action == "transfer-receive-directory":
+            # The trusted relay must see the signed path while delivering the
+            # command, but it has no reason to retain that filesystem detail
+            # after the target machine reports a terminal result.
+            envelope = json.loads(row["envelope"])
+            envelope["body"]["data"] = {"path": "[redacted]"}
+            db.execute(
+                "UPDATE owner_commands SET state=?,result=?,envelope=? WHERE id=?",
+                (state, encoded, canonical(envelope), command_id),
+            )
+        else:
+            db.execute(
+                "UPDATE owner_commands SET state=?,result=? WHERE id=?",
+                (state, encoded, command_id),
+            )
         return {"ok": True}

@@ -838,6 +838,33 @@ textarea {
 .memory-form button {
   justify-self: start;
 }
+.transfer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.transfer-info {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 3px;
+}
+.transfer-settings {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.transfer-settings h2,
+.transfer-settings p {
+  margin: 0;
+}
+.workspace-row {
+  display: grid;
+  gap: 8px;
+}
 .conversation-start {
   display: block;
   width: 100%;

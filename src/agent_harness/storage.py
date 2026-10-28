@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import json
 import sqlite3
 import time
 import uuid
@@ -13,7 +14,7 @@ from pathlib import Path
 from agent_harness.common import lock
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 BACKUP_RETENTION = 5
 
 
@@ -84,6 +85,63 @@ INSERT INTO users(id,username) SELECT id,username FROM users_password_legacy;
 DROP TABLE users_password_legacy;
 DROP TABLE IF EXISTS sessions;
 """
+
+
+SCHEMA_V4 = """
+DROP TABLE IF EXISTS artifact_tokens;
+CREATE TABLE IF NOT EXISTS file_transfers(
+    id TEXT PRIMARY KEY,
+    sender_id TEXT NOT NULL,
+    sender_node TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    recipient_node TEXT,
+    name TEXT NOT NULL,
+    size INTEGER NOT NULL CHECK(size > 0),
+    sha256 TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN (
+        'requested','accepted','uploading','ready','completed',
+        'rejected','cancelled','expired'
+    )),
+    received_bytes INTEGER NOT NULL DEFAULT 0 CHECK(received_bytes >= 0),
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    accepted_at REAL,
+    completed_at REAL,
+    expires_at REAL
+);
+CREATE INDEX IF NOT EXISTS file_transfers_sender
+    ON file_transfers(sender_id,state,updated_at);
+CREATE INDEX IF NOT EXISTS file_transfers_recipient
+    ON file_transfers(recipient_id,state,updated_at);
+CREATE TABLE IF NOT EXISTS file_transfer_tokens(
+    token_hash TEXT PRIMARY KEY,
+    transfer_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    node TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK(purpose IN ('upload','download')),
+    expires_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS file_transfer_tokens_expiry ON file_transfer_tokens(expires_at);
+CREATE TABLE IF NOT EXISTS project_workspaces(
+    project_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    node TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('ready','needs_choice','unavailable')),
+    write_policy TEXT NOT NULL CHECK(write_policy IN ('single_writer','read_shared')),
+    updated_at REAL NOT NULL,
+    PRIMARY KEY(project_id,node)
+);
+"""
+
+
+def _v4_layout_current(connection):
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    return (
+        "file_transfers" in tables
+        and "file_transfer_tokens" in tables
+        and "project_workspaces" in tables
+        and "project_artifacts" not in tables
+    )
 
 
 def _private(path, directory=False):
@@ -253,7 +311,7 @@ def migrate_database(database, backup_root=None):
             current = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if current > SCHEMA_VERSION:
                 raise RuntimeError(f"协作数据库版本 {current} 高于当前程序支持的 {SCHEMA_VERSION}；请升级应用")
-            if current == SCHEMA_VERSION:
+            if current == SCHEMA_VERSION and _v4_layout_current(connection):
                 _integrity(connection)
                 _private(database)
                 return {
@@ -262,7 +320,8 @@ def migrate_database(database, backup_root=None):
                     "backup": None,
                     "migrated": False,
                 }
-        if existed and current < SCHEMA_VERSION:
+        rewrite_v4 = current == SCHEMA_VERSION
+        if existed and (current < SCHEMA_VERSION or rewrite_v4):
             backup = _backup(database, backup_root, current, SCHEMA_VERSION)
         with closing(_open(database)) as connection:
             try:
@@ -298,6 +357,37 @@ def migrate_database(database, backup_root=None):
                         (3, time.time()),
                     )
                     connection.execute("PRAGMA user_version=3")
+                if current < 4 or rewrite_v4:
+                    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    if "project_artifacts" in tables:
+                        # The short-lived, unreleased v2.1 artifact design is no
+                        # longer used.  Preserve its metadata for manual recovery
+                        # instead of destroying it during the schema rewrite.
+                        retired = "retired_project_artifacts_v21"
+                        suffix = 2
+                        while retired in tables:
+                            retired = f"retired_project_artifacts_v21_{suffix}"
+                            suffix += 1
+                        connection.execute(f'ALTER TABLE project_artifacts RENAME TO "{retired}"')
+                    for statement in SCHEMA_V4.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    for row in connection.execute("SELECT id,settings FROM employees").fetchall():
+                        try:
+                            settings = json.loads(row["settings"])
+                        except (TypeError, ValueError):
+                            continue
+                        if isinstance(settings, dict) and "remote_path" in settings:
+                            settings.pop("remote_path", None)
+                            connection.execute(
+                                "UPDATE employees SET settings=? WHERE id=?",
+                                (json.dumps(settings, ensure_ascii=False, sort_keys=True), row["id"]),
+                            )
+                    connection.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+                        (4, time.time()),
+                    )
+                    connection.execute("PRAGMA user_version=4")
                 connection.commit()
                 _integrity(connection)
                 connection.execute("PRAGMA journal_mode=WAL")
@@ -309,5 +399,5 @@ def migrate_database(database, backup_root=None):
         "from": current,
         "to": SCHEMA_VERSION,
         "backup": str(backup) if backup else None,
-        "migrated": current != SCHEMA_VERSION,
+        "migrated": current != SCHEMA_VERSION or rewrite_v4,
     }

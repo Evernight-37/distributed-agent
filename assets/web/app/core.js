@@ -77,9 +77,11 @@ function date(value) {
   return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString("zh-CN");
 }
 function fileSize(bytes) {
-  return bytes < 1024 * 1024
-    ? (bytes / 1024).toFixed(1) + " KB"
-    : (bytes / 1024 / 1024).toFixed(1) + " MB";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  if (bytes < 1024 * 1024 * 1024)
+    return (bytes / 1024 / 1024).toFixed(1) + " MB";
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + " GB";
 }
 function attachmentCard(file, project) {
   const card = el("div", "note attachment-card");
@@ -265,7 +267,7 @@ function empty(parent, text) {
 }
 function nav(page) {
   S.page = page;
-  ["dashboard", "settings", "account"].forEach((p) =>
+  ["dashboard", "transfers", "settings", "account"].forEach((p) =>
     $(p + "Nav").classList.toggle(
       "active",
       p === page || (page === "project" && p === "dashboard"),
@@ -436,7 +438,7 @@ function renderAuth(mode = "home") {
   };
   note(
     root,
-    "密码仅用于本机解锁，与 Codex、OpenAI 或 GitHub 登录无关。项目文件不会自动同步。",
+    "密码仅用于本机解锁，与 Codex、OpenAI 或 GitHub 登录无关。项目工作目录不会自动同步。",
   );
   root.append(button("← 返回", () => renderAuth("home"), "auth-back"));
 }

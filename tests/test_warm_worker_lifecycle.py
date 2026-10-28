@@ -304,6 +304,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                     "job": "second-turn",
                     "pid": pid,
                     "stamp": stamp,
+                    "stage": "discuss",
                     "generation": generation,
                 },
             )

@@ -12,6 +12,7 @@ from agent_harness.desktop_actions import (
     DesktopIdentityActions,
     DesktopOwnerActions,
     DesktopProjectActions,
+    DesktopTransferActions,
 )
 from agent_harness.desktop_api import (
     DesktopControlAPI,
@@ -128,6 +129,7 @@ class BoundaryContractTests(unittest.TestCase):
             DesktopTeamServiceActions,
             DesktopIdentityActions,
             DesktopOwnerActions,
+            DesktopTransferActions,
             DesktopProjectActions,
         )
         owner = {}

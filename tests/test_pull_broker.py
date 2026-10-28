@@ -1,6 +1,7 @@
 """Consent, ownership and durable delivery checks for the pull-only broker."""
 
 import json
+import hashlib
 import secrets
 import tempfile
 import threading
@@ -9,6 +10,7 @@ import unittest
 
 from agent_harness.broker import PullBackend
 from agent_harness.collaboration_store import Store, uid
+from agent_harness.file_transfers import FileTransfers
 from tests.helpers import provision_account
 
 
@@ -121,6 +123,63 @@ class PullBrokerTests(unittest.TestCase):
         self.assertEqual(public[0]["paired"], 1)
         self.assertNotIn(token, json.dumps(public))
         self.assertNotIn("token_hash", json.dumps(public))
+
+    def test_device_transfer_api_is_bound_to_exact_recipient_node(self):
+        receiver_token, _ = self.enroll("receiver")
+        sender_token, _ = self.enroll("sender")
+        content = b"headless linux transfer"
+        files = FileTransfers(self.store)
+        transfer = files.request(
+            self.owner,
+            "sender",
+            self.owner,
+            "receiver",
+            "payload.bin",
+            len(content),
+            hashlib.sha256(content).hexdigest(),
+        )
+        upload = files.upload_start(self.owner, "sender", transfer["id"])
+        files.upload_chunk(
+            upload["upload_token"],
+            transfer["id"],
+            0,
+            len(content),
+            content,
+            hashlib.sha256(content).hexdigest(),
+        )
+        files.finish(self.owner, "sender", transfer["id"])
+
+        listing = self.backend.device_api("/api/device/transfers", {}, receiver_token)
+        self.assertEqual([item["id"] for item in listing["transfers"]], [transfer["id"]])
+        self.assertEqual(
+            self.backend.device_api("/api/device/transfers", {}, sender_token)["transfers"],
+            [],
+        )
+        with self.assertRaises(PermissionError):
+            self.backend.device_api(
+                "/api/device/transfer-download-ticket",
+                {"id": transfer["id"]},
+                sender_token,
+            )
+        ticket = self.backend.device_api(
+            "/api/device/transfer-download-ticket",
+            {"id": transfer["id"]},
+            receiver_token,
+        )
+        self.assertIn("download_token", ticket)
+        _, start, end, downloaded = files.download_chunk(
+            ticket["download_token"],
+            transfer["id"],
+            0,
+            len(content) - 1,
+        )
+        self.assertEqual((start, end, downloaded), (0, len(content) - 1, content))
+        completed = self.backend.device_api(
+            "/api/device/transfer-complete",
+            {"id": transfer["id"]},
+            receiver_token,
+        )
+        self.assertEqual(completed["state"], "completed")
 
     def test_health_heartbeat_is_allowlisted_and_available_to_owner(self):
         token, pair = self.enroll()

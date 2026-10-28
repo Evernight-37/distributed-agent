@@ -105,6 +105,7 @@ class PullBackend:
         )
         return {
             "protocol": hub_advertisement(),
+            "features": ["device_file_transfers_v1"],
             "owner_commands": commands,
             "node": device["node"],
             "projects": self._projects(db, device),
@@ -197,6 +198,26 @@ class PullBackend:
             )
             if path == "/api/device/projects":
                 return {"projects": self._projects(db, device), "node": device["node"]}
+            if path in {
+                "/api/device/transfers",
+                "/api/device/transfer-download-ticket",
+                "/api/device/transfer-complete",
+            }:
+                # FileTransfers owns its own short transactions and filesystem
+                # locks. Release the heartbeat write lock before entering it.
+                db.commit()
+                from agent_harness.file_transfers import FileTransfers
+
+                transfers = FileTransfers(self.store)
+                if path == "/api/device/transfers":
+                    return {
+                        "transfers": transfers.list_for_recipient_node(device["owner_id"], device["node"]),
+                        "node": device["node"],
+                    }
+                transfer_id = data["id"]
+                if path == "/api/device/transfer-download-ticket":
+                    return transfers.download_ticket(device["owner_id"], device["node"], transfer_id)
+                return transfers.complete(device["owner_id"], device["node"], transfer_id)
             if path == "/api/device/owner-report":
                 from agent_harness.owner_backend import OwnerBackend
 

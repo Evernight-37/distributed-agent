@@ -320,6 +320,12 @@ class IdentityTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.call(delegate, "memory-note-add", {"project": project, "body": "forged"})
         with self.assertRaises(PermissionError):
+            self.call(
+                delegate,
+                "transfer-list",
+                {},
+            )
+        with self.assertRaises(PermissionError):
             self.call(delegate, "set-admin", {"project": project})
         with self.assertRaises(PermissionError):
             self.call(delegate, "link-service", {"server": "http://127.0.0.1:1"})

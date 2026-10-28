@@ -144,7 +144,9 @@ class DesktopServiceTests(unittest.TestCase):
         runtime = desktop_runtime.DesktopRuntime(self.root)
         self.assertTrue(runtime.status()["running"])
         runtime.stop()
-        self.thread.join(timeout=5)
+        # Match tearDown's bounded shutdown allowance; loaded CI runners can
+        # briefly delay the loopback server thread after the stop response.
+        self.thread.join(timeout=8)
         self.assertFalse(self.thread.is_alive())
         self.assertTrue(FakeConnector.waits)
         self.assertTrue(all(wait == 1 for wait in FakeConnector.waits))
@@ -170,6 +172,8 @@ class DesktopRuntimeContractTests(unittest.TestCase):
             expected = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8")
             self.assertEqual((snapshot / "VERSION").read_text(encoding="utf-8"), expected)
             self.assertTrue((snapshot / "release_info.py").is_file())
+            for name in ("headless_transfers.py", "file_transfer_client.py", "file_transfers.py"):
+                self.assertTrue((snapshot / name).is_file(), name)
 
     def test_start_reconciles_orphan_before_runtime_deploy(self):
         with tempfile.TemporaryDirectory() as directory:

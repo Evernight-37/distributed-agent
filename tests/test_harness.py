@@ -188,9 +188,43 @@ class WorkerTests(unittest.TestCase):
                                 "action": "start",
                                 "project": "two",
                                 "job": "job2",
-                                "prompt": json.dumps({"stage": "discuss"}),
+                                "prompt": json.dumps({"stage": "implement"}),
                             }
                         )
+            finally:
+                worker.ROOT = old_root
+
+    def test_read_only_turns_can_share_the_same_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_root = worker.ROOT
+            worker.ROOT = Path(directory)
+            try:
+                remote = Path(directory) / "remote"
+                remote.mkdir()
+                worker.rpc({"action": "register", "project": self._project("one", remote), "memory": {"revision": 0}})
+                worker.rpc({"action": "register", "project": self._project("two", remote), "memory": {"revision": 0}})
+                worker.write_json(
+                    worker.project_dir("one") / "active.json",
+                    {"job": "existing", "pid": 1, "stamp": "stamp", "stage": "discuss"},
+                )
+
+                def preserve_other_active(active):
+                    return active if active and active.get("job") == "existing" else None
+
+                with (
+                    mock.patch.object(worker, "reconcile", side_effect=preserve_other_active),
+                    mock.patch.object(worker, "launch_supervisor", return_value=123),
+                    mock.patch.object(worker, "process_stamp", return_value="new-stamp"),
+                ):
+                    result = worker.rpc(
+                        {
+                            "action": "start",
+                            "project": "two",
+                            "job": "job2",
+                            "prompt": json.dumps({"stage": "review"}),
+                        }
+                    )
+                self.assertEqual(result["status"], "starting")
             finally:
                 worker.ROOT = old_root
 

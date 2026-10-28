@@ -170,7 +170,7 @@ async function renderSettings() {
   memberships.append(el("h2", "", "已加入的协作服务"));
   note(
     memberships,
-    "同一身份可以参与多个服务上的项目。接入本机 agent 是单独操作，项目文件不会自动同步。",
+    "同一身份可以参与多个服务上的项目。接入本机 agent 是单独操作，项目工作目录不会自动同步。",
   );
   (
     settings.services || [
@@ -254,7 +254,7 @@ async function renderSettings() {
     el(
       "p",
       "muted small",
-      "项目文件不自动同步。工作目录、模型凭据和运行环境保留在各自机器。",
+      "项目工作目录不自动同步。模型凭据和运行环境也保留在各自机器。",
     ),
   );
   list.append(storage);

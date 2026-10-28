@@ -247,13 +247,49 @@ function newEmployee() {
 }
 function deleteEmployee(e) {
   modal("删除员工 · " + e.name, (b, actions) => {
-    note(
-      b,
-      "将移除该员工并撤回所有项目派遣；工作文件、会话和任务历史会保留。若它是管理员，群主需要另选管理员。未完成的任务需先结束；离线设备会在上线后确认删除。",
-    );
-    actions.append(
-      button("取消", closeModal),
-      button(
+    b.append(el("p", "muted", "正在核对派遣项目与未完成任务…"));
+    actions.append(button("取消", closeModal));
+    run(async () => {
+      const preview = await api("employee-delete-preview", { id: e.id });
+      if (!$("modalBody").contains(b)) return;
+      b.replaceChildren();
+      note(
+        b,
+        "确认后会从所有项目撤回该员工并停止接收新任务；工作文件、聊天、会话和任务历史会保留。离线设备会在上线后应用删除。",
+      );
+      if (preview.projects.length) {
+        b.append(el("h3", "", "将撤回的项目"));
+        preview.projects.forEach((project) =>
+          b.append(
+            el(
+              "div",
+              "member",
+              project.name +
+                (project.administrator
+                  ? " · 当前管理员（删除后将清空管理员）"
+                  : ""),
+            ),
+          ),
+        );
+      } else note(b, "该员工尚未派遣到任何项目。");
+      if (preview.active_tasks.length) {
+        b.append(el("h3", "", "尚未结束的任务"));
+        preview.active_tasks.forEach((task) =>
+          b.append(
+            el(
+              "div",
+              "task pending",
+              (task.title || task.id) + " · " + task.state,
+            ),
+          ),
+        );
+        note(
+          b,
+          "请先等待这些任务结束或在项目中停止它们，再重新删除。应用不会强行中断并丢失工作。 ",
+        );
+      }
+      actions.replaceChildren(button("取消", closeModal));
+      const confirm = button(
         "确认删除员工",
         async () => {
           await api("employee-delete", { id: e.id });
@@ -262,8 +298,10 @@ function deleteEmployee(e) {
           await refresh(true);
         },
         "primary",
-      ),
-    );
+      );
+      confirm.disabled = !preview.can_delete;
+      actions.append(confirm);
+    });
   });
 }
 function employeeSettings(e) {
@@ -280,30 +318,10 @@ function employeeSettings(e) {
     });
     b.append(dl);
     const effort = field(
-        b,
-        "思考强度",
-        e.effort || "medium",
-        ["low", "medium", "high", "xhigh", "max", "ultra"].map((v) => [v, v]),
-      ),
-      path = field(
-        b,
-        "工作目录 · " + deviceName(e.node, employeeServer(e)),
-        e.path || "",
-      );
-    const local = S.dash.devices.some(
-      (d) =>
-        d.local &&
-        (d.node || d.id) === e.node &&
-        (d.server === employeeServer(e) ||
-          (!d.server && employeeServer(e) === S.server)),
-    );
-    b.append(
-      button(local ? "选择文件夹" : "浏览目标机器文件夹", async () => {
-        if (local) {
-          const r = await api("choose-folder");
-          if (r.path) path.value = r.path;
-        } else await remoteFolders(e.node, path, employeeServer(e));
-      }),
+      b,
+      "思考强度",
+      e.effort || "medium",
+      ["low", "medium", "high", "xhigh", "max", "ultra"].map((v) => [v, v]),
     );
     const enabled = field(b, "接收项目任务", String(!!e.enabled), [
       ["false", "暂停"],
@@ -336,7 +354,7 @@ function employeeSettings(e) {
     ]);
     note(
       b,
-      "模型、目录和权限由目标机器应用。远端目录不会复制到本机；保存后请等待目标机器确认。",
+      "模型与执行权限由目标机器应用。工作目录改为在项目派遣页面按机器设置，不再属于某个员工。",
     );
     a.append(
       button("取消", closeModal),
@@ -348,7 +366,6 @@ function employeeSettings(e) {
             name: name.value.trim(),
             model: model.value.trim(),
             effort: effort.value,
-            path: path.value,
             enabled: enabled.value === "true",
             stages: stages.filter(([, c]) => c.checked).map(([s]) => s),
             timeout: Number(timeout.value),
@@ -363,64 +380,6 @@ function employeeSettings(e) {
     );
   });
 }
-async function remoteFolders(node, input, server) {
-  const box = el("div", "note");
-  $("modalBody").append(box);
-  async function browse(path) {
-    box.replaceChildren(el("p", "", "正在请求目标机器目录…"));
-    const r = await api("browse-folders", { node, path, server });
-    let result = r;
-    for (let i = 0; r.request_id && i < 20; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      if (!$("modalBody").contains(box)) return;
-      result = await api("command-status", { id: r.request_id, server });
-      if (["failed", "error"].includes(result.state))
-        throw Error(result.error || result.result?.error || "目录浏览失败");
-      if (
-        ["completed", "done", "succeeded", "applied"].includes(result.state)
-      ) {
-        result = result.result;
-        break;
-      }
-    }
-    box.replaceChildren();
-    if (
-      result.request_id ||
-      ["pending", "queued", "claimed"].includes(result.state)
-    ) {
-      box.append(
-        el("p", "", "目标设备尚未回应。也可直接填写该机器的现有路径。"),
-      );
-      return;
-    }
-    const dirs =
-      result.dirs ||
-      result.directories ||
-      result.children ||
-      result.roots ||
-      [];
-    if (result.parent)
-      box.append(button("↑ 上级目录", () => browse(result.parent)));
-    if (result.path)
-      box.append(
-        button(
-          "使用此目录",
-          () => {
-            input.value = result.path;
-            box.remove();
-          },
-          "primary",
-        ),
-      );
-    dirs.forEach((d) =>
-      box.append(button(d.name || d.path, () => browse(d.path))),
-    );
-    if (!dirs.length && !result.path)
-      box.append(el("p", "", "未返回目录，请直接填写目标机器上的路径。"));
-  }
-  await browse(input.value || undefined);
-}
-
 Object.assign(HarnessDesktop.render, { renderDashboard });
 Object.assign(HarnessDesktop.components, {
   newProject,

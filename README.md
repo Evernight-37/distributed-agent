@@ -4,7 +4,7 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 
 ## 使用应用
 
-当前源码版本为 **2.0.0**；尚未打 tag 时仍属于待发布源码，现有已安装稳定版不会被自动替换。Windows 便携包和 Linux 无界面包由统一 release tag 构建；macOS 可构建原生 `.app`；Linux 服务器使用[无界面独立运行包](docs/LINUX.md)，由 Mac 或 Windows 控制台管理。Linux 发布包自带 Harness 运行时，不要求用户安装 Python、pip 或 venv。
+当前源码版本为 **2.1.0**；尚未打 tag 时仍属于待发布源码，现有已安装稳定版不会被自动替换。Windows 便携包和 Linux 无界面包由统一 release tag 构建；macOS 可构建原生 `.app`；Linux 服务器使用[无界面独立运行包](docs/LINUX.md)，由 Mac 或 Windows 控制台管理。Linux 发布包自带 Harness 运行时，不要求用户安装 Python、pip 或 venv。
 
 从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases) 下载完整 Windows 压缩包，解压后双击 `AgentHarness.exe`。请保留整个目录；应用自带隔离的后台 Python 运行时，不要求用户安装 Python。系统需要 Edge WebView2，并且每台执行 Agent 的电脑需要已有可用的 Codex 登录。
 
@@ -18,7 +18,7 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 
 Linux 服务器不要求用户手工照抄安装命令：桌面应用 **账户 → 添加 Linux 服务器** 可以生成带团队地址的安全配置提示词，直接粘贴给服务器 Codex。Linux 发布包也自带 `交给AI安装.md`；详见 [AI 配置流程](docs/AI-SETUP-LINUX.md)。
 
-同一账户可以关联多台电脑。Windows 数据位于 `%LOCALAPPDATA%\AgentHarness\data`，macOS 数据位于 `~/Library/Application Support/AgentHarness/data`；项目文件、Codex 登录、设备私钥和研究环境不会自动同步。
+同一账户可以关联多台电脑。Windows 数据位于 `%LOCALAPPDATA%\AgentHarness\data`，macOS 数据位于 `~/Library/Application Support/AgentHarness/data`；项目工作目录、Codex 登录、设备私钥和研究环境不会自动同步。
 
 ## 在 Codex 中协作
 
@@ -34,7 +34,13 @@ Linux 服务器不要求用户手工照抄安装命令：桌面应用 **账户 �
 
 项目没有中心云、遥测或维护者账户服务。账户、项目和消息只保存在参与者自己的电脑及项目选定的协作服务上；应用不会安装组网软件、开放防火墙或接管 Codex/GitHub 凭据。协作服务的机器主人能够读取其数据库中的项目内容，因此成员应信任托管者。
 
-服务托管者可在 **设置 → 协作服务** 备份或恢复项目数据库。备份使用 SQLite 一致快照；恢复只接受当前账户拥有且完整性检查通过的 Harness 数据库，并会在替换前自动保存当前数据库。恢复不覆盖各机器上的项目文件、Codex 登录或本机 Agent 设置。
+侧边栏的 **文件速传** 是独立于项目和 Agent 的机器间大文件通道，不设置固定文件大小上限。它会分块续传并验证 SHA-256；实际可传大小取决于源文件系统、接收磁盘和临时中转服务的可用空间。同一账户的机器使用目标机预设目录自动接收；不同用户之间先发送请求，由接收者选择保存位置并确认。双方需共同接入至少一个协作服务，文件只在该服务临时中转，接收完成即清除。中转目前不是端到端加密，服务托管者可读取传输中的明文文件，因此仍应选择双方信任的托管者。聊天中的项目小附件仍按消息保存，每个最大 5 MB，不走这套确认流程。
+
+同一账户的 Windows 或 macOS 控制台也可以选择 Linux 无界面节点作为接收机器。Linux 使用本机设备凭据在后台领取文件，离线后恢复连接会继续接收。账户所有者可从任意桌面控制台为同账户远程机器填写已经存在的绝对接收目录；路径只在签名控制指令投递期间经过可信协作服务，目标机器处理后会从服务记录中抹除。未设置的 Linux 使用接收端本地 `received-files`。当前 Linux 端尚不提供主动选择服务器文件并发送的 CLI。
+
+服务托管者可在 **设置 → 协作服务** 备份或恢复项目数据库。备份使用 SQLite 一致快照；恢复只接受当前账户拥有且完整性检查通过的 Harness 数据库，并会在替换前自动保存当前数据库。正在传输的临时文件不属于项目备份；恢复不覆盖各机器上的项目工作目录、Codex 登录或本机 Agent 设置。
+
+工作目录属于“项目 × 机器”，不属于 Agent。机器主人在第一次向项目派遣本机 Agent 时选择目录；同机同项目的多个 Agent 共享该目录，但会话和项目记忆仍按项目隔离。实现任务保持单写入保护，讨论和审阅任务可共享读取。删除已派遣 Agent 前会列出受影响项目和未完成任务；确认后撤回全部派遣并保留历史。
 
 员工设置可启用“实现任务安全模式”。启用后，implement 任务必须使用干净的 linked Git worktree，并按任务中每行一个相对路径的 `allowed_files` 检查 Git 跟踪和普通未跟踪改动；越界或 HEAD 改变会让任务失败，但 Harness 不会擅自 reset 或删除文件。Git ignored 内容不在该轻量门禁内，所以它是防误操作措施，不是文件系统沙箱。未启用时，“声明修改范围”仍只是任务合同，不是文件系统 ACL。高敏项目还应使用专用普通系统用户，不要给 Agent 免密 sudo 或传统 Docker socket。
 

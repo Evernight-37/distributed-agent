@@ -141,10 +141,15 @@ class StorageMigrationTests(unittest.TestCase):
                         "project_memory_notes",
                         "account_event_sequences",
                         "account_events",
+                        "file_transfers",
+                        "file_transfer_tokens",
+                        "project_workspaces",
                         "schema_migrations",
                     }.issubset(tables)
                 )
                 self.assertNotIn("sessions", tables)
+                self.assertNotIn("project_artifacts", tables)
+                self.assertNotIn("artifact_tokens", tables)
                 self.assertEqual(
                     [row[1] for row in db.execute("PRAGMA table_info(users)")],
                     ["id", "username"],
@@ -222,7 +227,7 @@ class StorageMigrationTests(unittest.TestCase):
                 )
                 self.assertEqual(db.execute("SELECT username FROM users").fetchone()[0], "alice")
                 self.assertEqual(db.execute("PRAGMA quick_check").fetchone()[0], "ok")
-            self.assertTrue(list((root / "backups").glob("collaboration-v2-to-v3-*.sqlite3")))
+            self.assertTrue(list((root / "backups").glob(f"collaboration-v2-to-v{SCHEMA_VERSION}-*.sqlite3")))
 
     def test_legacy_database_is_backed_up_and_preserved_before_adoption(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -254,6 +259,36 @@ class StorageMigrationTests(unittest.TestCase):
                 migrate_database(database)
             with closing(sqlite3.connect(database)) as db:
                 self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION + 1)
+
+    def test_unreleased_project_artifact_v4_is_backed_up_and_rewritten(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = Store(root).database
+            with closing(sqlite3.connect(database)) as db:
+                db.executescript(
+                    """
+                    DROP TABLE file_transfer_tokens;
+                    DROP TABLE file_transfers;
+                    DROP TABLE project_workspaces;
+                    CREATE TABLE project_artifacts(id TEXT PRIMARY KEY);
+                    CREATE TABLE artifact_tokens(token_hash TEXT PRIMARY KEY);
+                    INSERT INTO project_artifacts VALUES('retired-local-build-row');
+                    PRAGMA user_version=4;
+                    """
+                )
+            result = migrate_database(database, root / "backups")
+            self.assertTrue(result["migrated"])
+            self.assertTrue(Path(result["backup"]).is_file())
+            with closing(sqlite3.connect(database)) as db:
+                tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                self.assertNotIn("project_artifacts", tables)
+                self.assertNotIn("artifact_tokens", tables)
+                self.assertIn("retired_project_artifacts_v21", tables)
+                self.assertEqual(
+                    db.execute("SELECT id FROM retired_project_artifacts_v21").fetchone()[0],
+                    "retired-local-build-row",
+                )
+                self.assertTrue({"file_transfers", "file_transfer_tokens", "project_workspaces"}.issubset(tables))
 
     def test_backup_retention_is_bounded(self):
         with tempfile.TemporaryDirectory() as temporary:

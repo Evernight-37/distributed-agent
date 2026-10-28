@@ -46,6 +46,9 @@ class Store:
                 "DELETE FROM attachments WHERE message_id IS NULL AND created_at<?",
                 (now - 86400,),
             )
+        from agent_harness.file_transfers import FileTransfers
+
+        FileTransfers(self).cleanup(now)
 
     @contextmanager
     def connect(self):

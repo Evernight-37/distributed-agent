@@ -18,7 +18,11 @@ from agent_harness.release_info import version_path
 
 SERVICE_RUNTIME_FILES = (
     "broker_transport.py",
+    "attachments.py",
     "desktop_service.py",
+    "file_transfer_client.py",
+    "file_transfers.py",
+    "headless_transfers.py",
     "pull_worker.py",
     "common.py",
     "worker.py",
