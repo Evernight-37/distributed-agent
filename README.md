@@ -4,9 +4,16 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 
 ## 使用应用
 
-当前源码版本为 **2.1.0**；尚未打 tag 时仍属于待发布源码，现有已安装稳定版不会被自动替换。Windows 便携包和 Linux 无界面包由统一 release tag 构建；macOS 可构建原生 `.app`；Linux 服务器使用[无界面独立运行包](docs/LINUX.md)，由 Mac 或 Windows 控制台管理。Linux 发布包自带 Harness 运行时，不要求用户安装 Python、pip 或 venv。
+当前稳定版为 **2.1.0**。从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases/latest) 下载与系统和 CPU 架构相符的完整发布包；不要下载 GitHub 自动生成的 `Source code` 压缩包来代替应用。
 
-从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases) 下载完整 Windows 压缩包，解压后双击 `AgentHarness.exe`。请保留整个目录；应用自带隔离的后台 Python 运行时，不要求用户安装 Python。系统需要 Edge WebView2，并且每台执行 Agent 的电脑需要已有可用的 Codex 登录。
+| 使用环境 | 下载文件 | 使用方法 |
+| --- | --- | --- |
+| Windows x64（推荐安装） | `AgentHarness-2.1.0-windows-x64-setup.exe` | 双击并按向导安装，然后从开始菜单启动 Agent Harness |
+| Windows x64（便携） | `AgentHarness-2.1.0-windows-x64.zip` | 完整解压到独立目录，双击其中的 `AgentHarness.exe`；不要只复制 EXE |
+| macOS Apple Silicon | `AgentHarness-2.1.0-macos-arm64.zip` | 解压后把 `AgentHarness.app` 放入“应用程序”并打开；本项目未做 Apple 签名或公证，系统可能要求在隐私与安全性中确认打开 |
+| Linux x64 / ARM64 服务器 | `AgentHarness-2.1.0-linux-x64.tar.gz` 或 `AgentHarness-2.1.0-linux-arm64.tar.gz` | 使用无界面接收端；优先把包内的 `交给AI安装.md` 交给服务器 Codex，或阅读 [Linux 说明](docs/LINUX.md) |
+
+发布包自带 Harness 所需运行时，不要求另外安装 Python、pip 或 venv。Windows 系统需要 Edge WebView2；每台实际执行 Agent 的机器仍需安装并登录 Codex。升级程序不会自动迁移或删除项目工作目录，账户数据保存在应用目录之外；退出旧版后安装或解压新版即可继续使用原账户数据。Windows 便携版应保留完整目录，Linux 端使用并排升级和回滚机制。
 
 第一次使用请先阅读 [按钮式新手教程](docs/QUICKSTART.md)。教程从 Tailscale 准备开始，分别列出群主、服务托管者和受邀同事应点击的按钮，并在每一步说明成功标志与常见错误。单机使用可以跳过 Tailscale。多人协作的主流程是：
 

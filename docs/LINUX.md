@@ -1,4 +1,4 @@
-# Linux 无界面接收端（2.0.0）
+# Linux 无界面接收端（2.1.0）
 
 Linux 接收端把服务器作为你账户名下的一台执行机器。Windows 或 macOS 控制台可以在这台机器上添加员工、选择服务器项目目录并派入项目；群聊呼叫员工后，它会启动独立 Codex 会话并回传结果。接收端不会接管 VS Code 中已经打开的 Codex 对话。
 
@@ -11,7 +11,7 @@ Linux 无界面端目前负责接收文件，不提供远程浏览服务器文�
 ## 首次安装
 
 ```bash
-tar -xzf AgentHarness-2.0.0-linux-x64.tar.gz # ARM64 机器使用 linux-arm64 包
+tar -xzf AgentHarness-2.1.0-linux-x64.tar.gz # ARM64 机器使用 linux-arm64 包
 cd AgentHarness-linux
 ./harness link --server https://你的团队地址 --codex /绝对路径/codex
 ```
@@ -112,7 +112,7 @@ tailscale --socket="$HOME/.local/share/AgentHarness/tailscale/tailscaled.sock" u
 
 ```bash
 ./harness upgrade \
-  --bundle /绝对路径/AgentHarness-2.0.0-linux-x64.tar.gz \
+  --bundle /绝对路径/AgentHarness-2.1.0-linux-x64.tar.gz \
   --sha256 64位十六进制摘要
 ```
 
