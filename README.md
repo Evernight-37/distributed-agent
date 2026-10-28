@@ -4,7 +4,7 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 
 ## 使用应用
 
-当前稳定版为 **2.1.0**。从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases/latest) 下载与系统和 CPU 架构相符的完整发布包；不要下载 GitHub 自动生成的 `Source code` 压缩包来代替应用。
+当前稳定版为 **2.1.0**。从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases/latest) 下载与系统和 CPU 架构相符的完整发布包。
 
 | 使用环境 | 下载文件 | 使用方法 |
 | --- | --- | --- |
