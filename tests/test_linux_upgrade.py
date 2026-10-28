@@ -231,7 +231,10 @@ class LinuxUpgradeTests(unittest.TestCase):
                 patch.object(linux_upgrade.subprocess, "run"),
             ):
                 linux_upgrade.upgrade(root, bundle, digest, lambda *a, **k: [])
-            self.assertEqual(managers[1].args[1:], (current_python, current_script))
+            self.assertEqual(
+                managers[1].args[1:],
+                (current_python.resolve(), current_script.resolve()),
+            )
             state = read_json(root.parent / "install-state.json")
             self.assertEqual(state["previous"]["release"], str(current.resolve()))
 
@@ -242,7 +245,7 @@ class LinuxUpgradeTests(unittest.TestCase):
             bundle = Path(directory) / "bundle.tar.gz"
             make_tar(bundle, valid_members("1.2.0"))
             digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
-            destination = root.parent / "releases/1.2.0"
+            destination = (root.parent / "releases/1.2.0").resolve()
             self.make_runtime(destination)
             (destination / ".agent-harness-bundle-sha256").write_text(digest + "\n", encoding="ascii")
 
@@ -272,7 +275,7 @@ class LinuxUpgradeTests(unittest.TestCase):
             make_tar(bundle, valid_members("1.2.0"))
             digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
             install_error = linux_upgrade.subprocess.CalledProcessError(1, ["install"])
-            destination = root.parent / "releases/1.2.0"
+            destination = (root.parent / "releases/1.2.0").resolve()
             original_rmtree = linux_upgrade.shutil.rmtree
 
             def cleanup(path, *args, **kwargs):

@@ -4,6 +4,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
+
 from agent_harness.account_identity import (
     generate_identity,
     sign_envelope,
@@ -53,7 +55,10 @@ class IdentityTests(unittest.TestCase):
         )
 
     def test_encryption(self):
-        blob = encrypt_identity(self.root, "")
+        # Keep this generic contract independent of the host's real Keychain,
+        # DPAPI, or Secret Service. OS envelopes have dedicated unit tests.
+        with mock.patch("agent_harness.os_secrets.protect", return_value=None):
+            blob = encrypt_identity(self.root, "")
         self.assertNotIn(self.root["private_key"], str(blob))
         self.assertEqual(decrypt_identity(blob, ""), self.root)
         with self.assertRaises(PermissionError):

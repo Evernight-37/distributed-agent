@@ -28,6 +28,11 @@ class WindowsInstallerPackagingTests(unittest.TestCase):
             "python -m pip install -e . -r requirements-linux-build.txt ruff==0.14.1 pywebview==6.2.1",
             workflow,
         )
+        linux_workflow = (ROOT / ".github" / "workflows" / "linux-receiver.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "python -m pip install -e . -r requirements-linux-build.txt ruff==0.14.1 pywebview==6.2.1",
+            linux_workflow,
+        )
         self.assertNotIn("WINDOWS_SIGNING_CERT_B64", workflow)
         self.assertNotIn("signtool", workflow)
         self.assertNotIn("anchore/sbom-action", workflow)
