@@ -25,6 +25,7 @@ DisableDirPage=yes
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
+OutputDir=..\..
 OutputBaseFilename=AgentHarness-{#MyAppVersion}-windows-x64-setup
 Compression=lzma2/max
 SolidCompression=yes

@@ -89,7 +89,7 @@ jobs:
       - name: Verify tag and install dependencies
         run: |
           test "v$(tr -d '\r\n' < VERSION)" = "$GITHUB_REF_NAME"
-          python -m pip install -r requirements-linux-build.txt ruff==0.14.1
+          python -m pip install -e . -r requirements-linux-build.txt ruff==0.14.1 pywebview==6.2.1
       - name: Verify and build Linux receiver
         run: |
           ruff check src scripts tests

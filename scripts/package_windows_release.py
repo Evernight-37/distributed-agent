@@ -37,7 +37,12 @@ def package_release(source: Path, destination: Path) -> None:
             compression=zipfile.ZIP_DEFLATED,
             compresslevel=9,
         ) as archive:
-            for path in sorted(source.rglob("*")):
+
+            def archive_order(path: Path) -> tuple[str, str]:
+                relative_name = path.relative_to(source).as_posix()
+                return relative_name.casefold(), relative_name
+
+            for path in sorted(source.rglob("*"), key=archive_order):
                 if path.is_symlink():
                     raise ValueError(f"release tree contains a symbolic link: {path}")
                 if not path.is_file():
