@@ -11,6 +11,13 @@ MAX_FILE_BYTES = 5 * 1024 * 1024
 MAX_ATTACHMENTS = 5
 PROJECT_QUOTA = 512 * 1024 * 1024
 METADATA = "id,name,mime,size,sha256"
+AGENT_ATTACHMENT_FEATURE = "agent_chat_attachments_v1"
+
+
+def agent_attachment_id(job, slot):
+    if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot < MAX_ATTACHMENTS:
+        raise ValueError("每条回复最多 5 个附件")
+    return "file-agent-" + hashlib.sha256((job + "\0" + str(slot)).encode()).hexdigest()
 
 
 def safe_name(name):
@@ -81,6 +88,50 @@ class Attachments:
                 ),
             )
             return dict(db.execute(f"SELECT {METADATA} FROM attachments WHERE id=?", (aid,)).fetchone())
+
+    def upload_agent(self, db, agent, job, slot, name, encoded, allow_new):
+        """Called only after the broker authenticates the assigned device lease."""
+        aid = agent_attachment_id(job, slot)
+        name, data = safe_name(name), decode_file(encoded)
+        checksum = hashlib.sha256(data).hexdigest()
+        self.store.require_member(db, agent["project_id"], agent["owner_id"])
+        existing = db.execute("SELECT * FROM attachments WHERE id=?", (aid,)).fetchone()
+        if existing:
+            if (
+                existing["owner_id"] != agent["id"]
+                or existing["project_id"] != agent["project_id"]
+                or existing["name"] != name
+                or existing["sha256"] != checksum
+            ):
+                raise ValueError("附件内容发生变化，不能覆写已上传的附件")
+            return {key: existing[key] for key in METADATA.split(",")}
+        if not allow_new:
+            raise PermissionError("任务已结束或已取消，不能再上传附件")
+        db.execute("DELETE FROM attachments WHERE message_id IS NULL AND created_at<?", (time.time() - 86400,))
+        used = db.execute(
+            "SELECT COALESCE(SUM(size),0) FROM attachments WHERE project_id=?", (agent["project_id"],)
+        ).fetchone()[0]
+        if used + len(data) > PROJECT_QUOTA:
+            raise ValueError("本项目附件已达到 512 MB 试用容量")
+        db.execute(
+            "INSERT INTO attachments(id,project_id,owner_id,name,mime,size,sha256,content,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (aid, agent["project_id"], agent["id"], name, image_mime(data), len(data), checksum, data, time.time()),
+        )
+        return dict(db.execute(f"SELECT {METADATA} FROM attachments WHERE id=?", (aid,)).fetchone())
+
+    def validate_agent_reply(self, db, agent, job, ids):
+        allowed = {agent_attachment_id(job, slot) for slot in range(MAX_ATTACHMENTS)}
+        for aid in self.ids(ids):
+            row = db.execute("SELECT * FROM attachments WHERE id=?", (aid,)).fetchone()
+            if (
+                aid not in allowed
+                or not row
+                or row["owner_id"] != agent["id"]
+                or row["project_id"] != agent["project_id"]
+                or row["message_id"] is not None
+            ):
+                raise PermissionError("附件不属于当前 Agent 任务")
+        return ids
 
     def ids(self, ids):
         if not isinstance(ids, list) or len(ids) > MAX_ATTACHMENTS or any(not isinstance(x, str) for x in ids):

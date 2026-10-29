@@ -888,6 +888,7 @@ Do not send internal progress notes or a [CHECKPOINT] as a project chat reply.
 
 GROUP_RULES = """You are an agent in a human-owned project group. Use the visible messages, shared project memory, task contract and relevant evidence from the assigned local project directory.
 Return one structured JSON response. Put the final human-facing answer in reply, without private reasoning, progress logs or [CHECKPOINT] notes.
+You can send requested files using attachments:[{"path":"project-relative/path.pdf"}] in your structured response. The receiver uploads them after this turn and attaches them to reply in the current conversation. Use attachments:[] otherwise. Only send explicitly requested existing ordinary files inside the assigned project; never send hidden files, credentials, links or files from other directories. At most 5 files, each at most 5 MB. Do not put file bytes into JSON or substitute a server-local path for an attachment. Report a size limit clearly for larger files.
 Use messages only for distinct public or direct follow-up. Do not repeat reply in messages.
 Respect the assigned stage, allowed files and machine-owner permissions. Discuss/review are read-only unless explicitly authorized.
 In discuss/review, use read-only shell tools to inspect the assigned project code, existing logs and process status when the human asks about them. These tools are available; inspect before claiming that files are inaccessible. Do not edit files, install dependencies or start experiments in a read-only turn.
@@ -996,6 +997,7 @@ def run(job):
             schema = obj(
                 {
                     "reply": {"type": "string"},
+                    "attachments": array({"path": {"type": "string"}}),
                     "done": {"type": "boolean"},
                     "messages": array(
                         {

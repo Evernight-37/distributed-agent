@@ -119,7 +119,8 @@ class Coordinator:
                 "visible_messages": visible,
                 "project_memory": shared_memory,
                 "task": contract,
-                "protocol": """Respond as one JSON object with reply:string, messages:[{recipient:null or agent ID,body:string}], tasks:[{agent:ID,title,instructions,stage,allowed_files,acceptance,validation}], executions:[{template:string}], memory_notes:[string], done:boolean.
+                "protocol": """Respond as one JSON object with reply:string, attachments:[{path:project-relative file path}], messages:[{recipient:null or agent ID,body:string}], tasks:[{agent:ID,title,instructions,stage,allowed_files,acceptance,validation}], executions:[{template:string}], memory_notes:[string], done:boolean.
+When a human asks to receive a file, put up to five explicitly requested existing project files in attachments. Each file must be at most 5 MB. The receiver uploads them and attaches them to this reply in its current conversation; do not emit server-local links as substitutes. Use attachments:[] when no file was requested.
 Only the designated admin can delegate tasks. Peers can send public/direct messages and recommend changes with evidence.
 The reply field is the one human-facing answer for this turn. Use messages only for distinct, deliberate follow-up to another participant or the group; do not repeat reply or publish internal progress notes.
 Do not emit [CHECKPOINT]. Use [BLOCKED] or [DISAGREEMENT] only when a real blocker or disagreement requires attention.
@@ -416,6 +417,19 @@ Use only authorized conversation context and local project evidence; you cannot 
             if reply.casefold().startswith("[checkpoint]"):
                 self.store.log(db, "scheduler", "suppressed_checkpoint", {"task": task_id})
                 reply = ""
+            from agent_harness.attachments import Attachments
+
+            files = Attachments(self.store)
+            try:
+                attachment_ids = files.validate_agent_reply(
+                    db, agent, task.get("job") or "", answer.get("attachment_ids", [])
+                )
+            except (ValueError, TypeError, PermissionError):
+                attachment_ids = []
+                reply = reply[:15500] + "\n\n附件未发送：当前任务的附件验证失败。"
+                self.store.log(db, "scheduler", "rejected_agent_attachments", {"task": task_id})
+            if attachment_ids and not reply:
+                reply = "已发送附件。"
             if reply:
                 if not self.store.finalize_draft(db, task_id, reply, reply_to):
                     self.store._message(
@@ -427,6 +441,12 @@ Use only authorized conversation context and local project evidence; you cannot 
                         reply_to,
                         task_id,
                     )
+                if attachment_ids:
+                    message = db.execute(
+                        "SELECT id FROM messages WHERE causal_task=? AND sender_id=? ORDER BY id DESC LIMIT 1",
+                        (task_id, agent["id"]),
+                    ).fetchone()
+                    files.bind(db, agent["id"], project["id"], message["id"], attachment_ids)
             else:
                 self.store.clear_draft(db, task_id)
             if not private and answer.get("memory_notes"):
