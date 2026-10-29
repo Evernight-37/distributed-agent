@@ -592,6 +592,10 @@ class Connector:
                     continue
                 # A local owner may have reconciled an unknown receipt to a confirmed terminal result.
                 receipt = self.advance(receipt, job_id in cancellations)
+                if receipt["phase"] == "terminal":
+                    from agent_harness.agent_attachments import prepare_reply
+
+                    prepare_reply(self, receipt, data.get("features", []))
                 result = receipt.get("result", {"status": "running", "local_status": receipt["phase"]})
                 if "stdout_tail" in result:
                     result["stdout"] = result.pop("stdout_tail")

@@ -105,7 +105,7 @@ class PullBackend:
         )
         return {
             "protocol": hub_advertisement(),
-            "features": ["device_file_transfers_v1"],
+            "features": ["device_file_transfers_v1", "agent_chat_attachments_v1"],
             "owner_commands": commands,
             "node": device["node"],
             "projects": self._projects(db, device),
@@ -198,6 +198,34 @@ class PullBackend:
             )
             if path == "/api/device/projects":
                 return {"projects": self._projects(db, device), "node": device["node"]}
+            if path == "/api/device/task-attachment":
+                from agent_harness.attachments import Attachments
+
+                job = db.execute("SELECT * FROM pull_jobs WHERE id=?", (data.get("job_id"),)).fetchone()
+                if (
+                    not job
+                    or job["node"] != device["node"]
+                    or job["kind"] != "task"
+                    or not hmac.compare_digest(str(data.get("lease_id", "")), job["lease_id"])
+                ):
+                    raise PermissionError("无效的任务附件租约")
+                agent = db.execute("SELECT * FROM agents WHERE id=?", (job["agent_id"],)).fetchone()
+                if (
+                    not agent
+                    or not agent["enabled"]
+                    or agent["owner_id"] != device["owner_id"]
+                    or agent["node"] != device["node"]
+                ):
+                    raise PermissionError("Agent 已撤回或不属于当前设备")
+                return Attachments(self.store).upload_agent(
+                    db,
+                    agent,
+                    job["id"],
+                    data.get("slot"),
+                    data.get("name"),
+                    data.get("base64"),
+                    allow_new=job["state"] not in TERMINAL and not job["cancel_requested"],
+                )
             if path in {
                 "/api/device/transfers",
                 "/api/device/transfer-download-ticket",

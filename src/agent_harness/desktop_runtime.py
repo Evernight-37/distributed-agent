@@ -17,6 +17,7 @@ from agent_harness.pull_worker import NoRedirect, deploy_runtime
 from agent_harness.release_info import version_path
 
 SERVICE_RUNTIME_FILES = (
+    "agent_attachments.py",
     "broker_transport.py",
     "attachments.py",
     "desktop_service.py",
