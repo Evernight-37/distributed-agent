@@ -1,0 +1,66 @@
+name: Verify Windows support
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, windows-improvements]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify Windows attachment boundaries and full regression suite
+        run: |
+          python -m unittest tests.test_agent_attachments -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests -t . -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ruff check src scripts tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ruff format --check src scripts tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run format:check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build and verify Windows app in clean room
+        shell: pwsh
+        run: |
+          python scripts/build_desktop.py --output-root release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:AGENT_HARNESS_TEST_BUNDLE = "$env:GITHUB_WORKSPACE\release\AgentHarness"
+          python -m unittest tests.test_desktop.PackagedReceiverTests -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/cleanroom_release.py release/AgentHarness build/cleanroom
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = (Get-Content VERSION -Raw).Trim()
+          python scripts/package_windows_release.py release/AgentHarness "AgentHarness-$version-windows-x64.zip"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgentHarness-windows-tested
+          path: AgentHarness-*-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 7

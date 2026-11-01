@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import secrets
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -12,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent_harness.agent_attachments import prepare_reply, read_project_file
+from agent_harness.agent_attachments import prepare_reply, project_files_supported, read_project_file
 from agent_harness.attachments import AGENT_ATTACHMENT_FEATURE, Attachments, MAX_FILE_BYTES
 from agent_harness.broker import PullBackend
 from agent_harness.collaboration_store import Store
@@ -199,6 +200,7 @@ class AgentAttachmentTests(unittest.TestCase):
         self.assertEqual(message["attachments"], [])
         self.assertIn("附件验证失败", message["body"])
 
+    @unittest.skipUnless(project_files_supported(), "Secure descriptor-relative reader unavailable")
     def test_receiver_retries_lost_upload_ack_without_duplicate_or_path_disclosure(self):
         job = self.task()
         attempts = []
@@ -254,6 +256,108 @@ class AgentAttachmentTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_unsupported_reader_never_opens_files(self):
+        with (
+            patch("agent_harness.agent_attachments.project_files_supported", return_value=False),
+            patch("agent_harness.agent_attachments.os.open") as opened,
+        ):
+            with self.assertRaisesRegex(ValueError, "暂不支持"):
+                read_project_file(self.workspace, "report.pdf")
+            opened.assert_not_called()
+
+    def test_unsupported_receiver_explains_limit_without_upload_or_path_disclosure(self):
+        connector, receipt = self.connector_receipt(self.task())
+        with (
+            patch("agent_harness.agent_attachments.project_files_supported", return_value=False),
+            patch("agent_harness.agent_attachments.read_project_file") as read,
+            patch.object(connector, "transport") as upload,
+        ):
+            prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE])
+            read.assert_not_called()
+            upload.assert_not_called()
+        answer = json.loads(receipt["result"]["report"])
+        self.assertEqual(answer["attachment_ids"], [])
+        self.assertNotIn("attachments", answer)
+        self.assertNotIn(str(self.workspace), receipt["result"]["report"])
+        self.assertIn("桌面端手动上传", answer["reply"])
+        self.assertTrue(receipt["attachment_delivery_complete"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows reparse points only")
+    def test_windows_directory_replacement_with_junction_is_blocked(self):
+        self.assertFalse(project_files_supported())
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "secret.pdf").write_bytes(b"private outside content")
+        link = self.workspace / "replaced"
+        link.mkdir()
+        link.rmdir()
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], check=True, capture_output=True)
+        try:
+            with patch("agent_harness.agent_attachments.os.open") as opened:
+                with self.assertRaisesRegex(ValueError, "暂不支持"):
+                    read_project_file(self.workspace, "replaced/secret.pdf")
+                opened.assert_not_called()
+        finally:
+            link.rmdir()
+
+    @unittest.skipUnless(os.name == "nt", "Windows symlinks only")
+    def test_windows_file_replacement_with_symlink_is_blocked(self):
+        outside = self.root / "secret.pdf"
+        outside.write_bytes(b"private outside content")
+        link = self.workspace / "replaced.pdf"
+        link.write_bytes(b"original content")
+        link.unlink()
+        link.symlink_to(outside)
+        with patch("agent_harness.agent_attachments.os.open") as opened:
+            with self.assertRaisesRegex(ValueError, "暂不支持"):
+                read_project_file(self.workspace, "replaced.pdf")
+            opened.assert_not_called()
+
+    @unittest.skipUnless(project_files_supported(), "Secure descriptor-relative reader unavailable")
+    def test_directory_replaced_after_open_cannot_redirect_the_read(self):
+        reports = self.workspace / "reports"
+        reports.mkdir()
+        (reports / "report.pdf").write_bytes(b"requested report")
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "report.pdf").write_bytes(b"private outside content")
+        original_open = os.open
+
+        def replace_before_file_open(path, flags, *args, **kwargs):
+            if path == "report.pdf":
+                reports.rename(self.workspace / "original-reports")
+                reports.symlink_to(outside, target_is_directory=True)
+            return original_open(path, flags, *args, **kwargs)
+
+        with (
+            patch("agent_harness.agent_attachments.project_files_supported", return_value=True),
+            patch("agent_harness.agent_attachments.os.open", side_effect=replace_before_file_open),
+        ):
+            self.assertEqual(
+                read_project_file(self.workspace, "reports/report.pdf"), ("report.pdf", b"requested report")
+            )
+
+    @unittest.skipUnless(project_files_supported(), "Secure descriptor-relative reader unavailable")
+    def test_file_replaced_with_symlink_immediately_before_open_is_blocked(self):
+        outside = self.root / "secret.pdf"
+        outside.write_bytes(b"private outside content")
+        original_open = os.open
+
+        def replace_before_file_open(path, flags, *args, **kwargs):
+            if path == "report.pdf":
+                target = self.workspace / "report.pdf"
+                target.unlink()
+                target.symlink_to(outside)
+            return original_open(path, flags, *args, **kwargs)
+
+        with (
+            patch("agent_harness.agent_attachments.project_files_supported", return_value=True),
+            patch("agent_harness.agent_attachments.os.open", side_effect=replace_before_file_open),
+        ):
+            with self.assertRaises(OSError):
+                read_project_file(self.workspace, "report.pdf")
+
+    @unittest.skipUnless(project_files_supported(), "Secure descriptor-relative reader unavailable")
     def test_local_reader_rejects_outside_hidden_symlink_fifo_and_oversize_files(self):
         self.assertEqual(read_project_file(self.workspace, "report.pdf"), ("report.pdf", self.content))
         for name in ("../outside.pdf", str(self.root / "outside.pdf"), ".env"):

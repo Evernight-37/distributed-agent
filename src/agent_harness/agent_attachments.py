@@ -12,7 +12,19 @@ from agent_harness.attachments import AGENT_ATTACHMENT_FEATURE, MAX_ATTACHMENTS,
 from agent_harness.common import read_json, write_json
 
 
+UNSUPPORTED_READER = "此接收端暂不支持 Agent 自动发送附件（包括 Windows）；请在桌面端手动上传文件"
+
+
+def project_files_supported():
+    """Fail closed unless every path component can be opened without following links."""
+    return (
+        os.name != "nt" and os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY")
+    )
+
+
 def read_project_file(root, requested):
+    if not project_files_supported():
+        raise ValueError(UNSUPPORTED_READER)
     root = Path(root).resolve(strict=True)
     if not isinstance(requested, str) or not requested or len(requested) > 4096:
         raise ValueError("附件路径无效")
@@ -25,22 +37,12 @@ def read_project_file(root, requested):
         raise ValueError("不能发送隐藏文件、内部配置或越界路径")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     with ExitStack() as stack:
-        if os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW"):
-            directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, directory)
+        for part in relative.parts[:-1]:
+            directory = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
             stack.callback(os.close, directory)
-            for part in relative.parts[:-1]:
-                directory = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
-                stack.callback(os.close, directory)
-            descriptor = os.open(relative.name, flags, dir_fd=directory)
-        else:
-            candidate = root
-            for part in relative.parts:
-                candidate = candidate / part
-                if candidate.is_symlink():
-                    raise ValueError("不能发送链接文件")
-            if not candidate.resolve(strict=True).is_relative_to(root):
-                raise ValueError("附件必须位于当前项目目录")
-            descriptor = os.open(candidate, flags)
+        descriptor = os.open(relative.name, flags, dir_fd=directory)
         stream = stack.enter_context(os.fdopen(descriptor, "rb"))
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode):
@@ -75,6 +77,9 @@ def prepare_reply(connector, receipt, features):
         requested = []
     if AGENT_ATTACHMENT_FEATURE not in features:
         errors.append("托管端需要升级以支持 Agent 附件")
+        requested = []
+    if requested and not project_files_supported():
+        errors.append(UNSUPPORTED_READER)
         requested = []
     config = read_json(connector.root / "jobs" / receipt["local_id"] / "request.json", {})
     root = config.get("project", {}).get("remote_path")
