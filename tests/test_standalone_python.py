@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -11,10 +12,55 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from scripts.prepare_python_runtime import artifact, prepare, validate_runtime, verify_archive
+from scripts.prepare_python_runtime import PYTHON_VERSION, artifact, prepare, validate_runtime, verify_archive
 
 
 class StandalonePythonTests(unittest.TestCase):
+    def cached_runtime(self, directory):
+        root = Path(directory).resolve() / "runtime"
+        python = root / "bin" / "python3.12"
+        python.parent.mkdir(parents=True)
+        python.touch()
+        (root / ".agent-harness-runtime.sha256").write_text(artifact()[1] + "\n", encoding="ascii")
+        return root, python
+
+    def test_valid_cache_is_probed_without_requiring_matching_builder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, python = self.cached_runtime(directory)
+            probe = {"version": [3, 12], "full_version": [int(x) for x in PYTHON_VERSION.split(".")], "framework": ""}
+            with patch(
+                "scripts.prepare_python_runtime.subprocess.run", return_value=SimpleNamespace(stdout=json.dumps(probe))
+            ) as run:
+                self.assertEqual(prepare(root), root)
+            self.assertEqual(run.call_args.args[0][0], str(python))
+            self.assertIn("ssl,sqlite3", run.call_args.args[0][-1])
+
+    def test_cache_marker_does_not_hide_missing_interpreter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, python = self.cached_runtime(directory)
+            python.unlink()
+            with self.assertRaisesRegex(RuntimeError, "Cached standalone Python is unusable"):
+                prepare(root)
+            self.assertTrue(root.exists())
+
+    def test_broken_modules_and_hung_cache_get_repair_instructions(self):
+        for failure in (subprocess.CalledProcessError(1, "python"), subprocess.TimeoutExpired("python", 30)):
+            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as directory:
+                root, _ = self.cached_runtime(directory)
+                with patch("scripts.prepare_python_runtime.subprocess.run", side_effect=failure):
+                    with self.assertRaisesRegex(RuntimeError, "remove that cache and prepare it again"):
+                        prepare(root)
+
+    def test_cache_rejects_wrong_pinned_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _ = self.cached_runtime(directory)
+            probe = {"version": [3, 12], "full_version": [3, 12, 1], "framework": ""}
+            with patch(
+                "scripts.prepare_python_runtime.subprocess.run", return_value=SimpleNamespace(stdout=json.dumps(probe))
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Cached standalone Python is unusable"):
+                    prepare(root)
+
     def test_framework_python_is_rejected_even_when_probe_succeeds(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

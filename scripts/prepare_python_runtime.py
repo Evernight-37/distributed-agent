@@ -58,11 +58,10 @@ def verify_archive(path, expected):
         raise RuntimeError("Standalone Python archive SHA-256 mismatch")
 
 
-def validate_runtime(root):
-    """Reject framework Python even when it happens to work on the build host."""
-
+def probe_runtime(root):
+    """Check interpreter and native modules without requiring this process to use it."""
     root = Path(root).resolve()
-    python = root / "bin" / f"python{sys.version_info.major}.{sys.version_info.minor}"
+    python = root / "bin" / ("python" + ".".join(PYTHON_VERSION.split(".")[:2]))
     if not python.is_file() or (root / "pyvenv.cfg").exists():
         raise RuntimeError("Use a standalone Python distribution, not a venv")
     result = subprocess.run(
@@ -71,7 +70,7 @@ def validate_runtime(root):
             "-I",
             "-c",
             "import json,ssl,sqlite3,sys,sysconfig; "
-            "print(json.dumps({'version':list(sys.version_info[:2]),"
+            "print(json.dumps({'version':list(sys.version_info[:2]),'full_version':list(sys.version_info[:3]),"
             "'framework':sysconfig.get_config_var('PYTHONFRAMEWORK')}))",
         ],
         capture_output=True,
@@ -82,6 +81,13 @@ def validate_runtime(root):
     probe = json.loads(result.stdout)
     if probe.get("framework"):
         raise RuntimeError("Framework Python is not relocatable; use scripts/prepare_python_runtime.py")
+    return python, probe
+
+
+def validate_runtime(root):
+    """Also ensure the builder uses the same standalone distribution."""
+    root = Path(root).resolve()
+    python, probe = probe_runtime(root)
     if probe.get("version") != list(sys.version_info[:2]):
         raise RuntimeError("Build Python and service runtime must have the same major/minor version")
     if Path(sys.base_prefix).resolve() != root:
@@ -95,6 +101,14 @@ def prepare(destination):
     marker = destination / ".agent-harness-runtime.sha256"
     if destination.exists():
         if marker.is_file() and marker.read_text(encoding="ascii").strip() == digest:
+            try:
+                _, probe = probe_runtime(destination)
+                if probe.get("full_version") != [int(part) for part in PYTHON_VERSION.split(".")]:
+                    raise RuntimeError("Cached Python version does not match the pinned runtime")
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                raise RuntimeError(
+                    f"Cached standalone Python is unusable at {destination}; remove that cache and prepare it again"
+                ) from exc
             return destination
         raise RuntimeError("Runtime destination already exists without the expected checksum marker")
     destination.parent.mkdir(parents=True, exist_ok=True)
