@@ -119,7 +119,8 @@ def codex_login_status(exe, root=None):
 def cli_status(root=None):
     """Find a working local-executor CLI in the worker account."""
     root = ROOT if root is None else Path(root)
-    return executors.status(root)
+    # Pass this module's probe so callers and tests keep a single override point.
+    return executors.status(root, codex_version)
 
 
 def cli_path(root=None):

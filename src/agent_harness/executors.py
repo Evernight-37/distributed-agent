@@ -169,17 +169,19 @@ def _dsh_candidates():
     return paths
 
 
-def status(root):
+def status(root, probe=None):
     """Find a working local executor binary, honouring an explicit selection."""
-    return status_of(root, selected(root))
+    return status_of(root, selected(root), probe)
 
 
-def status_of(root, kind):
+def status_of(root, kind, probe=None):
     """Find a working binary of ``kind`` regardless of this machine's selection.
 
     The saved explicit path belongs to the selected executor only; a probe for
-    the other one has to discover its own binary.
+    the other one has to discover its own binary. ``probe`` lets the caller keep
+    its own version hook (the worker exposes one and tests override it).
     """
+    probe = probe or version
     root = Path(root)
     label = _label(kind)
     explicit = settings(root).get("cli_path") if kind == selected(root) else None
@@ -190,7 +192,7 @@ def status_of(root, kind):
                 "configured": True,
                 "error": "设置的 %s 路径已失效，请重新选择程序" % label,
             }
-        found_version = version(explicit)
+        found_version = probe(explicit)
         if found_version is None:
             return {
                 "found": False,
@@ -210,7 +212,7 @@ def status_of(root, kind):
         if key in seen or not candidate.is_file():
             continue
         seen.add(key)
-        found_version = version(candidate)
+        found_version = probe(candidate)
         if found_version is not None:
             valid.append((found_version, str(candidate)))
     if not valid:
