@@ -594,15 +594,18 @@ class Connector:
                 if receipt.get("reported_terminal"):
                     continue
                 # A local owner may have reconciled an unknown receipt to a confirmed terminal result.
+                if receipt["phase"] == "waiting_attachment_approval" and job_id in cancellations:
+                    receipt.update(
+                        phase="terminal",
+                        result={"status": "cancelled", "error": "Cancelled while waiting for attachment approval"},
+                    )
+                    write_json(path, receipt)
                 if receipt["phase"] != "waiting_attachment_approval":
                     receipt = self.advance(receipt, job_id in cancellations)
                 if receipt["phase"] in {"terminal", "waiting_attachment_approval"}:
                     from agent_harness.agent_attachments import prepare_reply
 
                     decision = attachment_decisions.get(job_id)
-                    if job_id in cancellations and receipt["phase"] == "waiting_attachment_approval":
-                        approval = receipt["attachment_approval"]
-                        decision = {"id": approval["id"], "digest": approval["digest"], "approved": False}
                     prepare_reply(self, receipt, data.get("features", []), decision)
                 if receipt["phase"] == "waiting_attachment_approval":
                     continue
