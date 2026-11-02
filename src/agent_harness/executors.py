@@ -323,10 +323,13 @@ def environment(root, stage=None, full_access=False):
 def requested_model(root, project_model):
     """The model this machine actually asks for when a turn is dispatched.
 
-    An explicit ``model`` in the receiver executor settings wins, because one
-    machine runs one executor and therefore one provider route.  Otherwise the
-    model configured for the agent is passed through unchanged.
+    Only DeepSeek Harness takes a receiver-level override, because its provider
+    routes are configured per machine.  The override is ignored for Codex: a
+    leftover value from a previous DeepSeek Harness selection must not make the
+    effective-model check fail every turn.
     """
+    if selected(root) != DSH:
+        return project_model
     override = settings(root).get("model")
     if isinstance(override, str) and override.strip():
         return override.strip()

@@ -333,6 +333,16 @@ class DshModelTests(unittest.TestCase):
             write_json(root / "executor.json", {"executor": "dsh", "model": "   "})
             self.assertEqual(executors.requested_model(root, "deepseek-flash"), "deepseek-flash")
 
+    def test_a_leftover_override_is_ignored_by_codex(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            # Switching back to Codex leaves the DeepSeek Harness model behind;
+            # applying it would fail the effective-model check on every turn.
+            write_json(root / "executor.json", {"executor": "codex", "model": "deepseek-reasoner"})
+            self.assertEqual(executors.requested_model(root, "gpt-5.6-sol"), "gpt-5.6-sol")
+            write_json(root / "executor.json", {"model": "deepseek-reasoner"})
+            self.assertEqual(executors.requested_model(root, "gpt-5.6-sol"), "gpt-5.6-sol")
+
 
 class DshFailureHintTests(unittest.TestCase):
     def test_missing_credential_is_explained_in_chinese(self):
