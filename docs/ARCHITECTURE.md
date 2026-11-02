@@ -32,6 +32,7 @@ Desktop WebView 入口为 `assets/web/app.html`。样式位于 `assets/web/style
 - `panel.py`、`team_service.py`：协作 HTTP 服务和 Tailscale Serve 管理。
 - `event_pump.py`：Desktop 独立事件等待线程；不经过同步 WebView 动作锁。
 - `health.py`、`diagnostics.py`：跨平台稳定健康 schema 与拒绝默认导出的安全诊断快照。
+- `updates.py`：可配置的版本检查。只读取本项目 GitHub Releases 的最新 tag 与当前 `VERSION` 比较，不下载、不上传其它信息；频率为每天/每周/每月/从不，无网络时只记录一次尝试并在一小时内不再重试。
 - `mcp_adapter.py`、`mcp_server.py`：Codex 与 DeepSeek Harness 中使用协作功能的 stdio MCP 接口。
 - `dsh_mcp.py`：把上面这个 stdio 服务登记进 DeepSeek Harness **desktop profile** 的补丁层（`~/.dsh/profiles/desktop/cordis.patch.yml`），作用域限于桌面应用里的普通会话；一次性 `headless` profile 不读它，所以派发的任务不受影响。条目只指向数据目录里的稳定启动器 `mcp/launch-<profile>-dsh.*`——运行时路径是内容寻址的，直接钉住会在升级后失效。该文件同时也是 DSH 配置编辑器的写入目标，编辑器按条目替换并保留其它内容，因此只增删 Harness 标记的两行即可共存；写入保留备份，并把这个补丁作为 overlay 交给 `--dump-config` 解析一次，失败回滚。
 - `common.py`：各进程共享的文件、锁、校验和代理辅助函数。
