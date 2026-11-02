@@ -307,7 +307,12 @@ class AgentAttachmentTests(unittest.TestCase):
         link = self.workspace / "replaced.pdf"
         link.write_bytes(b"original content")
         link.unlink()
-        link.symlink_to(outside)
+        try:
+            link.symlink_to(outside)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows account cannot create symbolic links")
+            raise
         with patch("agent_harness.agent_attachments.os.open") as opened:
             with self.assertRaisesRegex(ValueError, "暂不支持"):
                 read_project_file(self.workspace, "replaced.pdf")
