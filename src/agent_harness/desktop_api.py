@@ -109,6 +109,9 @@ class DesktopSettingsActions:
             "codex-cli-save",
             "executor-save",
             "update-status",
+            "update-download",
+            "update-download-status",
+            "update-discard",
             "update-schedule-save",
             "update-open",
             "proxy-save",
@@ -352,6 +355,21 @@ class DesktopSettingsActions:
             from agent_harness import updates
 
             return updates.status(self.bridge.root, force=bool(data.get("force")))
+        if action == "update-download":
+            from agent_harness import updates
+
+            state = updates.status(self.bridge.root)
+            if state.get("status") != "update":
+                raise ValueError("当前没有可下载的新版本")
+            return updates.start_download(self.bridge.root)
+        if action == "update-download-status":
+            from agent_harness import updates
+
+            return updates.download_state(self.bridge.root)
+        if action == "update-discard":
+            from agent_harness import updates
+
+            return updates.discard(self.bridge.root)
         if action == "update-schedule-save":
             from agent_harness import updates
 
