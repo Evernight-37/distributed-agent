@@ -313,7 +313,7 @@ function executorCard(current) {
   sync();
   note(
     card,
-    "DeepSeek Harness 的模型服务与 API Key 由它自己的配置决定，Harness 不会读取或保存密钥；它也没有单独的思考强度参数。",
+    "DeepSeek Harness 的模型服务与 API Key 由它自己的配置决定，Harness 不会读取或保存密钥。思考强度按模型校验：medium 使用模型默认档，xhigh/max/ultra 按 high 发送。",
   );
   card.append(
     button(
@@ -621,7 +621,7 @@ function dshMcpCard(initial) {
   );
   note(
     card,
-    "在本机 DeepSeek Harness 的 home 配置里登记一个 stdio MCP 服务，不开放端口，也不读取密钥。Harness 只增删自己标记的两行，不会改写其它配置；被派发的 Agent 任务会关闭这个入口。",
+    "在你的 DeepSeek Harness 桌面 profile 里登记一个 stdio MCP 服务，不开放端口，也不读取密钥。只影响桌面应用里的普通对话，被派发的 Agent 任务不受影响；Harness 只增删自己标记的两行，其它配置不动。新的 DSH 会话生效。",
   );
   function paint(state) {
     if (state) card.state = state;

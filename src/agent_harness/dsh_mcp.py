@@ -27,6 +27,11 @@ SERVER_MODULE = "@deepseek-ai/dsh-mcp-client"
 ENTRY_ID = "harness-collab"
 MARKER = "# agent-harness: managed DeepSeek Harness collaboration MCP entry"
 HOME_ENV = "DSH_HOME"
+# The desktop app is the profile a person actually talks to DeepSeek Harness
+# through. The one-shot headless profile used by dispatched turns is left alone,
+# which is what makes this behave like an added feature rather than a global
+# change.
+DEFAULT_PROFILE = "desktop"
 
 
 def home(environ=None):
@@ -36,8 +41,21 @@ def home(environ=None):
     return Path(value).expanduser() if value else Path.home() / ".dsh"
 
 
-def patch_path(root_home=None):
-    return Path(root_home or home()) / "cordis.patch.yml"
+def profile_dir(profile, root_home=None):
+    return Path(root_home or home()) / "profiles" / profile
+
+
+def patch_path(profile=DEFAULT_PROFILE, root_home=None):
+    """The profile's own user patch layer.
+
+    Writing here scopes the entry to one DeepSeek Harness profile, which is the
+    closest thing to installing a plugin: the desktop app's sessions gain the
+    tools while the one-shot ``headless`` profile this application drives stays
+    untouched. DeepSeek Harness's own config editor writes the same file, and it
+    replaces single entries instead of rewriting the document, so the two
+    writers coexist.
+    """
+    return profile_dir(profile, root_home) / "cordis.patch.yml"
 
 
 def server_name(mcp_name):
@@ -130,13 +148,13 @@ def _write(path, text):
     os.replace(temporary, path)
 
 
-def status(root_home=None, launch=None, name="harness"):
+def status(root_home=None, launch=None, name="harness", profile=DEFAULT_PROFILE):
     """Report whether this module's entry is present and still up to date."""
-    path = patch_path(root_home)
+    path = patch_path(profile, root_home)
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return {"installed": False, "stale": False, "path": str(path), "home": str(path.parent)}
+        return {"installed": False, "stale": False, "path": str(path), "profile": profile}
     installed = MARKER in text
     current = None
     lines = text.splitlines()
@@ -148,15 +166,22 @@ def status(root_home=None, launch=None, name="harness"):
         "installed": installed,
         "stale": bool(installed and expected and current != expected),
         "path": str(path),
-        "home": str(path.parent),
+        "profile": profile,
     }
 
 
-def install(root_home=None, launch=None, name="harness", probe=None):
+def install(root_home=None, launch=None, name="harness", probe=None, profile=DEFAULT_PROFILE):
     """Add or refresh this module's entry, then prove the file still composes."""
     if not launch:
         raise ValueError("缺少 MCP 启动命令")
-    path = patch_path(root_home)
+    directory = profile_dir(profile, root_home)
+    if not directory.is_dir():
+        # A half-created profile would stop DeepSeek Harness from booting, so
+        # only touch a profile the application itself already materialized.
+        raise ValueError(
+            "找不到 DeepSeek Harness profile " + profile + "；请先启动一次 DeepSeek Harness 桌面应用再连接"
+        )
+    path = patch_path(profile, root_home)
     try:
         existing = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -176,7 +201,12 @@ def install(root_home=None, launch=None, name="harness", probe=None):
         backup = path.with_name(path.name + ".agent-harness.bak")
         backup.write_bytes(path.read_bytes())
     _write(path, text)
-    result = {"installed": True, "path": str(path), "home": str(path.parent), "backup": str(backup) if backup else None}
+    result = {
+        "installed": True,
+        "path": str(path),
+        "profile": profile,
+        "backup": str(backup) if backup else None,
+    }
     if probe is not None:
         try:
             probe()
@@ -189,22 +219,22 @@ def install(root_home=None, launch=None, name="harness", probe=None):
     return result
 
 
-def remove(root_home=None):
+def remove(root_home=None, profile=DEFAULT_PROFILE):
     """Remove this module's entry and leave every other line untouched."""
-    path = patch_path(root_home)
+    path = patch_path(profile, root_home)
     try:
         existing = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return {"installed": False, "removed": False, "path": str(path)}
+        return {"installed": False, "removed": False, "path": str(path), "profile": profile}
     if MARKER not in existing:
-        return {"installed": False, "removed": False, "path": str(path)}
+        return {"installed": False, "removed": False, "path": str(path), "profile": profile}
     text = _strip_managed(existing)
     if _remaining_is_empty(text):
         text = "".join(raw for raw in text.splitlines(keepends=True) if raw.strip() != "[]") + "[]\n"
     backup = path.with_name(path.name + ".agent-harness.bak")
     backup.write_bytes(path.read_bytes())
     _write(path, text)
-    return {"installed": False, "removed": True, "path": str(path), "backup": str(backup)}
+    return {"installed": False, "removed": True, "path": str(path), "profile": profile, "backup": str(backup)}
 
 
 def snippet(launch, name="harness"):

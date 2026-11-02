@@ -38,23 +38,26 @@ Linux 服务器不要求用户手工照抄安装命令：桌面应用 **账户 �
 | 会话续接 | `resume <thread-id>` | `--session-id <session-id>` |
 | 群聊托管轮次 | 常驻 app-server，低延迟复用 | 每轮一次性进程；无 app-server |
 | 结构化回复 | JSON schema 强约束 | 仅提示词契约 |
-| 思考强度 | 生效 | 不生效（DeepSeek Harness 无对应参数） |
+| 思考强度 | 生效 | 生效，但按模型校验：`medium` 用模型默认档，`xhigh`/`max`/`ultra` 按 `high` 发送 |
 | 登录 | `codex login` | `DEEPSEEK_API_KEY` 环境变量，或在 DeepSeek Harness 的 Models 页面保存密钥 |
 
-DeepSeek Harness 的模型与模型服务在 **设置 → 本机执行器** 里指定；留空时使用员工上设置的模型。它没有单独的思考强度参数，这一点在界面上有说明。Harness 不读取、不保存执行器的密钥：Codex 的登录状态通过 `codex login status` 查询，DeepSeek Harness 的密钥由它自己的凭据服务管理。
+DeepSeek Harness 的模型与模型服务在 **设置 → 本机执行器** 里指定；留空时使用员工上设置的模型。思考强度会传给 DeepSeek Harness，但它按模型自己的目录校验（例如 `deepseek-flash` 只接受 `off`/`low`/`high`），所以 `medium` 留空表示用模型默认档，`xhigh`/`max`/`ultra` 按 `high` 发送。Harness 不读取、不保存执行器的密钥：Codex 的登录状态通过 `codex login status` 查询，DeepSeek Harness 的密钥由它自己的凭据服务或 `DEEPSEEK_API_KEY` 提供。
 
 ## 在 DeepSeek Harness 中使用协作
 
 执行器选为 DeepSeek Harness 时，设置页会出现 **在 DeepSeek Harness 中使用协作**，点击“连接到 DeepSeek Harness”即可。
 
-Codex 有 `codex mcp add` 这条官方配置接口，DeepSeek Harness 没有等价命令，因此 Harness 写入的是它自己的 home 补丁层：`$DSH_HOME/cordis.patch.yml`（默认 `~/.dsh/cordis.patch.yml`），该层对你的所有 DSH profile 生效。因为这是你自己的配置文件，写入是受控的：
+Codex 有 `codex mcp add` 这条官方配置接口，DeepSeek Harness 没有等价命令。它把每个 profile 的配置叠加在一条用户补丁层上，所以 Harness 写的是 **desktop 这一个 profile 的补丁层**：`~/.dsh/profiles/desktop/cordis.patch.yml`。作用域就是你在桌面应用里的普通对话——被派发任务用的 `headless` profile 完全不读它，因此这更接近“装了一个插件”，而不是改动整个 DSH。
+
+DeepSeek Harness 自己的配置编辑器也写这个文件，它按条目替换、并保留其它条目与注释，所以两个写入方可以共存。写入仍然是受控的：
 
 - 只增删 Harness 自己标记的两行（一行注释、一行 JSON 条目），其它内容逐字节保留；
 - 写入前保留 `cordis.patch.yml.agent-harness.bak`，断开连接会把文件恢复原样；
-- 写完立刻用 `dsh --profile headless --dump-config` 验证一次，加载不通过就自动回滚；
-- 如果该文件不是顶层块状列表（例如整体是 flow 风格），Harness 拒绝改写并给出可粘贴的片段。
+- 写后把这个补丁作为 overlay 交给 `dsh --profile headless --patch … --dump-config` 解析一次，解析失败就自动回滚；
+- 如果该文件不是顶层块状列表（例如整体是 flow 风格），Harness 拒绝改写并给出可粘贴的片段；
+- profile 不存在时直接报错，绝不自己造一个残缺的 profile。
 
-被派发的 Agent 任务会在本轮补丁里显式关闭这个入口：Agent 不该拿到协作工具，也不需要为每一轮多启动一个进程。
+新的 DSH 会话（或重启桌面应用后）才会看到这些工具。被派发的 Agent 任务不受影响：它们跑的是 headless profile。
 
 ## 在 Codex 中协作
 

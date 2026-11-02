@@ -333,38 +333,37 @@ def requested_model(root, project_model):
     return project_model
 
 
-def _collaboration_entry_installed():
-    """Whether the home layer registers the Harness collaboration MCP server."""
-    from agent_harness import dsh_mcp
-
-    try:
-        return dsh_mcp.MARKER in dsh_mcp.patch_path().read_text(encoding="utf-8")
-    except OSError:
-        return False
+# DeepSeek Harness validates the reasoning effort against the model's own
+# catalog, and providers advertise a smaller vocabulary than the six Codex
+# levels (deepseek-flash accepts off/low/high). ``medium`` is the Harness
+# default and is deliberately omitted so the model keeps its own default
+# instead of failing on a level the provider may not advertise.
+EFFORT_MAP = {"low": "low", "medium": None, "high": "high", "xhigh": "high", "max": "high", "ultra": "high"}
 
 
-def _dsh_patch(root, model):
+def reasoning_effort(effort):
+    """Project one Harness effort level onto DeepSeek Harness, or None to omit."""
+    return EFFORT_MAP.get(effort if isinstance(effort, str) else "", None)
+
+
+def _dsh_patch(root, model, effort=None):
     """The loader patch that pins DSH to this turn's model and permissions.
 
     Every entry replaces its config wholesale, so the permission presets are
     restated in full: a preset whose sandbox/approval pair matches no composed
     default makes DSH refuse to start.
-    """
-    from agent_harness import dsh_mcp
 
+    The collaboration MCP entry needs no handling here: it lives in the desktop
+    profile's layer, and this one-shot turn runs the ``headless`` profile.
+    """
+    selection = {"provider": settings(root).get("provider") or DSH_PROVIDER, "model": model}
+    level = reasoning_effort(effort)
+    if level:
+        selection["reasoningEffort"] = level
     patch = []
-    if _collaboration_entry_installed():
-        # The home layer gives interactive sessions the collaboration tools.
-        # A dispatched agent must not inherit them: the group contract forbids
-        # using MCP unless a task authorizes it, and the server would otherwise
-        # start a second process and add prompt text to every turn.
-        patch.append({"id": dsh_mcp.ENTRY_ID, "disabled": True})
     patch.extend(
         [
-            {
-                "id": "agent-default-model",
-                "config": {"provider": settings(root).get("provider") or DSH_PROVIDER, "model": model},
-            },
+            {"id": "agent-default-model", "config": selection},
             # Unattended turns have no answerer; fail closed instead of hanging.
             {"id": "approval", "config": {"policy": "never"}},
             {
@@ -442,7 +441,7 @@ def dsh_command(root, exe, project, thread_id, scratch):
     scratch = Path(scratch)
     scratch.mkdir(parents=True, exist_ok=True)
     patch_path = scratch / "dsh-patch.json"
-    write_json(patch_path, _dsh_patch(root, model))
+    write_json(patch_path, _dsh_patch(root, model, project.get("effort")))
     args = [exe, "--profile", DSH_PROFILE, "--patch", str(patch_path), "--json"]
     if thread_id:
         args += ["--session-id", _dsh_session_id(thread_id)]
@@ -520,6 +519,11 @@ def effective_model(kind, thread_id, since=None):
 def explain_failure(text):
     """Translate a provider-specific failure into an actionable Chinese message."""
     lowered = (text or "").lower()
+    if "unsupported_reasoning_effort" in lowered or "does not support reasoning effort" in lowered:
+        return (
+            "所选模型不支持这个思考强度；请在员工设置里换一个档位，或改用该模型支持的模型。"
+            "Harness 会把 medium 视为“用模型默认档”，xhigh/max/ultra 按 high 发送"
+        )
     if "missing_credential" in lowered or "no api key" in lowered:
         return (
             "DeepSeek Harness 没有可用的 API Key：请在 DeepSeek Harness 的 Models 页面保存密钥，"

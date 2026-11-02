@@ -638,17 +638,25 @@ class AppBridge:
         return dsh_mcp.server_name(self._mcp_name())
 
     def _dsh_mcp_probe(self):
-        """Fail unless DeepSeek Harness can still compose its profile tree."""
+        """Fail unless DeepSeek Harness can still parse the profile patch.
+
+        The desktop profile cannot be composed from the CLI (the Electron host
+        owns it), so the written layer is applied as an overlay to the headless
+        profile: a malformed document fails, unknown entry ids only warn.
+        """
         import subprocess
 
-        from agent_harness import executors
+        from agent_harness import dsh_mcp, executors
 
         status = executors.status_of(self._runtime().root, executors.DSH)
         if not status.get("found"):
-            # Nothing to prove with; the entry stays editable from the UI.
+            # Nothing to prove with; the entry stays removable from the UI.
+            return
+        path = dsh_mcp.patch_path(dsh_mcp.DEFAULT_PROFILE, self._dsh_home())
+        if not path.exists():
             return
         result = subprocess.run(
-            [status["path"], "--profile", "headless", "--dump-config"],
+            [status["path"], "--profile", "headless", "--patch", str(path), "--dump-config"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -658,7 +666,7 @@ class AppBridge:
         )
         if result.returncode:
             detail = (result.stderr or result.stdout or "").strip().splitlines()
-            raise RuntimeError(detail[-1][:300] if detail else "配置无法加载")
+            raise RuntimeError(detail[-1][:300] if detail else "配置无法解析")
 
     def _dsh_mcp_status(self):
         from agent_harness import dsh_mcp
@@ -668,12 +676,13 @@ class AppBridge:
             launch = self._mcp_launch()
         except (OSError, PermissionError, RuntimeError, ValueError):
             launch = None
-        state = dsh_mcp.status(launch=launch, name=self._dsh_mcp_name())
+        state = dsh_mcp.status(launch=launch, name=self._dsh_mcp_name(), root_home=self._dsh_home())
         return {
             "enabled": bool(grant),
             "configured": state["installed"],
             "stale": state["stale"],
             "path": state["path"],
+            "profile": state["profile"],
         }
 
     def _enable_dsh_mcp(self):
@@ -704,7 +713,7 @@ class AppBridge:
             public = grant.get("identity", {}).get("public_key")
             self._queue_mcp_revocation(public, list(dict.fromkeys(grant.get("servers", []))))
             warnings = self._retry_mcp_revocations()
-        removed = dsh_mcp.remove(self._dsh_home())
+        removed = dsh_mcp.remove(root_home=self._dsh_home())
         path.unlink(missing_ok=True)
         return {
             "enabled": False,

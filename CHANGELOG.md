@@ -10,7 +10,9 @@
 - DeepSeek Harness 没有常驻 app-server，群聊的托管轮次对它退回一次性进程，不再尝试启动 warm worker；结构化回复只靠提示词契约约束（Codex 仍使用 JSON schema）。
 - DeepSeek Harness 的失败码会被翻译成可操作的中文提示（缺 API Key、会话无法续接、权限预设冲突、模型不被识别），原始错误保留在 `provider_error`。
 - 修复接收端心跳读错目录的问题：`pull_worker._health` 之前读 `codex-cli.json`，而该文件只写在应用数据目录，接收端目录里从来没有，导致 Codex 组件恒为“尚未配置”；现在改为读接收端自己的 `executor.json`。
-- 新增“在 DeepSeek Harness 中使用协作”：DeepSeek Harness 没有 `codex mcp add` 的等价命令，因此把 MCP 服务登记进它的 home 补丁层 `$DSH_HOME/cordis.patch.yml`（对所有 profile 生效）。写入只增删 Harness 自己标记的两行，保留 `.agent-harness.bak` 备份，写后用 `dsh --profile headless --dump-config` 验证并自动回滚，遇到非块状列表的文件则拒绝改写并给出可粘贴片段。被派发的 Agent 任务会在本轮补丁里关闭该入口。
+- 新增“在 DeepSeek Harness 中使用协作”：DeepSeek Harness 没有 `codex mcp add` 的等价命令，因此把 MCP 服务登记进 **desktop profile** 的补丁层 `~/.dsh/profiles/desktop/cordis.patch.yml`，作用域只到桌面应用里的普通会话——被派发任务用的 headless profile 不读它，无需在每轮补丁里关闭。该文件也是 DSH 配置编辑器的写入目标，编辑器按条目替换并保留其它内容，所以只增删 Harness 标记的两行即可共存；写入保留 `.agent-harness.bak` 备份，写后把该补丁当作 overlay 交给 `--dump-config` 解析并在失败时回滚，profile 不存在则拒绝写入。
+- DeepSeek Harness 的思考强度改为按模型目录投影：`low`/`high` 原样传递，`xhigh`/`max`/`ultra` 按 `high` 发送，`medium` 留空使用模型默认档（提供方的档位通常少于员工设置里的六档）。被拒绝的档位会转成中文提示。
+- Linux 接收端新增 `executor status` / `executor set codex|dsh [--model …] [--provider …]` 和 `executor mcp connect|status|disconnect`，与桌面应用的执行器选择和“在 DeepSeek Harness 中使用协作”是同一份配置；`status` 和 `doctor` 的组件文案按当前执行器显示。
 
 ## 2.1.0 - 2026-10-28
 

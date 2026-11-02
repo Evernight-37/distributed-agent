@@ -286,6 +286,41 @@ class DshEventNormalizationTests(unittest.TestCase):
         )
 
 
+class DshEffortTests(unittest.TestCase):
+    def test_levels_map_onto_the_provider_vocabulary(self):
+        self.assertEqual(executors.reasoning_effort("low"), "low")
+        self.assertEqual(executors.reasoning_effort("high"), "high")
+        # medium keeps the model's own default instead of guessing a level.
+        self.assertIsNone(executors.reasoning_effort("medium"))
+        for level in ("xhigh", "max", "ultra"):
+            self.assertEqual(executors.reasoning_effort(level), "high")
+        self.assertIsNone(executors.reasoning_effort("unknown"))
+        self.assertIsNone(executors.reasoning_effort(None))
+
+    def test_patch_carries_the_mapped_effort(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(root / "executor.json", {"executor": "dsh"})
+            executors.command(root, "dsh", dict(PROJECT, effort="high"), None, scratch=root / "job")
+            patch = read_json(root / "job" / "dsh-patch.json")
+            self.assertEqual(patch[0]["config"]["reasoningEffort"], "high")
+
+    def test_medium_omits_the_field_entirely(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(root / "executor.json", {"executor": "dsh"})
+            executors.command(root, "dsh", dict(PROJECT, effort="medium"), None, scratch=root / "job")
+            patch = read_json(root / "job" / "dsh-patch.json")
+            self.assertNotIn("reasoningEffort", patch[0]["config"])
+
+    def test_rejected_effort_is_explained(self):
+        message = executors.explain_failure(
+            'dsh: UNSUPPORTED_REASONING_EFFORT: provider "deepseek-official" model "deepseek-flash" '
+            'does not support reasoning effort "xhigh"'
+        )
+        self.assertIn("思考强度", message)
+
+
 class DshModelTests(unittest.TestCase):
     def test_effective_model_is_never_claimed(self):
         self.assertIsNone(executors.effective_model(executors.DSH, SESSION, None))

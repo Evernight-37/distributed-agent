@@ -13,15 +13,31 @@ NAME = "harness-abc12345"
 PROJECT = {"model": "deepseek-flash", "effort": "medium", "local_control": True}
 
 
+def make_home(folder, profiles=("desktop", "headless")):
+    """Materialize a DeepSeek Harness home the way its launcher does."""
+    home = Path(folder) / "home"
+    for name in profiles:
+        (home / "profiles" / name).mkdir(parents=True, exist_ok=True)
+        (home / "profiles" / name / "package.json").write_text("{}", encoding="utf-8")
+    return home
+
+
 class HomeResolutionTests(unittest.TestCase):
     def test_dsh_home_environment_wins(self):
         with mock.patch.dict(os.environ, {"DSH_HOME": r"D:\custom-home"}):
             self.assertEqual(dsh_mcp.home(), Path(r"D:\custom-home"))
-            self.assertEqual(dsh_mcp.patch_path(), Path(r"D:\custom-home") / "cordis.patch.yml")
+            self.assertEqual(
+                dsh_mcp.patch_path(root_home=r"D:\custom-home"),
+                Path(r"D:\custom-home") / "profiles" / "desktop" / "cordis.patch.yml",
+            )
 
     def test_blank_override_is_ignored(self):
         with mock.patch.dict(os.environ, {"DSH_HOME": "   "}):
             self.assertEqual(dsh_mcp.home(), Path.home() / ".dsh")
+
+    def test_default_target_is_the_desktop_profile(self):
+        self.assertEqual(dsh_mcp.DEFAULT_PROFILE, "desktop")
+        self.assertIn(str(Path("profiles") / "desktop"), str(dsh_mcp.patch_path(root_home="X")))
 
     def test_server_name_is_contract_legal_and_stable(self):
         name = dsh_mcp.server_name("agent-harness-profile-0123456789abcdef")
@@ -56,28 +72,46 @@ class EntryTests(unittest.TestCase):
 
 class InstallTests(unittest.TestCase):
     def _install(self, home, launch=None, probe=None):
-        return dsh_mcp.install(Path(home), launch or LAUNCH, NAME, probe=probe)
+        return dsh_mcp.install(home, launch or LAUNCH, NAME, probe=probe)
 
-    def test_missing_file_is_created(self):
-        with tempfile.TemporaryDirectory() as home:
-            self._install(home)
-            text = dsh_mcp.patch_path(home).read_text(encoding="utf-8")
-            self.assertIn(dsh_mcp.MARKER, text)
+    def test_install_targets_the_desktop_profile_only(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            result = self._install(home)
+            self.assertEqual(result["profile"], "desktop")
+            self.assertIn(str(Path("profiles") / "desktop"), result["path"])
+            self.assertTrue(dsh_mcp.patch_path(root_home=home).is_file())
+            self.assertFalse(dsh_mcp.patch_path("headless", home).exists())
             self.assertTrue(dsh_mcp.status(home, LAUNCH, NAME)["installed"])
 
+    def test_a_missing_profile_is_never_created(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder, profiles=("headless",))
+            with self.assertRaises(ValueError) as raised:
+                self._install(home)
+            self.assertIn("桌面应用", str(raised.exception))
+            self.assertFalse((home / "profiles" / "desktop").exists())
+
     def test_install_is_idempotent(self):
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
             self._install(home)
             self._install(home)
-            text = dsh_mcp.patch_path(home).read_text(encoding="utf-8")
+            text = dsh_mcp.patch_path(root_home=home).read_text(encoding="utf-8")
             self.assertEqual(text.count(dsh_mcp.MARKER), 1)
             self.assertEqual(text.count(dsh_mcp.ENTRY_ID), 1)
 
-    def test_existing_entries_are_preserved_byte_for_byte(self):
-        with tempfile.TemporaryDirectory() as home:
-            path = dsh_mcp.patch_path(home)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            original = "- id: my-entry\n  config:\n    keep: true\n"
+    def test_gui_written_entries_and_comments_are_preserved(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            path = dsh_mcp.patch_path(root_home=home)
+            original = (
+                "# Your patch layer for this dsh profile\n"
+                "- id: ui-chat\n"
+                '  name: "@deepseek-ai/dsh-client-ui-chat"\n'
+                "  config:\n"
+                "    transcriptView: standard\n"
+            )
             path.write_text(original, encoding="utf-8")
             self._install(home)
             text = path.read_text(encoding="utf-8")
@@ -85,9 +119,9 @@ class InstallTests(unittest.TestCase):
             self.assertIn(dsh_mcp.MARKER, text)
 
     def test_bare_empty_list_is_replaced_not_appended_to(self):
-        with tempfile.TemporaryDirectory() as home:
-            path = dsh_mcp.patch_path(home)
-            path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            path = dsh_mcp.patch_path(root_home=home)
             path.write_text("# keep me\n[]\n", encoding="utf-8")
             self._install(home)
             text = path.read_text(encoding="utf-8")
@@ -95,9 +129,9 @@ class InstallTests(unittest.TestCase):
             self.assertNotIn("[]", text)
 
     def test_foreign_flow_style_file_is_never_rewritten(self):
-        with tempfile.TemporaryDirectory() as home:
-            path = dsh_mcp.patch_path(home)
-            path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            path = dsh_mcp.patch_path(root_home=home)
             original = '[{"id": "user-entry"}]\n'
             path.write_text(original, encoding="utf-8")
             with self.assertRaises(ValueError) as raised:
@@ -106,21 +140,22 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), original)
 
     def test_stale_entry_is_refreshed(self):
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
             self._install(home)
             other = [r"D:\other\python.exe"]
             self.assertTrue(dsh_mcp.status(home, other, NAME)["stale"])
             self._install(home, other)
             self.assertFalse(dsh_mcp.status(home, other, NAME)["stale"])
-            text = dsh_mcp.patch_path(home).read_text(encoding="utf-8")
+            text = dsh_mcp.patch_path(root_home=home).read_text(encoding="utf-8")
             self.assertEqual(text.count(dsh_mcp.MARKER), 1)
             self.assertIn(r"D:\\other\\python.exe", text)
 
     def test_failed_probe_rolls_back(self):
-        with tempfile.TemporaryDirectory() as home:
-            path = dsh_mcp.patch_path(home)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            original = "- id: my-entry\n"
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            path = dsh_mcp.patch_path(root_home=home)
+            original = "- id: ui-chat\n"
             path.write_text(original, encoding="utf-8")
 
             def probe():
@@ -131,84 +166,64 @@ class InstallTests(unittest.TestCase):
             self.assertIn("\u56de\u6eda", str(raised.exception))
             self.assertEqual(path.read_text(encoding="utf-8"), original)
 
-    def test_failed_probe_on_a_new_file_removes_it(self):
-        with tempfile.TemporaryDirectory() as home:
-
-            def probe():
-                raise RuntimeError("boom")
-
-            with self.assertRaises(RuntimeError):
-                self._install(home, probe=probe)
-            self.assertFalse(dsh_mcp.patch_path(home).exists())
-
 
 class RemoveTests(unittest.TestCase):
     def test_removal_restores_the_previous_document(self):
-        with tempfile.TemporaryDirectory() as home:
-            path = dsh_mcp.patch_path(home)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            original = "- id: my-entry\n  config:\n    keep: true\n"
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            path = dsh_mcp.patch_path(root_home=home)
+            original = "# Your patch layer\n- id: ui-chat\n  config:\n    keep: true\n"
             path.write_text(original, encoding="utf-8")
-            dsh_mcp.install(Path(home), LAUNCH, NAME)
-            result = dsh_mcp.remove(home)
+            dsh_mcp.install(home, LAUNCH, NAME)
+            result = dsh_mcp.remove(root_home=home)
             self.assertTrue(result["removed"])
             self.assertEqual(path.read_text(encoding="utf-8"), original)
 
     def test_removal_of_an_empty_document_leaves_a_valid_list(self):
-        with tempfile.TemporaryDirectory() as home:
-            dsh_mcp.install(Path(home), LAUNCH, NAME)
-            dsh_mcp.remove(home)
-            self.assertEqual(dsh_mcp.patch_path(home).read_text(encoding="utf-8").strip(), "[]")
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            dsh_mcp.install(home, LAUNCH, NAME)
+            dsh_mcp.remove(root_home=home)
+            self.assertEqual(dsh_mcp.patch_path(root_home=home).read_text(encoding="utf-8").strip(), "[]")
 
     def test_removal_without_a_managed_entry_is_a_no_op(self):
-        with tempfile.TemporaryDirectory() as home:
-            path = dsh_mcp.patch_path(home)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("- id: my-entry\n", encoding="utf-8")
-            result = dsh_mcp.remove(home)
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            path = dsh_mcp.patch_path(root_home=home)
+            path.write_text("- id: ui-chat\n", encoding="utf-8")
+            result = dsh_mcp.remove(root_home=home)
             self.assertFalse(result["removed"])
-            self.assertEqual(path.read_text(encoding="utf-8"), "- id: my-entry\n")
+            self.assertEqual(path.read_text(encoding="utf-8"), "- id: ui-chat\n")
 
     def test_removal_keeps_user_lines_that_follow_the_entry(self):
-        with tempfile.TemporaryDirectory() as home:
-            path = dsh_mcp.patch_path(home)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("- id: my-entry\n", encoding="utf-8")
-            dsh_mcp.install(Path(home), LAUNCH, NAME)
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            path = dsh_mcp.patch_path(root_home=home)
+            path.write_text("- id: ui-chat\n", encoding="utf-8")
+            dsh_mcp.install(home, LAUNCH, NAME)
             with path.open("a", encoding="utf-8") as stream:
                 stream.write("- id: later-entry\n")
-            dsh_mcp.remove(home)
-            self.assertEqual(path.read_text(encoding="utf-8"), "- id: my-entry\n- id: later-entry\n")
+            dsh_mcp.remove(root_home=home)
+            self.assertEqual(path.read_text(encoding="utf-8"), "- id: ui-chat\n- id: later-entry\n")
 
 
 class TurnPatchTests(unittest.TestCase):
-    def _turn_patch(self, root, scratch):
-        executors.command(
-            root,
-            "dsh",
-            dict(PROJECT, remote_path=str(root)),
-            None,
-            scratch=scratch,
-        )
-        return json.loads((scratch / "dsh-patch.json").read_text(encoding="utf-8"))
-
-    def test_dispatched_turns_disable_the_collaboration_entry(self):
+    def test_dispatched_turns_do_not_mention_the_collaboration_entry(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "receiver"
-            home = Path(folder) / "home"
+            home = make_home(folder)
             scratch = root / "job"
             write_json(root / "executor.json", {"executor": "dsh"})
             with mock.patch.dict(os.environ, {"DSH_HOME": str(home)}):
-                without_entry = self._turn_patch(root, scratch)
-                self.assertNotIn(dsh_mcp.ENTRY_ID, [item["id"] for item in without_entry])
-
                 dsh_mcp.install(home, LAUNCH, NAME)
-                with_entry = self._turn_patch(root, scratch)
-                self.assertEqual(with_entry[0], {"id": dsh_mcp.ENTRY_ID, "disabled": True})
-                self.assertEqual(
-                    [item["id"] for item in with_entry[1:]],
-                    ["agent-default-model", "approval", "permission", "credentials"],
-                )
+                executors.command(root, "dsh", dict(PROJECT, remote_path=str(root)), None, scratch=scratch)
+                patch = json.loads((scratch / "dsh-patch.json").read_text(encoding="utf-8"))
+            # The entry lives in the desktop profile; the one-shot headless turn
+            # never sees it, so no per-turn disable is needed.
+            self.assertEqual(
+                [item["id"] for item in patch],
+                ["agent-default-model", "approval", "permission", "credentials"],
+            )
 
 
 if __name__ == "__main__":

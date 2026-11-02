@@ -41,6 +41,21 @@ cd AgentHarness-linux
 其他命令：
 
 ```bash
+./harness executor status                     # 显示本机执行器与每个接收端的检测结果
+./harness executor set dsh --model deepseek-flash
+./harness executor set codex                  # 默认值，切回 Codex
+./harness executor mcp connect                # 在 DeepSeek Harness 里登记协作 MCP
+./harness executor mcp status
+./harness executor mcp disconnect
+./harness codex path set /绝对路径/codex
+./harness codex path detect
+```
+
+执行器按机器保存，与桌面应用的 **设置 → 本机执行器** 是同一份配置。选择 `dsh` 时，这台服务器用 DeepSeek Harness 的 `dsh --profile headless` 执行派发的任务，需要机器上已安装 `dsh` 并可用 `DEEPSEEK_API_KEY`（或已通过 DeepSeek Harness 的 Models 页面保存密钥）；此时 `codex path` 管理的是当前执行器的程序路径。
+
+`executor mcp` 对应桌面设置里的“在 DeepSeek Harness 中使用协作”：它把 stdio MCP 服务登记进 DeepSeek Harness 的 home 补丁层，只增删 Harness 自己标记的两行，并在写后用 `dsh --profile headless --dump-config` 验证、失败即回滚。
+
+```bash
 ./harness service start
 ./harness service stop
 ./harness service restart
