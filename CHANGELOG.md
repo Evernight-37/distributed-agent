@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 修复 Windows 上本机执行器收不到任务的问题：`.cmd` 启动器会吞掉重定向的文件句柄，而 worker 之前把 `prompt.txt` 直接作为子进程 stdin，导致子进程读到空内容并立刻失败。npm 安装的 Codex 与 DeepSeek Harness 的 `dsh.cmd` 都受影响，便携包里的 `codex.exe` 不受影响。现在改为管道加喂数据线程，结束后回收句柄。
+
 - 本机执行器不再写死 Codex：设置页新增“本机执行器”，可在这台机器上选择 Codex CLI 或 DeepSeek Harness。执行器按机器保存，同一项目里不同机器可以各用各的，因此 Codex 与 DeepSeek Harness 的 Agent 可以同时待在一个群聊里。
 - 新增 DeepSeek Harness 执行链路：以 `dsh --profile headless --patch <本轮补丁> --json -` 一次性运行，任务文本走 stdin。每轮生成 JSON 加载补丁固定模型与 `approval: never`（无人值守时失败关闭），沙箱模式由 `DSH_PERMISSION_MODE` 决定——implement 为 workspace-write，讨论与审阅为 read-only。
 - 把 DeepSeek Harness 的 `session`/`status`/`turn_end`/`final` 事件映射为既有的 `thread.started`/`turn.completed`/`item.completed` 契约，worker、broker 与协调器不需要认识第二套方言。会话沿用原来的 `session.json`，通过 `--session-id` 续接。

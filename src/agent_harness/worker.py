@@ -883,13 +883,10 @@ def run(job):
             command_project.get("_stage"),
             full_access=not command_project.get("local_control"),
         )
-        with (
-            (path / "prompt.txt").open("rb") as source,
-            (path / "stderr.log").open("wb") as error,
-        ):
+        with (path / "stderr.log").open("wb") as error:
             proc = subprocess.Popen(
                 command,
-                stdin=source,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=error,
                 cwd=config["project"]["remote_path"],
@@ -897,6 +894,31 @@ def run(job):
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 start_new_session=os.name != "nt",
             )
+
+            def feed_prompt():
+                """Deliver the prompt through a pipe.
+
+                A redirected file handle does not survive a .cmd/.bat launcher on
+                Windows: cmd.exe consumes the handle, so the executor reads an
+                empty task. Both shipped launchers are batch files, so the prompt
+                is streamed from a thread instead.
+                """
+                try:
+                    with (path / "prompt.txt").open("rb") as source:
+                        while True:
+                            chunk = source.read(65536)
+                            if not chunk:
+                                break
+                            proc.stdin.write(chunk)
+                    proc.stdin.flush()
+                except (OSError, ValueError, AttributeError):
+                    pass
+                finally:
+                    try:
+                        proc.stdin.close()
+                    except (OSError, AttributeError):
+                        pass
+
             state.update(
                 status="running",
                 started_at=now(),
@@ -907,6 +929,8 @@ def run(job):
                 thread_id=config["thread_id"],
             )
             write_json(path / "state.json", state)
+            feeder = threading.Thread(target=feed_prompt, daemon=True)
+            feeder.start()
             seen = []
             reports = []
             reader_errors = []
@@ -964,6 +988,12 @@ def run(job):
                 time.sleep(0.3)
             code = proc.wait(timeout=30)
             reader.join(timeout=30)
+            feeder.join(timeout=5)
+            if not reader.is_alive():
+                try:
+                    proc.stdout.close()
+                except (OSError, AttributeError):
+                    pass
             state.update(
                 status=outcome(code, seen, cancelled, timed_out),
                 exit_code=code,
