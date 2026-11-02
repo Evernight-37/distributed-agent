@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 
 if __package__:
+    from scripts.prepare_python_runtime import validate_runtime
     from scripts.build_desktop import (
         APP_SOURCE,
         CLIENT_FILES,
@@ -23,6 +24,7 @@ if __package__:
         application_version,
     )
 else:
+    from prepare_python_runtime import validate_runtime
     from build_desktop import (
         APP_SOURCE,
         CLIENT_FILES,
@@ -94,15 +96,14 @@ def _build_service_bundle(root, python_runtime=None):
     """Add the relocatable interpreter and source bundle used by worker services."""
 
     python_runtime = Path(python_runtime or sys.base_prefix).resolve()
-    if (python_runtime / "pyvenv.cfg").exists():
-        raise RuntimeError("Build Linux releases with a standalone Python, not a venv")
+    interpreter = validate_runtime(python_runtime)
     version = f"python{sys.version_info.major}.{sys.version_info.minor}"
     source_stdlib = python_runtime / "lib" / version
     if not source_stdlib.is_dir():
         raise RuntimeError("Standalone Python standard library is missing")
     runtime = root / "runtime"
     (runtime / "bin").mkdir(parents=True)
-    shutil.copy2(Path(sys.executable).resolve(), runtime / "bin" / "python3")
+    shutil.copy2(interpreter.resolve(), runtime / "bin" / "python3")
     (runtime / "bin" / "python3").chmod(0o755)
     shutil.copytree(
         source_stdlib,

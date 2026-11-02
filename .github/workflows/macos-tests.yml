@@ -28,6 +28,12 @@ jobs:
           node-version: "24"
           cache: npm
 
+      - name: Prepare standalone build Python
+        run: |
+          python scripts/prepare_python_runtime.py --destination "$RUNNER_TEMP/harness-python"
+          "$RUNNER_TEMP/harness-python/bin/python3" -m venv "$RUNNER_TEMP/harness-build"
+          echo "$RUNNER_TEMP/harness-build/bin" >> "$GITHUB_PATH"
+
       - name: Install dependencies
         run: |
           python -m pip install -r requirements-dev.txt
@@ -41,3 +47,8 @@ jobs:
           python -m unittest discover -s tests -t . -q
           npm run format:check
           npm test
+
+      - name: Build and verify relocatable macOS app
+        run: |
+          python scripts/build_macos.py --output-root build/macos-release --python-runtime "$(python -c 'import sys; print(sys.base_prefix)')"
+          python tests/cleanroom_release.py build/macos-release/AgentHarness.app build/cleanroom-macos

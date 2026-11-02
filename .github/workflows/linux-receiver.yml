@@ -3,6 +3,8 @@ name: Verify Linux receiver
 on:
   push:
     branches: [main, macos-improvements, windows-improvements]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -24,6 +26,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Prepare standalone build Python
+        run: |
+          python scripts/prepare_python_runtime.py --destination "$RUNNER_TEMP/harness-python"
+          "$RUNNER_TEMP/harness-python/bin/python3" -m venv "$RUNNER_TEMP/harness-build"
+          echo "$RUNNER_TEMP/harness-build/bin" >> "$GITHUB_PATH"
       - name: Install test and build dependencies
         run: python -m pip install -e . -r requirements-linux-build.txt ruff==0.14.1 pywebview==6.2.1
       - name: Verify headless source
@@ -38,6 +45,11 @@ jobs:
           build/linux-smoke/AgentHarness-linux/harness --help
           build/linux-smoke/AgentHarness-linux/runtime/bin/python3 -I -c \
             "import ssl, sqlite3; from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; import agent_harness.desktop_service, agent_harness.headless_transfers; key=Ed25519PrivateKey.generate(); key.public_key().verify(key.sign(b'check'), b'check'); print('Linux service bundle OK')"
+      - name: Verify package on Ubuntu 22.04
+        run: |
+          docker run --rm --network none --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp -v "$PWD/build/linux-smoke/AgentHarness-linux:/bundle:ro" \
+            ubuntu:22.04 /bin/sh -c '/bundle/harness --help && /bundle/runtime/bin/python3 -I -c "import ssl,sqlite3,cryptography,agent_harness.desktop_service; print(cryptography.__version__)"'
       - uses: actions/upload-artifact@v4
         with:
           name: AgentHarness-linux-${{ matrix.architecture }}

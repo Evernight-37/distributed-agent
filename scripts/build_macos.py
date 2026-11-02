@@ -20,6 +20,7 @@ from build_desktop import (
     WEB_SOURCE,
     application_version,
 )
+from prepare_python_runtime import validate_runtime
 
 
 def build(output_root, python_runtime):
@@ -28,9 +29,7 @@ def build(output_root, python_runtime):
     version = application_version()
     output_root = Path(output_root).resolve()
     python_runtime = Path(python_runtime).resolve()
-    runtime_python = python_runtime / "bin" / f"python{sys.version_info.major}.{sys.version_info.minor}"
-    if not runtime_python.is_file() or (python_runtime / "pyvenv.cfg").exists():
-        raise RuntimeError("--python-runtime must be a relocatable standalone Python distribution, not a venv")
+    runtime_python = validate_runtime(python_runtime)
     # Some standalone distributions load bundled trust-policy PEM files from
     # beside ssl.py. Frozen ssl.__file__ points inside _MEIPASS, so these files
     # must also be present in the frontend, not only in the service runtime.
