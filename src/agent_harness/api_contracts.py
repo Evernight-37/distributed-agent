@@ -195,6 +195,7 @@ DESKTOP_FIELDS = {
         "provider": _TEXT(64),
     },
     "update-status": {"force": {"type": "boolean"}},
+    "update-download-status": {},
     "update-schedule-save": {
         "schedule": {"type": "string", "enum": ["daily", "weekly", "monthly", "never"]},
     },
@@ -309,6 +310,9 @@ DESKTOP_CONTROL = BoundaryContract(
             "team-service-stop",
             "team-service-test",
             "update-open",
+            "update-download",
+            "update-download-status",
+            "update-discard",
             "update-schedule-save",
             "update-status",
             "warm-idle-save",
