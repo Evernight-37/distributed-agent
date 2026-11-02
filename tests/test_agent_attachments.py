@@ -13,7 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent_harness.agent_attachments import prepare_reply, project_files_supported, read_project_file
+from agent_harness.agent_attachments import APPROVAL_FEATURE, prepare_reply, project_files_supported, read_project_file
+from agent_harness.account_backend import AccountBackend
 from agent_harness.attachments import AGENT_ATTACHMENT_FEATURE, Attachments, MAX_FILE_BYTES
 from agent_harness.broker import PullBackend
 from agent_harness.collaboration_store import Store
@@ -99,7 +100,7 @@ class AgentAttachmentTests(unittest.TestCase):
         )
         self.coordinator.collect()
 
-    def connector_receipt(self, job, transport=None):
+    def connector_receipt(self, job, transport=None, policy="full"):
         state = self.root / "receiver"
         state.mkdir(exist_ok=True)
         receipt_path = state / "receipt.json"
@@ -107,6 +108,7 @@ class AgentAttachmentTests(unittest.TestCase):
             root=state,
             config={},
             receipt_path=lambda _: receipt_path,
+            binding_for=lambda _: {"attachment_policy": policy},
             transport=transport
             or (lambda _, op, payload: self.backend.device_api("/api/device/" + op, payload, self.token)),
         )
@@ -200,7 +202,7 @@ class AgentAttachmentTests(unittest.TestCase):
         self.assertEqual(message["attachments"], [])
         self.assertIn("附件验证失败", message["body"])
 
-    @unittest.skipUnless(project_files_supported(), "Secure descriptor-relative reader unavailable")
+    @unittest.skipUnless(project_files_supported(), "Secure project reader unavailable")
     def test_receiver_retries_lost_upload_ack_without_duplicate_or_path_disclosure(self):
         job = self.task()
         attempts = []
@@ -214,7 +216,7 @@ class AgentAttachmentTests(unittest.TestCase):
 
         connector, receipt = self.connector_receipt(job, transport)
         with self.assertRaises(TimeoutError):
-            prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE])
+            prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE, APPROVAL_FEATURE])
         prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE])
         answer = json.loads(receipt["result"]["report"])
         self.assertNotIn("attachments", answer)
@@ -282,9 +284,133 @@ class AgentAttachmentTests(unittest.TestCase):
         self.assertIn("桌面端手动上传", answer["reply"])
         self.assertTrue(receipt["attachment_delivery_complete"])
 
+    def test_owner_approval_survives_poll_and_uploads_original_file(self):
+        job = self.task()
+        connector, receipt = self.connector_receipt(job, policy="ask")
+        with (
+            patch("agent_harness.agent_attachments.project_files_supported", return_value=True),
+            patch("agent_harness.agent_attachments.read_project_file", return_value=("report.pdf", self.content)),
+        ):
+            prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE, APPROVAL_FEATURE])
+            self.assertEqual(receipt["phase"], "waiting_attachment_approval")
+            account = AccountBackend(self.store, self.backend)
+            requests = account._operation(self.owner, "", "attachment-approvals", {})["requests"]
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(requests[0]["manifest"][0]["name"], "report.pdf")
+            self.assertEqual(requests[0]["destination"], "项目群聊")
+            self.assertEqual(
+                self.backend.device_api(
+                    "/api/device/task-attachment-request",
+                    {"job_id": job["id"], "lease_id": job["lease_id"], "manifest": requests[0]["manifest"]},
+                    self.token,
+                )["id"],
+                requests[0]["id"],
+            )
+            with self.assertRaises(PermissionError):
+                account._operation(self.viewer, "", "attachment-decide", {"id": requests[0]["id"], "approve": True})
+            account._operation(self.owner, "", "attachment-decide", {"id": requests[0]["id"], "approve": True})
+            decision = self.backend.device_api("/api/device/poll", {}, self.token)["attachment_decisions"][0]
+            prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE, APPROVAL_FEATURE], decision)
+        answer = json.loads(receipt["result"]["report"])
+        self.assertEqual(len(answer["attachment_ids"]), 1)
+        self.assertNotIn("attachments", answer)
+        self.assertTrue(receipt["attachment_delivery_complete"])
+
+    def test_changed_file_after_approval_is_not_uploaded(self):
+        job = self.task()
+        connector, receipt = self.connector_receipt(job, policy="ask")
+        account = AccountBackend(self.store, self.backend)
+        with (
+            patch("agent_harness.agent_attachments.project_files_supported", return_value=True),
+            patch(
+                "agent_harness.agent_attachments.read_project_file",
+                side_effect=[("report.pdf", self.content), ("report.pdf", b"changed")],
+            ),
+        ):
+            prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE, APPROVAL_FEATURE])
+            approval = account._operation(self.owner, "", "attachment-approvals", {})["requests"][0]
+            account._operation(self.owner, "", "attachment-decide", {"id": approval["id"], "approve": True})
+            decision = self.backend.device_api("/api/device/poll", {}, self.token)["attachment_decisions"][0]
+            prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE, APPROVAL_FEATURE], decision)
+        answer = json.loads(receipt["result"]["report"])
+        self.assertEqual(answer["attachment_ids"], [])
+        self.assertIn("文件内容发生变化", answer["reply"])
+
+    def test_owner_rejection_finishes_without_upload(self):
+        job = self.task()
+        connector, receipt = self.connector_receipt(job, policy="ask")
+        account = AccountBackend(self.store, self.backend)
+        with (
+            patch("agent_harness.agent_attachments.project_files_supported", return_value=True),
+            patch("agent_harness.agent_attachments.read_project_file", return_value=("report.pdf", self.content)),
+        ):
+            prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE, APPROVAL_FEATURE])
+            approval = account._operation(self.owner, "", "attachment-approvals", {})["requests"][0]
+            account._operation(self.owner, "", "attachment-decide", {"id": approval["id"], "approve": False})
+            decision = self.backend.device_api("/api/device/poll", {}, self.token)["attachment_decisions"][0]
+            prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE, APPROVAL_FEATURE], decision)
+        answer = json.loads(receipt["result"]["report"])
+        self.assertEqual(answer["attachment_ids"], [])
+        self.assertIn("拒绝", answer["reply"])
+
+    def test_auto_policy_requires_current_human_file_request(self):
+        job = self.task()
+        connector, receipt = self.connector_receipt(job, policy="auto")
+        config = read_json(connector.root / "jobs/local/request.json")
+        config["prompt"] = json.dumps(
+            {
+                "objective": json.dumps(
+                    {
+                        "visible_messages": [
+                            {"sender_type": "human", "recipient_id": None, "body": "请发送 report.pdf"}
+                        ],
+                        "task": {},
+                    }
+                )
+            }
+        )
+        write_json(connector.root / "jobs/local/request.json", config)
+        with (
+            patch("agent_harness.agent_attachments.project_files_supported", return_value=True),
+            patch("agent_harness.agent_attachments.read_project_file", return_value=("report.pdf", self.content)),
+        ):
+            prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE])
+        self.assertEqual(receipt["phase"], "terminal")
+        self.assertEqual(len(json.loads(receipt["result"]["report"])["attachment_ids"]), 1)
+
+    def test_auto_policy_accepts_file_request_in_private_chat(self):
+        job = self.task(private=True)
+        connector, receipt = self.connector_receipt(job, policy="auto")
+        config = read_json(connector.root / "jobs/local/request.json")
+        config["prompt"] = json.dumps(
+            {
+                "objective": json.dumps(
+                    {
+                        "task": {"private_turn": True, "reply_to": self.owner},
+                        "visible_messages": [
+                            {
+                                "sender_type": "human",
+                                "sender_id": self.owner,
+                                "recipient_id": self.agent["id"],
+                                "body": "请发送 report.pdf",
+                            }
+                        ],
+                    }
+                )
+            }
+        )
+        write_json(connector.root / "jobs/local/request.json", config)
+        with (
+            patch("agent_harness.agent_attachments.project_files_supported", return_value=True),
+            patch("agent_harness.agent_attachments.read_project_file", return_value=("report.pdf", self.content)),
+        ):
+            prepare_reply(connector, receipt, [AGENT_ATTACHMENT_FEATURE])
+        self.assertEqual(receipt["phase"], "terminal")
+        self.assertEqual(len(json.loads(receipt["result"]["report"])["attachment_ids"]), 1)
+
     @unittest.skipUnless(os.name == "nt", "Windows reparse points only")
     def test_windows_directory_replacement_with_junction_is_blocked(self):
-        self.assertFalse(project_files_supported())
+        self.assertTrue(project_files_supported())
         outside = self.root / "outside"
         outside.mkdir()
         (outside / "secret.pdf").write_bytes(b"private outside content")
@@ -294,7 +420,7 @@ class AgentAttachmentTests(unittest.TestCase):
         subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], check=True, capture_output=True)
         try:
             with patch("agent_harness.agent_attachments.os.open") as opened:
-                with self.assertRaisesRegex(ValueError, "暂不支持"):
+                with self.assertRaises(ValueError):
                     read_project_file(self.workspace, "replaced/secret.pdf")
                 opened.assert_not_called()
         finally:
@@ -314,11 +440,11 @@ class AgentAttachmentTests(unittest.TestCase):
                 self.skipTest("Windows account cannot create symbolic links")
             raise
         with patch("agent_harness.agent_attachments.os.open") as opened:
-            with self.assertRaisesRegex(ValueError, "暂不支持"):
+            with self.assertRaises(ValueError):
                 read_project_file(self.workspace, "replaced.pdf")
             opened.assert_not_called()
 
-    @unittest.skipUnless(project_files_supported(), "Secure descriptor-relative reader unavailable")
+    @unittest.skipUnless(os.name != "nt" and project_files_supported(), "POSIX descriptor-relative reader only")
     def test_directory_replaced_after_open_cannot_redirect_the_read(self):
         reports = self.workspace / "reports"
         reports.mkdir()
@@ -342,7 +468,7 @@ class AgentAttachmentTests(unittest.TestCase):
                 read_project_file(self.workspace, "reports/report.pdf"), ("report.pdf", b"requested report")
             )
 
-    @unittest.skipUnless(project_files_supported(), "Secure descriptor-relative reader unavailable")
+    @unittest.skipUnless(os.name != "nt" and project_files_supported(), "POSIX descriptor-relative reader only")
     def test_file_replaced_with_symlink_immediately_before_open_is_blocked(self):
         outside = self.root / "secret.pdf"
         outside.write_bytes(b"private outside content")
@@ -362,7 +488,7 @@ class AgentAttachmentTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 read_project_file(self.workspace, "report.pdf")
 
-    @unittest.skipUnless(project_files_supported(), "Secure descriptor-relative reader unavailable")
+    @unittest.skipUnless(os.name != "nt" and project_files_supported(), "POSIX descriptor-relative reader only")
     def test_local_reader_rejects_outside_hidden_symlink_fifo_and_oversize_files(self):
         self.assertEqual(read_project_file(self.workspace, "report.pdf"), ("report.pdf", self.content))
         for name in ("../outside.pdf", str(self.root / "outside.pdf"), ".env"):

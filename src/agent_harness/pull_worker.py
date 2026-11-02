@@ -581,6 +581,9 @@ class Connector:
                 # relay problem must not prevent jobs or commands being polled.
                 pass
         cancellations = set(data.get("cancellations", []))
+        attachment_decisions = {
+            item.get("job_id"): item for item in data.get("attachment_decisions", []) if isinstance(item, dict)
+        }
         with lock(self.root / "pull-receipts.lock"):
             for job in data.get("jobs", []):
                 self.accept(job)
@@ -591,11 +594,18 @@ class Connector:
                 if receipt.get("reported_terminal"):
                     continue
                 # A local owner may have reconciled an unknown receipt to a confirmed terminal result.
-                receipt = self.advance(receipt, job_id in cancellations)
-                if receipt["phase"] == "terminal":
+                if receipt["phase"] != "waiting_attachment_approval":
+                    receipt = self.advance(receipt, job_id in cancellations)
+                if receipt["phase"] in {"terminal", "waiting_attachment_approval"}:
                     from agent_harness.agent_attachments import prepare_reply
 
-                    prepare_reply(self, receipt, data.get("features", []))
+                    decision = attachment_decisions.get(job_id)
+                    if job_id in cancellations and receipt["phase"] == "waiting_attachment_approval":
+                        approval = receipt["attachment_approval"]
+                        decision = {"id": approval["id"], "digest": approval["digest"], "approved": False}
+                    prepare_reply(self, receipt, data.get("features", []), decision)
+                if receipt["phase"] == "waiting_attachment_approval":
+                    continue
                 result = receipt.get("result", {"status": "running", "local_status": receipt["phase"]})
                 if "stdout_tail" in result:
                     result["stdout"] = result.pop("stdout_tail")

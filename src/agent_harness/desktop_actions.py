@@ -317,6 +317,7 @@ class DesktopOwnerActions:
             employee = bridge._employee(data["id"])
             settings = {k: data[k] for k in ("model", "effort", "enabled", "stages", "timeout")}
             settings["strict_worktree"] = bool(data.get("strict_worktree", False))
+            settings["attachment_policy"] = data.get("attachment_policy", "ask")
             return bridge._owner(
                 "configure",
                 employee["node"],
@@ -558,6 +559,7 @@ class DesktopProjectActions:
             "receiver-start",
             "receiver-stop",
             "approve-execution",
+            "attachment-decide",
         }
     )
 
@@ -578,6 +580,13 @@ class DesktopProjectActions:
                     employee["pending"] = None
             result["pending_devices"] = list(bridge.inspected.values())
             result["pending_approvals"] = []
+            result["attachment_approvals"] = []
+            for server in bridge._services():
+                try:
+                    pending = bridge._rpc("attachment-approvals", server=server, timeout=10)
+                except (OSError, RuntimeError, ValueError, PermissionError):
+                    continue
+                result["attachment_approvals"].extend(dict(item, server=server) for item in pending.get("requests", []))
             for server in bridge._attached_services():
                 runtime = bridge._runtime(server)
                 for receipt in (runtime.root / "pull-receipts").glob("*.json"):
@@ -604,6 +613,16 @@ class DesktopProjectActions:
                             }
                         )
             return result
+        if action == "attachment-decide":
+            server = data.get("server")
+            if server not in bridge._services():
+                raise ValueError("协作服务未连接")
+            return bridge._rpc(
+                "attachment-decide",
+                {"id": data.get("id"), "approve": data.get("approve")},
+                server=server,
+                timeout=20,
+            )
         if action == "new-project":
             server = data.get("server") or bridge.profile["server"]
             if server == "http://127.0.0.1:8765" and not bridge.profile.get("local_host_enabled"):

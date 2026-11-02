@@ -253,7 +253,16 @@ class OwnerControl:
         # remote_path is accepted only so an installed pre-v2 employee record
         # can be read and rewritten.  It is never returned or used for a new
         # dispatch; directories now belong to project x machine.
-        allowed = {"remote_path", "model", "effort", "timeout", "stages", "enabled", "strict_worktree"}
+        allowed = {
+            "remote_path",
+            "model",
+            "effort",
+            "timeout",
+            "stages",
+            "enabled",
+            "strict_worktree",
+            "attachment_policy",
+        }
         if not isinstance(settings, dict) or set(settings) - allowed:
             raise ValueError("Unsupported employee setting")
         model = settings.get("model")
@@ -272,11 +281,15 @@ class OwnerControl:
             raise ValueError("enabled must be boolean")
         if not isinstance(settings.get("strict_worktree", False), bool):
             raise ValueError("strict_worktree must be boolean")
+        attachment_policy = settings.get("attachment_policy", "ask")
+        if not isinstance(attachment_policy, str) or attachment_policy not in {"ask", "auto", "full"}:
+            raise ValueError("Invalid attachment policy")
         return {"model": model, "effort": effort} | {
             "timeout": timeout,
             "stages": stages,
             "enabled": settings.get("enabled", False),
             "strict_worktree": settings.get("strict_worktree", False),
+            "attachment_policy": attachment_policy,
         }
 
     def _run(self, action, data):
@@ -342,7 +355,10 @@ class OwnerControl:
                 )
                 updated = dict(
                     binding,
-                    **{k: settings[k] for k in ("model", "effort", "timeout", "stages", "strict_worktree")},
+                    **{
+                        k: settings[k]
+                        for k in ("model", "effort", "timeout", "stages", "strict_worktree", "attachment_policy")
+                    },
                     name=data.get("name", current["name"]),
                 )
                 updated["enabled"] = settings["enabled"] and binding.get("assigned", True)
@@ -405,7 +421,10 @@ class OwnerControl:
             "project_id": project_id,
             "backend_project": backend,
             "name": current["name"],
-            **{k: settings[k] for k in ("model", "effort", "timeout", "stages", "enabled", "strict_worktree")},
+            **{
+                k: settings[k]
+                for k in ("model", "effort", "timeout", "stages", "enabled", "strict_worktree", "attachment_policy")
+            },
         }
         self.connector.save_binding(binding)
         return {

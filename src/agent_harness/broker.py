@@ -1,6 +1,7 @@
 """Durable pull-only coordination. Device credentials confer no host execution access."""
 
 import hmac
+import hashlib
 import json
 import re
 import secrets
@@ -103,14 +104,25 @@ class PullBackend:
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='owner_commands'").fetchone()
             else []
         )
+        decisions = [
+            dict(row)
+            for row in db.execute(
+                "SELECT a.job_id,a.id,a.digest,(a.state='approved') AS approved "
+                "FROM attachment_approvals a JOIN pull_jobs j ON j.id=a.job_id "
+                "WHERE a.node=? AND a.state IN ('approved','rejected') "
+                "AND j.state NOT IN ('needs_review','completed','failed','cancelled','timed_out','interrupted')",
+                (device["node"],),
+            )
+        ]
         return {
             "protocol": hub_advertisement(),
-            "features": ["device_file_transfers_v1", "agent_chat_attachments_v1"],
+            "features": ["device_file_transfers_v1", "agent_chat_attachments_v1", "agent_attachment_approval_v1"],
             "owner_commands": commands,
             "node": device["node"],
             "projects": self._projects(db, device),
             "jobs": jobs,
             "cancellations": [row["id"] for row in rows if row["cancel_requested"]],
+            "attachment_decisions": decisions,
         }
 
     def _poll(self, data, bearer):
@@ -132,7 +144,13 @@ class PullBackend:
                         self._advertise(db, device, data["bindings"])
                     self._record_health(device, data.get("health"))
                 result = self._poll_snapshot(db, device)
-            if result["jobs"] or result["owner_commands"] or result["cancellations"] or time.monotonic() >= deadline:
+            if (
+                result["jobs"]
+                or result["owner_commands"]
+                or result["cancellations"]
+                or result["attachment_decisions"]
+                or time.monotonic() >= deadline
+            ):
                 return result
             first = False
             remaining = deadline - time.monotonic()
@@ -198,6 +216,80 @@ class PullBackend:
             )
             if path == "/api/device/projects":
                 return {"projects": self._projects(db, device), "node": device["node"]}
+            if path == "/api/device/task-attachment-request":
+                job = db.execute("SELECT * FROM pull_jobs WHERE id=?", (data.get("job_id"),)).fetchone()
+                if (
+                    not job
+                    or job["node"] != device["node"]
+                    or job["kind"] != "task"
+                    or not hmac.compare_digest(str(data.get("lease_id", "")), job["lease_id"])
+                    or job["state"] in TERMINAL
+                    or job["cancel_requested"]
+                ):
+                    raise PermissionError("无效或已结束的任务附件请求")
+                agent = db.execute("SELECT * FROM agents WHERE id=?", (job["agent_id"],)).fetchone()
+                if (
+                    not agent
+                    or not agent["enabled"]
+                    or agent["owner_id"] != device["owner_id"]
+                    or agent["node"] != device["node"]
+                ):
+                    raise PermissionError("Agent 已撤回或不属于当前设备")
+                manifest = data.get("manifest")
+                if not isinstance(manifest, list) or not 1 <= len(manifest) <= 5:
+                    raise ValueError("附件清单无效")
+                slots = set()
+                for item in manifest:
+                    if not isinstance(item, dict) or set(item) != {"slot", "path", "name", "size", "sha256"}:
+                        raise ValueError("附件清单无效")
+                    slot, relative, name, size, checksum = (
+                        item[key] for key in ("slot", "path", "name", "size", "sha256")
+                    )
+                    if (
+                        isinstance(slot, bool)
+                        or not isinstance(slot, int)
+                        or not 0 <= slot < 5
+                        or slot in slots
+                        or not isinstance(relative, str)
+                        or not 1 <= len(relative) <= 4096
+                        or relative.startswith(("/", "\\"))
+                        or ":" in relative
+                        or ".." in relative.replace("\\", "/").split("/")
+                        or not isinstance(name, str)
+                        or not 1 <= len(name) <= 180
+                        or isinstance(size, bool)
+                        or not isinstance(size, int)
+                        or not 0 <= size <= 5 * 1024 * 1024
+                        or not isinstance(checksum, str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", checksum)
+                    ):
+                        raise ValueError("附件清单无效")
+                    slots.add(slot)
+                encoded = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                digest_value = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+                existing = db.execute("SELECT * FROM attachment_approvals WHERE job_id=?", (job["id"],)).fetchone()
+                if existing:
+                    if existing["digest"] != digest_value or existing["state"] == "closed":
+                        raise PermissionError("附件请求已变更或结束")
+                    return {"id": existing["id"], "digest": existing["digest"], "state": existing["state"]}
+                approval_id = "attachment-approval-" + secrets.token_hex(16)
+                db.execute(
+                    "INSERT INTO attachment_approvals VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        approval_id,
+                        job["id"],
+                        agent["owner_id"],
+                        device["node"],
+                        agent["id"],
+                        agent["project_id"],
+                        encoded,
+                        digest_value,
+                        "pending",
+                        time.time(),
+                        time.time(),
+                    ),
+                )
+                return {"id": approval_id, "digest": digest_value, "state": "pending"}
             if path == "/api/device/task-attachment":
                 from agent_harness.attachments import Attachments
 
@@ -327,6 +419,11 @@ class PullBackend:
                     "UPDATE pull_jobs SET state=?,result=? WHERE id=?",
                     (state, serialized, row["id"]),
                 )
+                if state in TERMINAL:
+                    db.execute(
+                        "UPDATE attachment_approvals SET state='closed',updated_at=? WHERE job_id=?",
+                        (time.time(), row["id"]),
+                    )
                 return {"ok": True}
             raise ValueError("未知机器接口")
 

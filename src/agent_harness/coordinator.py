@@ -120,7 +120,7 @@ class Coordinator:
                 "project_memory": shared_memory,
                 "task": contract,
                 "protocol": """Respond as one JSON object with reply:string, attachments:[{path:project-relative file path}], messages:[{recipient:null or agent ID,body:string}], tasks:[{agent:ID,title,instructions,stage,allowed_files,acceptance,validation}], executions:[{template:string}], memory_notes:[string], done:boolean.
-When a human asks to receive a file, put up to five explicitly requested existing project files in attachments. Each file must be at most 5 MB. The receiver uploads them and attaches them to this reply in its current conversation; do not emit server-local links as substitutes. Use attachments:[] when no file was requested.
+When a relevant existing project file would help the current conversation, you may put it in attachments. Each file must be at most 5 MB, and at most five may be sent. The receiver applies the machine owner's attachment policy before uploading them to this reply; do not emit server-local links as substitutes. Use attachments:[] when no file helps.
 Only the designated admin can delegate tasks. Peers can send public/direct messages and recommend changes with evidence.
 The reply field is the one human-facing answer for this turn. Use messages only for distinct, deliberate follow-up to another participant or the group; do not repeat reply or publish internal progress notes.
 Do not emit [CHECKPOINT]. Use [BLOCKED] or [DISAGREEMENT] only when a real blocker or disagreement requires attention.
