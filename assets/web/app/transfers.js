@@ -1,6 +1,14 @@
 "use strict";
 
 let transferPolling = false;
+let transferPending = false;
+let transferSignature = "";
+
+function transfersHeading() {
+  const title = head("文件速传", "独立于项目和 Agent 的机器间大文件通道");
+  title.dataset.transferRoot = "1";
+  return title;
+}
 
 function transferStateLabel(item, job) {
   if (job?.state === "running") {
@@ -33,22 +41,30 @@ function transferStateLabel(item, job) {
   return labels[item.state] || item.state;
 }
 
-async function renderTransfers() {
+async function renderTransfers(reason) {
   nav("transfers");
-  if (transferPolling) return;
+  if (transferPolling) {
+    // An action must not be swallowed by an in-flight poll: queue one re-render.
+    if (reason === "action") transferPending = true;
+    return;
+  }
   transferPolling = true;
   const content = $("content");
-  content.replaceChildren(
-    head("文件速传", "独立于项目和 Agent 的机器间大文件通道"),
-  );
-  const loading = el("div", "panel", "正在读取传输状态…");
-  content.append(loading);
+  // The marker lives in the DOM, so returning from another page always rebuilds.
+  const mounted = !!content.querySelector("[data-transfer-root]");
+  if (!mounted) {
+    content.replaceChildren(transfersHeading());
+    content.append(el("div", "panel", "正在读取传输状态…"));
+  }
   try {
     const view = await api("file-transfer-dashboard");
     if (S.page !== "transfers") return;
-    content.replaceChildren(
-      head("文件速传", "独立于项目和 Agent 的机器间大文件通道"),
-    );
+    // Rebuilding identical DOM every three seconds is what made this page
+    // flicker, so an unchanged snapshot keeps the page as it is.
+    const signature = JSON.stringify(view);
+    if (mounted && signature === transferSignature) return;
+    transferSignature = signature;
+    content.replaceChildren(transfersHeading());
     if (view.unavailable_services?.length)
       content.append(
         el(
@@ -75,7 +91,7 @@ async function renderTransfers() {
           const result = await api("file-transfer-receive-folder");
           if (result.configured) {
             notify("默认接收目录已保存，仅保存在本机。");
-            await renderTransfers();
+            await renderTransfers("action");
           }
         },
       ),
@@ -200,7 +216,7 @@ async function renderTransfers() {
             });
             if (result.selected) {
               notify("文件已进入发送队列。大文件校验会在后台进行。");
-              await renderTransfers();
+              await renderTransfers("action");
             }
           },
           "primary",
@@ -276,7 +292,7 @@ async function renderTransfers() {
               server: item.server,
               id: item.id,
             });
-            await renderTransfers();
+            await renderTransfers("action");
           }),
           button(
             "确认接收",
@@ -294,7 +310,7 @@ async function renderTransfers() {
                     ? "已确认；目标机器恢复在线后会自动接收。"
                     : "已确认接收；发送方在线时会开始传输。",
                 );
-              await renderTransfers();
+              await renderTransfers("action");
             },
             "primary",
           ),
@@ -320,7 +336,7 @@ async function renderTransfers() {
                 id: item.id,
               });
               if (result.accepted) notify("接收位置已保存，将自动继续传输。");
-              await renderTransfers();
+              await renderTransfers("action");
             },
             "primary",
           ),
@@ -336,7 +352,7 @@ async function renderTransfers() {
                 server: item.server,
                 id: item.id,
               });
-              await renderTransfers();
+              await renderTransfers("action");
             },
             "link",
           ),
@@ -345,10 +361,19 @@ async function renderTransfers() {
     });
     content.append(history);
   } catch (error) {
-    loading.className = "panel error";
-    loading.textContent = error.message;
+    // A failed poll keeps the last good page; only a fresh mount has nothing to
+    // keep and must show the failure.
+    if (!mounted) {
+      content.replaceChildren(transfersHeading());
+      content.append(el("div", "panel error", error.message));
+    }
   } finally {
     transferPolling = false;
+    if (transferPending) {
+      transferPending = false;
+      // Never pull the user back to this page from the queued re-render.
+      if (S.page === "transfers") renderTransfers();
+    }
   }
 }
 
