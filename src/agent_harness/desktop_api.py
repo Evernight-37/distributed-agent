@@ -108,6 +108,9 @@ class DesktopSettingsActions:
             "codex-cli-choose",
             "codex-cli-save",
             "executor-save",
+            "update-status",
+            "update-schedule-save",
+            "update-open",
             "proxy-save",
             "warm-idle-save",
             "settings-save",
@@ -345,6 +348,23 @@ class DesktopSettingsActions:
                 },
             )
             return result
+        if action == "update-status":
+            from agent_harness import updates
+
+            return updates.status(self.bridge.root, force=bool(data.get("force")))
+        if action == "update-schedule-save":
+            from agent_harness import updates
+
+            document = updates.set_schedule(self.bridge.root, data.get("schedule"))
+            return {"schedule": document["schedule"]}
+        if action == "update-open":
+            import webbrowser
+
+            from agent_harness import updates
+
+            url = updates.release_url(self.bridge.root)
+            webbrowser.open(url)
+            return {"opened": url}
         if action == "proxy-save":
             setting = validate_local_proxy(data)
             for receiver in self._receiver_paths():

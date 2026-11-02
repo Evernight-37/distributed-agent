@@ -486,6 +486,15 @@ async function enter() {
   $("app").classList.remove("hidden");
   updateProfile();
   renderDashboard();
+  // Fire and forget: a due release check must never delay the first paint.
+  api("update-status")
+    .then((state) => {
+      if (state?.status === "update")
+        notify(
+          "有新版本 " + state.latest + "；可在 设置 → 应用更新 中打开下载页。",
+        );
+    })
+    .catch(() => {});
 }
 function updateProfile() {
   const d = S.dash;

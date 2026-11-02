@@ -194,6 +194,10 @@ DESKTOP_FIELDS = {
         "model": _TEXT(100),
         "provider": _TEXT(64),
     },
+    "update-status": {"force": {"type": "boolean"}},
+    "update-schedule-save": {
+        "schedule": {"type": "string", "enum": ["daily", "weekly", "monthly", "never"]},
+    },
     "warm-idle-save": {"seconds": {"type": "integer", "minimum": 0, "maximum": 86400}},
     "team-service-restore-apply": {"token": _TEXT(4096)},
     "recovery-export": {"recovery_password": {"type": "string", "min_length": 1, "max_length": 1024}},
@@ -304,6 +308,9 @@ DESKTOP_CONTROL = BoundaryContract(
             "team-service-status",
             "team-service-stop",
             "team-service-test",
+            "update-open",
+            "update-schedule-save",
+            "update-status",
             "warm-idle-save",
             "workspace-configure",
         }
@@ -344,6 +351,7 @@ DESKTOP_CONTROL = BoundaryContract(
         "register": frozenset({"username"}),
         "set-admin": frozenset({"project", "agent"}),
         "team-service-restore-apply": frozenset({"token"}),
+        "update-schedule-save": frozenset({"schedule"}),
         "warm-idle-save": frozenset({"seconds"}),
         "workspace-configure": frozenset({"project", "node"}),
     },

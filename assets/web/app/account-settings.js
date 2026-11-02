@@ -252,6 +252,7 @@ async function renderSettings() {
   if (settings.executor?.executor === "dsh")
     list.append(dshMcpCard(settings.dsh_mcp));
   else list.append(codexMcpCard(settings.codex_mcp));
+  list.append(updateCard());
   const storage = el("section", "panel");
   storage.append(
     el("h2", "", "本机数据"),
@@ -362,6 +363,87 @@ function linuxServerSetup() {
     actions.append(button("关闭", closeModal), copy);
     run(generate);
   });
+}
+
+function updateCard() {
+  const card = el("section", "panel");
+  card.append(el("h2", "", "应用更新"));
+  note(
+    card,
+    "只向本项目的 GitHub Releases 查询最新版本号，不下载、不发送其它信息。没有网络时不检查；选择“从不”则完全关闭。",
+  );
+  const schedule = field(card, "检查频率", "weekly", [
+    ["daily", "每天"],
+    ["weekly", "每周"],
+    ["monthly", "每月"],
+    ["never", "从不"],
+  ]);
+  schedule.id = "updateSchedule";
+  const statusLine = el("p", "muted small", "正在读取更新状态…");
+  statusLine.style.overflowWrap = "anywhere";
+  const actions = el("div", "setting-row");
+  const check = button("立即检查", async () => {
+    check.disabled = true;
+    try {
+      paint(await api("update-status", { force: true }));
+    } catch (e) {
+      statusLine.className = "error small";
+      statusLine.textContent = "检查失败：" + e.message;
+    } finally {
+      check.disabled = false;
+    }
+  });
+  const download = button(
+    "打开下载页",
+    async () => {
+      await api("update-open");
+    },
+    "primary",
+  );
+  download.classList.add("hidden");
+  actions.append(check, download);
+  card.append(schedule, statusLine, actions);
+
+  function paint(state) {
+    const s = state || {};
+    if (s.schedule) schedule.value = s.schedule;
+    download.classList.toggle("hidden", s.status !== "update");
+    if (s.status === "update") {
+      statusLine.className = "small";
+      statusLine.textContent =
+        "有新版本 " + s.latest + "（当前 " + s.current + "）。下载后手动安装。";
+    } else if (s.status === "current") {
+      statusLine.className = "muted small";
+      statusLine.textContent = "已是最新版本 " + s.current + "。";
+    } else if (s.status === "offline") {
+      statusLine.className = "muted small";
+      statusLine.textContent = "暂时连不上 GitHub；稍后会自动再试。";
+    } else if (s.status === "disabled") {
+      statusLine.className = "muted small";
+      statusLine.textContent = "已关闭自动检查。仍然可以点“立即检查”。";
+    } else {
+      statusLine.className = "muted small";
+      statusLine.textContent =
+        "当前版本 " + (s.current || "未知") + "；尚未到检查时间。";
+    }
+  }
+
+  schedule.onchange = async () => {
+    try {
+      await api("update-schedule-save", { schedule: schedule.value });
+      notify("更新检查频率已保存。");
+    } catch (e) {
+      notify("保存检查频率失败：" + e.message, true);
+    }
+  };
+  // Do not hold up the settings page: the first paint wins, the answer follows.
+  api("update-status")
+    .then(paint)
+    .catch((e) => {
+      statusLine.className = "error small";
+      statusLine.textContent = "读取更新状态失败：" + e.message;
+    });
+  return card;
 }
 
 Object.assign(HarnessDesktop.render, { renderAccount, renderSettings });
