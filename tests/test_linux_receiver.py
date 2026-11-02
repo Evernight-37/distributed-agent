@@ -136,6 +136,10 @@ class LinuxReceiverTests(unittest.TestCase):
             ["codex", "path", "set", "/opt/codex"],
             ["codex", "path", "detect"],
             ["codex", "path", "status"],
+            ["executor", "status"],
+            ["executor", "set", "dsh", "--model", "deepseek-flash"],
+            ["executor", "mcp", "connect"],
+            ["executor", "mcp", "status"],
             ["service", "status"],
             ["service", "logs", "--lines", "20"],
             ["network", "broker-proxy", "set", "http://127.0.0.1:1"],
@@ -225,6 +229,80 @@ class LinuxReceiverTests(unittest.TestCase):
             self.assertEqual(result["mode"], "auto")
             self.assertEqual(read_json(root / "codex-cli.json")["path"], str(detected))
             bridge._sync_cli.assert_called_once()
+
+    def test_executor_set_pushes_the_choice_to_every_receiver(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            receiver = root / "receivers/device-one"
+            write_json(receiver / "pull-config.json", {})
+            bridge = MagicMock()
+            with (
+                patch.object(linux_receiver, "AppBridge", return_value=bridge),
+                patch.object(
+                    linux_receiver,
+                    "cli_status",
+                    return_value={"found": True, "configured": False, "path": "/usr/bin/dsh", "version": "0.2.1"},
+                ),
+            ):
+                result = linux_receiver.executor_command(root, "set", "dsh", "deepseek-flash", "deepseek-official")
+            self.assertEqual(
+                read_json(root / "executor-choice.json"),
+                {"executor": "dsh", "model": "deepseek-flash", "provider": "deepseek-official"},
+            )
+            bridge._sync_executor.assert_called_once()
+            self.assertTrue(bridge._sync_executor.call_args.kwargs["reset_path"])
+            bridge._sync_cli.assert_called_once()
+            self.assertEqual(result["executor"]["executor"], "dsh")
+            self.assertEqual(result["receivers"][0]["version"], "0.2.1")
+
+    def test_executor_status_reports_the_choice_and_each_receiver(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(root / "receivers/device-one/pull-config.json", {})
+            write_json(root / "executor-choice.json", {"executor": "dsh", "model": "deepseek-flash"})
+            bridge = MagicMock()
+            bridge._executor.return_value = {"executor": "dsh", "model": "deepseek-flash"}
+            with (
+                patch.object(linux_receiver, "AppBridge", return_value=bridge),
+                patch.object(
+                    linux_receiver,
+                    "cli_status",
+                    return_value={"found": True, "configured": True, "path": "/usr/bin/dsh", "version": "0.2.1"},
+                ),
+                patch.object(linux_receiver, "codex_login_status", return_value={"logged_in": True}),
+            ):
+                result = linux_receiver.executor_command(root, "status")
+            self.assertEqual(result["executor"]["executor"], "dsh")
+            self.assertEqual(result["receivers"][0]["receiver"], "device-one")
+            self.assertTrue(result["receivers"][0]["logged_in"])
+
+    def test_executor_mcp_delegates_to_the_bridge(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bridge = MagicMock()
+            bridge.profile = {"id": "profile-one"}
+            bridge.root = root
+            bridge._enable_dsh_mcp.return_value = {"enabled": True, "configured": True}
+            bridge._dsh_mcp_status.return_value = {"enabled": True, "configured": True}
+            bridge._disable_dsh_mcp.return_value = {"enabled": False, "configured": False}
+            with (
+                patch.object(linux_receiver, "unlock_bridge", return_value=bridge),
+                patch.object(linux_receiver, "_write_launcher"),
+            ):
+                connected = linux_receiver.executor_mcp_command(root, "connect")
+                current = linux_receiver.executor_mcp_command(root, "status")
+                disconnected = linux_receiver.executor_mcp_command(root, "disconnect")
+            self.assertTrue(connected["configured"])
+            self.assertTrue(current["enabled"])
+            self.assertFalse(disconnected["enabled"])
+            bridge._enable_dsh_mcp.assert_called_once()
+            bridge._disable_dsh_mcp.assert_called_once()
+
+    def test_executor_set_rejects_an_unknown_kind(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(linux_receiver, "AppBridge", return_value=MagicMock()):
+                with self.assertRaisesRegex(ValueError, "执行器只能是"):
+                    linux_receiver.executor_command(folder, "set", "gemini")
 
     def test_codex_path_rejects_relative_or_invalid_program(self):
         with tempfile.TemporaryDirectory() as folder:

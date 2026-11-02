@@ -242,11 +242,16 @@ async function renderSettings() {
   machine.append(controls, button("完全退出", requestAppClose));
   list.append(
     machine,
+    executorCard(settings.executor),
     proxySettingsCard(settings.proxy),
     idleSettingsCard(settings.warm_idle_seconds),
-    codexCliCard(),
-    codexMcpCard(settings.codex_mcp),
+    codexCliCard(settings.executor?.executor),
   );
+  // Each executor has its own collaboration entry point: Codex owns its config
+  // through `codex mcp add`, DeepSeek Harness through its home patch layer.
+  if (settings.executor?.executor === "dsh")
+    list.append(dshMcpCard(settings.dsh_mcp));
+  else list.append(codexMcpCard(settings.codex_mcp));
   const storage = el("section", "panel");
   storage.append(
     el("h2", "", "本机数据"),

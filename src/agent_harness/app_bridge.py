@@ -466,9 +466,9 @@ class AppBridge:
         selected = saved.get("path") if isinstance(saved, dict) else None
         if selected and Path(selected).is_file():
             return selected
-        from agent_harness.worker import cli_status
+        from agent_harness import executors
 
-        status = cli_status(self._runtime().root)
+        status = executors.status_of(self._runtime().root, executors.CODEX)
         if not status.get("found"):
             raise RuntimeError("未找到可运行的 Codex CLI，请先在设置中完成检测")
         return status["path"]
@@ -595,38 +595,193 @@ class AppBridge:
     def _enable_mcp(self):
         self._retry_mcp_revocations()
         configured = self._configured_mcp()
-        path = self._mcp_grant_path()
-        grant = read_json(path)
-        created = False
-        if not grant:
-            created = True
-            delegate = generate_identity()
-            delegate.update(
-                account_id=self.identity["account_id"],
-                chain=approve_delegate(self.identity, delegate["public_key"], MCP_DELEGATE_SCOPES),
-            )
-            grant = {
-                "version": 1,
-                "profile_id": self.profile["id"],
-                "username": self.profile["username"],
-                "identity": delegate,
-                "scopes": list(MCP_DELEGATE_SCOPES),
-                "servers": self._services(),
-                "created_at": time.time(),
-            }
-            path.parent.mkdir(parents=True, exist_ok=True)
-            write_json(path, grant)
-            self._secure(path)
+        _, created = self._ensure_mcp_grant()
         synced = self._sync_mcp_delegate()
         if not synced["registered"]:
             if created:
-                path.unlink(missing_ok=True)
+                self._mcp_grant_path().unlink(missing_ok=True)
             raise RuntimeError("没有协作服务接受 Codex 授权；请先恢复服务连接再重试")
         # Codex owns config serialization. Only create this profile's unique
         # entry, and never replace a same-name entry whose command differs.
         if configured is None:
             self._codex_mcp("add", self._mcp_name(), "--", *self._mcp_launch())
         return {**self._mcp_status(), **synced}
+
+    def _ensure_mcp_grant(self):
+        """Create this profile's capability-scoped delegate once."""
+        path = self._mcp_grant_path()
+        grant = read_json(path)
+        if grant:
+            return grant, False
+        delegate = generate_identity()
+        delegate.update(
+            account_id=self.identity["account_id"],
+            chain=approve_delegate(self.identity, delegate["public_key"], MCP_DELEGATE_SCOPES),
+        )
+        grant = {
+            "version": 1,
+            "profile_id": self.profile["id"],
+            "username": self.profile["username"],
+            "identity": delegate,
+            "scopes": list(MCP_DELEGATE_SCOPES),
+            "servers": self._services(),
+            "created_at": time.time(),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(path, grant)
+        self._secure(path)
+        return grant, True
+
+    def _dsh_mcp_name(self):
+        from agent_harness import dsh_mcp
+
+        return dsh_mcp.server_name(self._mcp_name())
+
+    def _dsh_mcp_command(self):
+        return [
+            python_command(),
+            "-X",
+            "utf8",
+            str(assets() / "mcp_adapter.py"),
+            "--grant",
+            str(self._mcp_grant_path()),
+        ]
+
+    def _dsh_mcp_launcher_path(self):
+        # The trailing -dsh keeps this apart from the Codex launcher the same
+        # profile may already have.
+        suffix = ".cmd" if os.name == "nt" else ".sh"
+        return self.root / "mcp" / ("launch-" + self.profile["id"] + "-dsh" + suffix)
+
+    def _ensure_dsh_mcp_launcher(self):
+        """Refresh the stable launcher the DeepSeek Harness entry points at.
+
+        The runtime lives under a content-addressed directory, so pinning it in
+        DeepSeek Harness's profile would break on every application upgrade. The
+        launcher path is stable; only its contents are rewritten.
+        """
+        import shlex
+        import subprocess
+
+        path = self._dsh_mcp_launcher_path()
+        command = self._dsh_mcp_command()
+        if os.name == "nt":
+            body = "@echo off\r\n" + subprocess.list2cmdline(command) + "\r\n"
+        else:
+            body = "#!/bin/sh\nexec " + " ".join(shlex.quote(part) for part in command) + "\n"
+        try:
+            # newline="" keeps CRLF intact so an unchanged launcher is not
+            # rewritten on every settings refresh.
+            with path.open("r", encoding="utf-8", errors="replace", newline="") as stream:
+                current = stream.read()
+        except FileNotFoundError:
+            current = None
+        if current != body:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(path.name + ".tmp")
+            temporary.write_text(body, encoding="utf-8", newline="")
+            if os.name != "nt":
+                temporary.chmod(0o700)
+            os.replace(temporary, path)
+        return path
+
+    def _dsh_mcp_probe(self):
+        """Fail unless DeepSeek Harness can still parse the profile patch.
+
+        The desktop profile cannot be composed from the CLI (the Electron host
+        owns it), so the written layer is applied as an overlay to the headless
+        profile: a malformed document fails, unknown entry ids only warn.
+        """
+        import subprocess
+
+        from agent_harness import dsh_mcp, executors
+
+        status = executors.status_of(self._runtime().root, executors.DSH)
+        if not status.get("found"):
+            # Nothing to prove with; the entry stays removable from the UI.
+            return
+        path = dsh_mcp.patch_path(dsh_mcp.DEFAULT_PROFILE, self._dsh_home())
+        if not path.exists():
+            return
+        result = subprocess.run(
+            [status["path"], "--profile", "headless", "--patch", str(path), "--dump-config"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode:
+            detail = (result.stderr or result.stdout or "").strip().splitlines()
+            raise RuntimeError(detail[-1][:300] if detail else "配置无法解析")
+
+    def _dsh_mcp_status(self):
+        from agent_harness import dsh_mcp
+
+        grant = read_json(self._mcp_grant_path())
+        # Self-heal after an upgrade: the launcher path is stable but its
+        # contents track the current runtime.
+        try:
+            self._ensure_dsh_mcp_launcher()
+        except OSError:
+            pass
+        state = dsh_mcp.status(
+            launch=[str(self._dsh_mcp_launcher_path())],
+            name=self._dsh_mcp_name(),
+            root_home=self._dsh_home(),
+        )
+        return {
+            "enabled": bool(grant),
+            "configured": state["installed"],
+            "stale": state["stale"],
+            "path": state["path"],
+            "profile": state["profile"],
+            "launcher": str(self._dsh_mcp_launcher_path()),
+        }
+
+    def _enable_dsh_mcp(self):
+        from agent_harness import dsh_mcp
+
+        self._retry_mcp_revocations()
+        _, created = self._ensure_mcp_grant()
+        synced = self._sync_mcp_delegate()
+        if not synced["registered"]:
+            if created:
+                self._mcp_grant_path().unlink(missing_ok=True)
+            raise RuntimeError("没有协作服务接受 DeepSeek Harness 授权；请先恢复服务连接再重试")
+        launcher = self._ensure_dsh_mcp_launcher()
+        installed = dsh_mcp.install(
+            self._dsh_home(),
+            [str(launcher)],
+            self._dsh_mcp_name(),
+            probe=self._dsh_mcp_probe,
+        )
+        return {**self._dsh_mcp_status(), **synced, **installed}
+
+    def _disable_dsh_mcp(self):
+        from agent_harness import dsh_mcp
+
+        path = self._mcp_grant_path()
+        grant = read_json(path)
+        warnings = []
+        if grant:
+            public = grant.get("identity", {}).get("public_key")
+            self._queue_mcp_revocation(public, list(dict.fromkeys(grant.get("servers", []))))
+            warnings = self._retry_mcp_revocations()
+        removed = dsh_mcp.remove(root_home=self._dsh_home())
+        path.unlink(missing_ok=True)
+        return {
+            "enabled": False,
+            "configured": False,
+            "removed": removed["removed"],
+            "warnings": warnings,
+        }
+
+    def _dsh_home(self):
+        from agent_harness import dsh_mcp
+
+        return dsh_mcp.home()
 
     def _disable_mcp(self):
         path = self._mcp_grant_path()
@@ -835,6 +990,41 @@ class AppBridge:
                 executor.pop("cli_path", None)
             write_json(path, executor)
 
+    def _executor(self):
+        """The local executor choice shared by every receiver of this desktop."""
+        saved = read_json(self.root / "executor-choice.json", {})
+        choice = {"executor": "codex"}
+        if not isinstance(saved, dict):
+            return choice
+        if saved.get("executor") in ("codex", "dsh"):
+            choice["executor"] = saved["executor"]
+        for key in ("model", "provider"):
+            value = saved.get(key)
+            if isinstance(value, str) and value.strip():
+                choice[key] = value.strip()
+        return choice
+
+    def _sync_executor(self, runtime, choice, reset_path=False):
+        path = runtime.root / "executor.json"
+        with lock(runtime.root / "executor.lock"):
+            executor = read_json(path, {})
+            kind = choice.get("executor", "codex")
+            if kind == "dsh":
+                executor["executor"] = "dsh"
+            else:
+                # Absent means Codex, so files written by older versions and
+                # files written by this one stay byte-identical.
+                executor.pop("executor", None)
+            for key in ("model", "provider"):
+                value = choice.get(key)
+                if isinstance(value, str) and value.strip():
+                    executor[key] = value.strip()
+                else:
+                    executor.pop(key, None)
+            if reset_path:
+                executor.pop("cli_path", None)
+            write_json(path, executor)
+
     def _idle_seconds(self):
         saved = read_json(self.root / "codex-warm-idle.json", {})
         value = saved.get("seconds", 300) if isinstance(saved, dict) else 300
@@ -866,7 +1056,10 @@ class AppBridge:
             self._secure(runtime.config_path)
         if (self.root / "codex-proxy.json").exists():
             self._sync_proxy(runtime, self._proxy_settings())
-        selected = read_json(self.root / "codex-cli.json")
+        choice = self._executor()
+        self._sync_executor(runtime, choice)
+        cache = "codex-cli.json" if choice["executor"] == "codex" else "dsh-cli.json"
+        selected = read_json(self.root / cache)
         if selected is not None:
             self._sync_cli(runtime, selected.get("path", ""))
         self._sync_idle(runtime, self._idle_seconds())

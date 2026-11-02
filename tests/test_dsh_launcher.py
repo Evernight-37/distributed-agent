@@ -1,0 +1,83 @@
+"""The stable launcher that keeps the DeepSeek Harness entry upgrade-proof."""
+
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from agent_harness import dsh_mcp
+from agent_harness.app_bridge import AppBridge
+
+
+class DshLauncherTests(unittest.TestCase):
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.root = Path(self._temp.name) / "data"
+        self.home = Path(self._temp.name) / "dsh-home"
+        (self.home / "profiles" / "desktop").mkdir(parents=True)
+        self.bridge = AppBridge(self.root)
+        self.bridge.profile = {
+            "id": "profile-one",
+            "node": "device-local",
+            "server": "http://127.0.0.1:8765",
+        }
+        self.bridge.identity = {"account_id": "local"}
+        self._env = mock.patch.dict(os.environ, {"DSH_HOME": str(self.home)})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        self.addCleanup(self._temp.cleanup)
+
+    def test_the_path_is_stable_and_does_not_collide_with_codex(self):
+        path = self.bridge._dsh_mcp_launcher_path()
+        suffix = ".cmd" if os.name == "nt" else ".sh"
+        self.assertEqual(path.name, "launch-profile-one-dsh" + suffix)
+        # Reading the path must not create anything.
+        self.assertFalse(path.exists())
+
+    def test_the_launcher_runs_the_current_adapter_and_grant(self):
+        path = self.bridge._ensure_dsh_mcp_launcher()
+        text = path.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("@echo off") if os.name == "nt" else text.startswith("#!/bin/sh"))
+        self.assertIn("mcp_adapter.py", text)
+        self.assertIn("--grant", text)
+        self.assertIn("profile-one", text)
+        if os.name != "nt":
+            self.assertTrue(path.stat().st_mode & 0o100)
+
+    def test_refreshing_leaves_the_same_bytes_alone(self):
+        path = self.bridge._ensure_dsh_mcp_launcher()
+        before = path.stat().st_mtime_ns
+        self.bridge._ensure_dsh_mcp_launcher()
+        self.assertEqual(before, path.stat().st_mtime_ns)
+
+    def test_a_stale_launcher_is_rewritten(self):
+        path = self.bridge._dsh_mcp_launcher_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("old launcher\n", encoding="utf-8")
+        self.bridge._ensure_dsh_mcp_launcher()
+        self.assertIn("mcp_adapter.py", path.read_text(encoding="utf-8"))
+
+    def test_status_marks_an_entry_pointing_at_a_different_command(self):
+        launch = [str(self.bridge._dsh_mcp_launcher_path())]
+        name = self.bridge._dsh_mcp_name()
+        dsh_mcp.install(self.home, launch, name)
+        fresh = self.bridge._dsh_mcp_status()
+        self.assertTrue(fresh["configured"])
+        self.assertFalse(fresh["stale"])
+
+        # An entry written by the older, content-addressed form must be flagged.
+        dsh_mcp.install(self.home, [r"C:\old\service-runtime\abc\runtime\python.exe"], name)
+        stale = self.bridge._dsh_mcp_status()
+        self.assertTrue(stale["configured"])
+        self.assertTrue(stale["stale"])
+
+    def test_status_reports_the_launcher_it_expects(self):
+        state = self.bridge._dsh_mcp_status()
+        self.assertFalse(state["configured"])
+        self.assertEqual(state["profile"], "desktop")
+        self.assertEqual(state["launcher"], str(self.bridge._dsh_mcp_launcher_path()))
+
+
+if __name__ == "__main__":
+    unittest.main()
