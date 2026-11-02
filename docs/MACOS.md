@@ -1,5 +1,7 @@
 # macOS 应用
 
+发布构建的独立 Python 选择和验证见 [发布运行环境](RELEASE-RUNTIMES.md)。
+
 当前源码版本为 2.0.0。Apple Silicon 构建已在 macOS 上验证；Intel Mac 应在 Intel 机器使用对应架构的运行时重新构建。
 
 ## 安装与升级
