@@ -138,5 +138,168 @@ class ReleaseUrlTests(unittest.TestCase):
                 updates.release_url(folder)
 
 
+class FakeResponse:
+    def __init__(self, data):
+        self._data = data
+        self._position = 0
+
+    def read(self, size):
+        chunk = self._data[self._position : self._position + size]
+        self._position += len(chunk)
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def opener_for(data):
+    def opener(request, timeout=None):
+        return FakeResponse(data)
+
+    return opener
+
+
+def release_for(name, data, digest=None, with_sha_asset=False):
+    asset = {
+        "name": name,
+        "browser_download_url": "https://github.com/Evernight-37/distributed-agent/releases/download/v2.2.0/" + name,
+        "size": len(data),
+    }
+    if digest:
+        asset["digest"] = "sha256:" + digest
+    assets = [asset]
+    if with_sha_asset:
+        assets.append(
+            {
+                "name": name + ".sha256",
+                "browser_download_url": "https://github.com/Evernight-37/distributed-agent/releases/download/v2.2.0/"
+                + name
+                + ".sha256",
+                "size": 80,
+            }
+        )
+    return {"tag": "v2.2.0", "assets": assets}
+
+
+class AssetTests(unittest.TestCase):
+    def test_asset_names_follow_the_published_layout(self):
+        self.assertEqual(updates.asset_name("v2.2.0", "win32", "AMD64"), "AgentHarness-2.2.0-windows-x64-setup.exe")
+        self.assertEqual(updates.asset_name("v2.2.0", "darwin", "arm64"), "AgentHarness-2.2.0-macos-arm64.zip")
+        self.assertEqual(updates.asset_name("v2.2.0", "linux", "x86_64"), "AgentHarness-2.2.0-linux-x64.tar.gz")
+        self.assertEqual(updates.asset_name("v2.2.0", "linux", "aarch64"), "AgentHarness-2.2.0-linux-arm64.tar.gz")
+
+    def test_digest_is_preferred_and_a_checksum_asset_is_kept(self):
+        release = release_for("AgentHarness-2.2.0-windows-x64-setup.exe", b"x", digest="a" * 64, with_sha_asset=True)
+        asset = updates.select_asset(release["assets"], "v2.2.0", "win32", "AMD64")
+        self.assertEqual(asset["sha256"], "a" * 64)
+        self.assertTrue(asset["checksum_url"].endswith(".sha256"))
+
+    def test_a_release_without_a_matching_artifact_is_rejected(self):
+        release = release_for("AgentHarness-2.2.0-linux-x64.tar.gz", b"x", digest="a" * 64)
+        with self.assertRaises(ValueError) as raised:
+            updates.select_asset(release["assets"], "v2.2.0", "win32", "AMD64")
+        self.assertIn("没有适用于本机", str(raised.exception))
+
+
+class DownloadTests(unittest.TestCase):
+    def _download(self, folder, data, digest, **kwargs):
+        name = updates.asset_name("v2.2.0", "win32", "AMD64")
+        release = release_for(name, data, digest=digest, **kwargs)
+        return updates.download(
+            folder,
+            tag="v2.2.0",
+            fetch=lambda tag: release,
+            opener=opener_for(data),
+            # The mechanics under test are platform independent; per-platform
+            # asset selection is covered by AssetTests.
+            system="win32",
+            machine="AMD64",
+        )
+
+    def test_a_verified_package_is_staged(self):
+        import hashlib
+
+        data = b"installer-bytes" * 100
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as folder:
+            record = self._download(folder, data, digest)
+            self.assertEqual(record["version"], "2.2.0")
+            self.assertEqual(record["sha256"], digest)
+            self.assertEqual(record["size"], len(data))
+            self.assertEqual(updates.staged(folder)["file"], record["file"])
+            self.assertTrue((updates.pending_dir(folder) / record["file"]).is_file())
+            self.assertEqual(updates.download_state(folder)["status"], "ready")
+
+    def test_a_checksum_mismatch_leaves_nothing_behind(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(ValueError) as raised:
+                self._download(folder, b"tampered", "0" * 64)
+            self.assertIn("校验失败", str(raised.exception))
+            self.assertIsNone(updates.staged(folder))
+            self.assertEqual(list(updates.pending_dir(folder).glob("*")), [])
+
+    def test_a_release_without_a_checksum_is_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(ValueError) as raised:
+                self._download(folder, b"data", None)
+            self.assertIn("没有提供这个安装包的校验值", str(raised.exception))
+            self.assertIsNone(updates.staged(folder))
+
+    def test_a_checksum_asset_is_used_when_the_digest_is_missing(self):
+        import hashlib
+
+        data = b"linux-tarball"
+        digest = hashlib.sha256(data).hexdigest().encode()
+        name = updates.asset_name("v2.2.0", "linux", "x86_64")
+        release = release_for(name, data, digest=None, with_sha_asset=True)
+
+        def opener(request, timeout=None):
+            url = getattr(request, "full_url", "")
+            if url.endswith(".sha256"):
+                return FakeResponse(digest + b"  " + name.encode())
+            return FakeResponse(data)
+
+        with tempfile.TemporaryDirectory() as folder:
+            record = updates.download(
+                folder, tag="v2.2.0", fetch=lambda tag: release, opener=opener, system="linux", machine="x86_64"
+            )
+            self.assertEqual(record["sha256"], digest.decode())
+
+    def test_discard_removes_the_staged_package(self):
+        import hashlib
+
+        data = b"installer-bytes"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as folder:
+            record = self._download(folder, data, digest)
+            updates.discard(folder)
+            self.assertFalse((updates.pending_dir(folder) / record["file"]).exists())
+            self.assertIsNone(updates.staged(folder))
+
+    def test_status_reports_the_staged_package(self):
+        import hashlib
+
+        data = b"installer-bytes"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as folder:
+            self._download(folder, data, digest)
+            state = updates.status(folder, force=True, fetch=lambda **k: {"tag": "v2.2.0", "url": ""})
+            self.assertEqual(state["staged"]["version"], "2.2.0")
+
+    def test_a_staged_package_is_reverified_before_use(self):
+        import hashlib
+
+        data = b"installer-bytes"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as folder:
+            record = self._download(folder, data, digest)
+            self.assertIsNone(updates.verify_staged(folder))
+            (updates.pending_dir(folder) / record["file"]).write_bytes(b"swapped")
+            self.assertIn("不一致", updates.verify_staged(folder))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -370,7 +370,7 @@ function updateCard() {
   card.append(el("h2", "", "应用更新"));
   note(
     card,
-    "只向本项目的 GitHub Releases 查询最新版本号，不下载、不发送其它信息。没有网络时不检查；选择“从不”则完全关闭。",
+    "只向本项目的 GitHub Releases 查询版本号。可以后台预先把安装包下载到本机并校验，安装仍然需要你点一次；没有网络时不检查，选择“从不”则完全关闭。",
   );
   const schedule = field(card, "检查频率", "weekly", [
     ["daily", "每天"],
@@ -393,28 +393,113 @@ function updateCard() {
       check.disabled = false;
     }
   });
-  const download = button(
-    "打开下载页",
+  const fetchButton = button(
+    "下载更新",
     async () => {
-      await api("update-open");
+      fetchButton.disabled = true;
+      try {
+        paintDownload(await api("update-download"));
+        pollDownload();
+      } catch (e) {
+        notify("开始下载失败：" + e.message, true);
+        fetchButton.disabled = false;
+      }
     },
     "primary",
   );
-  download.classList.add("hidden");
-  actions.append(check, download);
+  const discard = button("删除已下载的更新", async () => {
+    await api("update-discard");
+    paintDownload({ status: "idle" });
+    notify("已删除下载的安装包。");
+  });
+  const open = button("打开下载页", async () => {
+    await api("update-open");
+  });
+  fetchButton.classList.add("hidden");
+  discard.classList.add("hidden");
+  open.classList.add("hidden");
+  actions.append(check, fetchButton, discard, open);
   card.append(schedule, statusLine, actions);
+
+  let latest = "";
+  let poller = null;
+
+  function megabytes(bytes) {
+    return (Number(bytes || 0) / 1048576).toFixed(1) + " MB";
+  }
+
+  function paintDownload(state) {
+    const d = state || {};
+    const running = d.status === "downloading" || d.status === "verifying";
+    fetchButton.classList.toggle("hidden", running || d.status === "ready");
+    fetchButton.disabled = running;
+    discard.classList.toggle("hidden", d.status !== "ready");
+    open.classList.remove("hidden");
+    if (running) {
+      const total = d.total ? megabytes(d.total) : "未知大小";
+      const percent = d.total
+        ? Math.min(100, Math.round((Number(d.received || 0) / d.total) * 100))
+        : null;
+      statusLine.className = "small";
+      statusLine.textContent =
+        "正在下载 " +
+        megabytes(d.received) +
+        " / " +
+        total +
+        (percent === null ? "" : "（" + percent + "%）") +
+        "；安装仍需你确认，不会自动替换。";
+    } else if (d.status === "ready") {
+      statusLine.className = "small";
+      statusLine.textContent =
+        "已下载 v" +
+        (d.version || latest) +
+        "（" +
+        megabytes(d.total) +
+        "），SHA-256 已校验。安装会在下一步提供，届时需要你点一次确认。";
+      fetchButton.classList.add("hidden");
+      discard.classList.remove("hidden");
+      if (poller) {
+        clearInterval(poller);
+        poller = null;
+      }
+    } else if (d.status === "failed") {
+      statusLine.className = "error small";
+      statusLine.textContent = "下载失败：" + (d.error || "未知错误");
+      fetchButton.classList.remove("hidden");
+      fetchButton.disabled = false;
+      if (poller) {
+        clearInterval(poller);
+        poller = null;
+      }
+    }
+  }
+
+  function pollDownload() {
+    if (poller) return;
+    poller = setInterval(async () => {
+      try {
+        paintDownload(await api("update-download-status"));
+      } catch (e) {
+        clearInterval(poller);
+        poller = null;
+      }
+    }, 1000);
+  }
 
   function paint(state) {
     const s = state || {};
     if (s.schedule) schedule.value = s.schedule;
-    download.classList.toggle("hidden", s.status !== "update");
+    latest = s.latest || latest;
+    open.classList.toggle("hidden", s.status !== "update");
     if (s.status === "update") {
       statusLine.className = "small";
       statusLine.textContent =
-        "有新版本 " + s.latest + "（当前 " + s.current + "）。下载后手动安装。";
+        "有新版本 " + (s.latest || "") + "（当前 " + s.current + "）。";
+      fetchButton.classList.remove("hidden");
     } else if (s.status === "current") {
       statusLine.className = "muted small";
       statusLine.textContent = "已是最新版本 " + s.current + "。";
+      fetchButton.classList.add("hidden");
     } else if (s.status === "offline") {
       statusLine.className = "muted small";
       statusLine.textContent = "暂时连不上 GitHub；稍后会自动再试。";
@@ -425,6 +510,13 @@ function updateCard() {
       statusLine.className = "muted small";
       statusLine.textContent =
         "当前版本 " + (s.current || "未知") + "；尚未到检查时间。";
+    }
+    if (s.staged) {
+      paintDownload({
+        status: "ready",
+        version: s.staged.version,
+        total: s.staged.size,
+      });
     }
   }
 
@@ -443,6 +535,14 @@ function updateCard() {
       statusLine.className = "error small";
       statusLine.textContent = "读取更新状态失败：" + e.message;
     });
+  api("update-download-status")
+    .then((state) => {
+      if (state?.status === "downloading") {
+        paintDownload(state);
+        pollDownload();
+      }
+    })
+    .catch(() => {});
   return card;
 }
 
