@@ -213,6 +213,10 @@ class DownloadTests(unittest.TestCase):
             tag="v2.2.0",
             fetch=lambda tag: release,
             opener=opener_for(data),
+            # The mechanics under test are platform independent; per-platform
+            # asset selection is covered by AssetTests.
+            system="win32",
+            machine="AMD64",
         )
 
     def test_a_verified_package_is_staged(self):
