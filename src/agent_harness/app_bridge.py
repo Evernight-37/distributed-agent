@@ -637,6 +637,54 @@ class AppBridge:
 
         return dsh_mcp.server_name(self._mcp_name())
 
+    def _dsh_mcp_command(self):
+        return [
+            python_command(),
+            "-X",
+            "utf8",
+            str(assets() / "mcp_adapter.py"),
+            "--grant",
+            str(self._mcp_grant_path()),
+        ]
+
+    def _dsh_mcp_launcher_path(self):
+        # The trailing -dsh keeps this apart from the Codex launcher the same
+        # profile may already have.
+        suffix = ".cmd" if os.name == "nt" else ".sh"
+        return self.root / "mcp" / ("launch-" + self.profile["id"] + "-dsh" + suffix)
+
+    def _ensure_dsh_mcp_launcher(self):
+        """Refresh the stable launcher the DeepSeek Harness entry points at.
+
+        The runtime lives under a content-addressed directory, so pinning it in
+        DeepSeek Harness's profile would break on every application upgrade. The
+        launcher path is stable; only its contents are rewritten.
+        """
+        import shlex
+        import subprocess
+
+        path = self._dsh_mcp_launcher_path()
+        command = self._dsh_mcp_command()
+        if os.name == "nt":
+            body = "@echo off\r\n" + subprocess.list2cmdline(command) + "\r\n"
+        else:
+            body = "#!/bin/sh\nexec " + " ".join(shlex.quote(part) for part in command) + "\n"
+        try:
+            # newline="" keeps CRLF intact so an unchanged launcher is not
+            # rewritten on every settings refresh.
+            with path.open("r", encoding="utf-8", errors="replace", newline="") as stream:
+                current = stream.read()
+        except FileNotFoundError:
+            current = None
+        if current != body:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(path.name + ".tmp")
+            temporary.write_text(body, encoding="utf-8", newline="")
+            if os.name != "nt":
+                temporary.chmod(0o700)
+            os.replace(temporary, path)
+        return path
+
     def _dsh_mcp_probe(self):
         """Fail unless DeepSeek Harness can still parse the profile patch.
 
@@ -672,17 +720,24 @@ class AppBridge:
         from agent_harness import dsh_mcp
 
         grant = read_json(self._mcp_grant_path())
+        # Self-heal after an upgrade: the launcher path is stable but its
+        # contents track the current runtime.
         try:
-            launch = self._mcp_launch()
-        except (OSError, PermissionError, RuntimeError, ValueError):
-            launch = None
-        state = dsh_mcp.status(launch=launch, name=self._dsh_mcp_name(), root_home=self._dsh_home())
+            self._ensure_dsh_mcp_launcher()
+        except OSError:
+            pass
+        state = dsh_mcp.status(
+            launch=[str(self._dsh_mcp_launcher_path())],
+            name=self._dsh_mcp_name(),
+            root_home=self._dsh_home(),
+        )
         return {
             "enabled": bool(grant),
             "configured": state["installed"],
             "stale": state["stale"],
             "path": state["path"],
             "profile": state["profile"],
+            "launcher": str(self._dsh_mcp_launcher_path()),
         }
 
     def _enable_dsh_mcp(self):
@@ -695,9 +750,10 @@ class AppBridge:
             if created:
                 self._mcp_grant_path().unlink(missing_ok=True)
             raise RuntimeError("没有协作服务接受 DeepSeek Harness 授权；请先恢复服务连接再重试")
+        launcher = self._ensure_dsh_mcp_launcher()
         installed = dsh_mcp.install(
             self._dsh_home(),
-            self._mcp_launch(),
+            [str(launcher)],
             self._dsh_mcp_name(),
             probe=self._dsh_mcp_probe,
         )

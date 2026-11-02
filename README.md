@@ -52,12 +52,13 @@ Codex 有 `codex mcp add` 这条官方配置接口，DeepSeek Harness 没有等�
 DeepSeek Harness 自己的配置编辑器也写这个文件，它按条目替换、并保留其它条目与注释，所以两个写入方可以共存。写入仍然是受控的：
 
 - 只增删 Harness 自己标记的两行（一行注释、一行 JSON 条目），其它内容逐字节保留；
+- 条目指向一个**稳定启动器** `mcp/launch-<profile>-dsh.cmd|sh`：Harness 的运行时装在内容寻址目录里，直接钉住运行时的路径会在应用升级后失效，而启动器路径不变、内容每次打开设置或重新连接时刷新；
 - 写入前保留 `cordis.patch.yml.agent-harness.bak`，断开连接会把文件恢复原样；
 - 写后把这个补丁作为 overlay 交给 `dsh --profile headless --patch … --dump-config` 解析一次，解析失败就自动回滚；
 - 如果该文件不是顶层块状列表（例如整体是 flow 风格），Harness 拒绝改写并给出可粘贴的片段；
 - profile 不存在时直接报错，绝不自己造一个残缺的 profile。
 
-新的 DSH 会话（或重启桌面应用后）才会看到这些工具。被派发的 Agent 任务不受影响：它们跑的是 headless profile。
+设置页会区分“已启用”和“条目已过期”：后者说明条目指向的启动命令和当前预期不一致（升级后常见），点一次“重新连接”即可刷新。新的 DSH 会话（或重启桌面应用后）才会看到这些工具。被派发的 Agent 任务不受影响：它们跑的是 headless profile。
 
 ## 在 Codex 中协作
 

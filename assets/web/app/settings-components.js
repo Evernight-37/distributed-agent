@@ -627,17 +627,22 @@ function dshMcpCard(initial) {
     if (state) card.state = state;
     const s = card.state || {};
     const connected = !!s.enabled && !!s.configured;
-    action.textContent = connected
-      ? "断开 DeepSeek Harness"
+    const stale = !!(s.configured && s.stale);
+    action.textContent =
+      connected && !stale
+        ? "断开 DeepSeek Harness"
+        : s.configured
+          ? "重新连接"
+          : "连接到 DeepSeek Harness";
+    statusLine.className =
+      s.configured && !stale ? "muted small" : "error small";
+    statusLine.textContent = stale
+      ? "已登记，但条目指向的启动命令已过期（应用升级后常见）；请点“重新连接”刷新"
       : s.configured
-        ? "重新连接"
-        : "连接到 DeepSeek Harness";
-    statusLine.className = s.configured ? "muted small" : "error small";
-    statusLine.textContent = s.configured
-      ? "已启用 · " + (s.path || "home 配置")
-      : s.enabled
-        ? "已授权，但配置中缺少入口；请重新连接"
-        : "未连接";
+        ? "已启用 · " + (s.path || "profile 补丁层")
+        : s.enabled
+          ? "已授权，但配置中缺少入口；请重新连接"
+          : "未连接";
   }
   async function load(state) {
     if (state) return paint(state);
