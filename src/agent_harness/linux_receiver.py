@@ -123,6 +123,8 @@ def status(root):
         if codex.get("found"):
             codex.update(codex_login_status(codex["path"], path))
         item["codex"] = codex
+        setting = read_json(path / "executor.json", {})
+        item["executor"] = setting.get("executor", "codex") if isinstance(setting, dict) else "codex"
         item["receiver"] = path.name
         receivers.append(item)
     return {
@@ -201,6 +203,53 @@ def codex_command(root, command):
     if command == "disconnect":
         return bridge._disable_mcp()
     return bridge._mcp_status()
+
+
+def executor_command(root, action, kind=None, model=None, provider=None):
+    """Choose this machine's local executor and push it to every receiver.
+
+    The desktop app owns the same choice; a headless server needs its own way to
+    make it, otherwise a Linux machine can only ever run Codex.
+    """
+    root = Path(root).resolve()
+    bridge = AppBridge(root)
+    if action == "status":
+        choice = bridge._executor()
+        receivers = []
+        for path in receiver_paths(root):
+            state = cli_status(path)
+            item = {"receiver": path.name, **state}
+            if state.get("found"):
+                item.update(codex_login_status(state["path"], path))
+            receivers.append(item)
+        return {"executor": choice, "receivers": receivers}
+    if kind not in ("codex", "dsh"):
+        raise ValueError("执行器只能是 codex 或 dsh")
+    choice = {"executor": kind}
+    for key, value in (("model", model), ("provider", provider)):
+        if isinstance(value, str) and value.strip():
+            choice[key] = value.strip()
+    write_json(root / "executor-choice.json", choice)
+    receivers = []
+    for path in receiver_paths(root):
+        # The saved binary belonged to the previous executor.
+        bridge._sync_executor(DesktopRuntime(path), choice, reset_path=True)
+        state = cli_status(path)
+        if state.get("found"):
+            bridge._sync_cli(DesktopRuntime(path), state["path"])
+        receivers.append({"receiver": path.name, **state})
+    return {"executor": choice, "receivers": receivers}
+
+
+def executor_mcp_command(root, action):
+    """Register or remove the collaboration MCP entry of DeepSeek Harness."""
+    bridge = unlock_bridge(root)
+    _write_launcher(bridge.root, bridge.profile["id"])
+    if action == "connect":
+        return bridge._enable_dsh_mcp()
+    if action == "disconnect":
+        return bridge._disable_dsh_mcp()
+    return bridge._dsh_mcp_status()
 
 
 def _sync_codex_path(root, selected):
@@ -456,16 +505,25 @@ def doctor(root):
             )
         )
         codex = receiver.get("codex", {})
+        label = "DeepSeek Harness" if receiver.get("executor") == "dsh" else "Codex"
         if not codex.get("found"):
-            codex_state, codex_code, codex_message = "degraded", HealthCode.CLI_NOT_FOUND, "未找到 Codex CLI"
+            codex_state, codex_code, codex_message = (
+                "degraded",
+                HealthCode.CLI_NOT_FOUND,
+                "未找到 " + label + " CLI",
+            )
         elif not codex.get("logged_in"):
             codex_state, codex_code, codex_message = (
                 "degraded",
                 HealthCode.CLI_NOT_LOGGED_IN,
-                "Codex CLI 尚未登录",
+                label + " CLI 尚未登录",
             )
         else:
-            codex_state, codex_code, codex_message = "healthy", HealthCode.OK, "Codex CLI 可用"
+            codex_state, codex_code, codex_message = (
+                "healthy",
+                HealthCode.OK,
+                label + " CLI 可用",
+            )
         components.append(
             component(
                 f"codex:{index}",
@@ -580,6 +638,17 @@ def build_parser():
     path_set.add_argument("path")
     path_actions.add_parser("detect")
     path_actions.add_parser("status")
+    executor = commands.add_parser("executor", help="Choose the local agent executor (codex or dsh)")
+    executor_actions = executor.add_subparsers(dest="executor_action", required=True)
+    executor_actions.add_parser("status")
+    executor_set = executor_actions.add_parser("set")
+    executor_set.add_argument("executor", choices=["codex", "dsh"])
+    executor_set.add_argument("--model", help="Model this machine asks DeepSeek Harness for")
+    executor_set.add_argument("--provider", help="DeepSeek Harness model provider route")
+    executor_mcp = executor_actions.add_parser("mcp", help="Register the Harness MCP server in DeepSeek Harness")
+    mcp_actions = executor_mcp.add_subparsers(dest="mcp_action", required=True)
+    for name in ("connect", "status", "disconnect"):
+        mcp_actions.add_parser(name)
     service = commands.add_parser("service", help="Manage the systemd user service")
     service_actions = service.add_subparsers(dest="service_action", required=True)
     for name in ("install", "start", "stop", "restart", "status", "uninstall"):
@@ -657,6 +726,17 @@ def main(argv=None):
             result = codex_path_command(args.root, args.path_action, getattr(args, "path", None))
         else:
             result = codex_command(args.root, args.codex_action)
+    elif args.command == "executor":
+        if args.executor_action == "mcp":
+            result = executor_mcp_command(args.root, args.mcp_action)
+        else:
+            result = executor_command(
+                args.root,
+                args.executor_action,
+                getattr(args, "executor", None),
+                getattr(args, "model", None),
+                getattr(args, "provider", None),
+            )
     elif args.command == "service":
         result = service_command(args.root, args)
     elif args.network_action in {"status", "test"}:

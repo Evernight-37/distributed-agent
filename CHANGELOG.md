@@ -1,14 +1,21 @@
 # Changelog
 
-## 2.1.2 - Unreleased
+## 未发布
 
-- Windows 暂时禁用 Agent 自动发送项目附件，并显示手动上传提示；移除不能抵御链接替换的文件读取后备实现，Mac/Linux 继续使用逐级文件描述符读取。
-- 增加 Windows Actions：附件权限、安全拒绝、junction/symlink 替换、完整回归和打包净室验证。
-- 明确附件选择依赖模型判断，提示词不等同于逐文件的人类授权；当前没有发送前确认步骤。
+- Agent 可把项目目录中的小文件附在当前群聊或私聊回复中；每条最多 5 个，每个最大 5 MB。机器所有者按员工设置“请求批准”“帮我批准”或“完全访问权限”，默认逐件批准；同账户任意已登录桌面可审阅，批准后接收端重新核对文件哈希。
+- Windows 读取附件时以已打开句柄核对真实路径和文件属性；Mac/Linux 使用逐级目录文件描述符读取。附件继承原消息的下载权限，任务租约和幂等槽位阻止跨任务附件复用。
+- 修复 Windows 上本机执行器收不到任务的问题：`.cmd` 启动器会吞掉重定向的文件句柄，而 worker 之前把 `prompt.txt` 直接作为子进程 stdin，导致子进程读到空内容并立刻失败。npm 安装的 Codex 与 DeepSeek Harness 的 `dsh.cmd` 都受影响，便携包里的 `codex.exe` 不受影响。现在改为管道加喂数据线程，结束后回收句柄。
 
-- Agent 可以按人类请求，把项目中的 PDF、图片或其他普通文件作为回复附件发送；最多 5 个文件，每个最大 5 MB。
-- 附件由接收端通过当前任务的设备租约上传，模型不接触账户或设备凭据；文件限制在登记的项目目录，拒绝隐藏文件、路径越界与链接。
-- 附件仅绑定当前任务的最终回复，继承原群聊或私聊的下载权限；支持上传确认丢失后的幂等重试，失败时显示明确提示。托管端与接收端都需升级，原桌面附件展示兼容。
+- 本机执行器不再写死 Codex：设置页新增“本机执行器”，可在这台机器上选择 Codex CLI 或 DeepSeek Harness。执行器按机器保存，同一项目里不同机器可以各用各的，因此 Codex 与 DeepSeek Harness 的 Agent 可以同时待在一个群聊里。
+- 新增 DeepSeek Harness 执行链路：以 `dsh --profile headless --patch <本轮补丁> --json -` 一次性运行，任务文本走 stdin。每轮生成 JSON 加载补丁固定模型与 `approval: never`（无人值守时失败关闭），沙箱模式由 `DSH_PERMISSION_MODE` 决定——implement 为 workspace-write，讨论与审阅为 read-only。
+- 把 DeepSeek Harness 的 `session`/`status`/`turn_end`/`final` 事件映射为既有的 `thread.started`/`turn.completed`/`item.completed` 契约，worker、broker 与协调器不需要认识第二套方言。会话沿用原来的 `session.json`，通过 `--session-id` 续接。
+- DeepSeek Harness 没有常驻 app-server，群聊的托管轮次对它退回一次性进程，不再尝试启动 warm worker；结构化回复只靠提示词契约约束（Codex 仍使用 JSON schema）。
+- DeepSeek Harness 的失败码会被翻译成可操作的中文提示（缺 API Key、会话无法续接、权限预设冲突、模型不被识别），原始错误保留在 `provider_error`。
+- 修复接收端心跳读错目录的问题：`pull_worker._health` 之前读 `codex-cli.json`，而该文件只写在应用数据目录，接收端目录里从来没有，导致 Codex 组件恒为“尚未配置”；现在改为读接收端自己的 `executor.json`。
+- 新增“在 DeepSeek Harness 中使用协作”：DeepSeek Harness 没有 `codex mcp add` 的等价命令，因此把 MCP 服务登记进 **desktop profile** 的补丁层 `~/.dsh/profiles/desktop/cordis.patch.yml`，作用域只到桌面应用里的普通会话——被派发任务用的 headless profile 不读它，无需在每轮补丁里关闭。该文件也是 DSH 配置编辑器的写入目标，编辑器按条目替换并保留其它内容，所以只增删 Harness 标记的两行即可共存；写入保留 `.agent-harness.bak` 备份，写后把该补丁当作 overlay 交给 `--dump-config` 解析并在失败时回滚，profile 不存在则拒绝写入。
+- DeepSeek Harness 的 MCP 条目改为指向一个稳定启动器 `mcp/launch-<profile>-dsh.cmd|sh`：运行时装在内容寻址目录里，直接钉住会在应用升级后失效（症状是协作工具悄悄消失）。启动器路径不变，内容在每次打开设置或重新连接时刷新。设置页会显示“条目已过期，请重新连接”，而不是让用户自己发现。
+- DeepSeek Harness 的思考强度改为按模型目录投影：`low`/`high` 原样传递，`xhigh`/`max`/`ultra` 按 `high` 发送，`medium` 留空使用模型默认档（提供方的档位通常少于员工设置里的六档）。被拒绝的档位会转成中文提示。
+- Linux 接收端新增 `executor status` / `executor set codex|dsh [--model …] [--provider …]` 和 `executor mcp connect|status|disconnect`，与桌面应用的执行器选择和“在 DeepSeek Harness 中使用协作”是同一份配置；`status` 和 `doctor` 的组件文案按当前执行器显示。
 
 ## 2.1.0 - 2026-10-28
 

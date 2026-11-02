@@ -47,6 +47,9 @@ class NodeLocalActions:
             path.mkdir(exist_ok=True)
             return {"path": str(path)}
         if request["action"] == "health":
+            from agent_harness import executors
+
+            label = "DeepSeek Harness" if executors.selected(self.root) == executors.DSH else "Codex"
             components = [component("receiver", "healthy", HealthCode.OK, "Node API 可响应")]
             try:
                 exe = self.cli_resolver()
@@ -57,14 +60,14 @@ class NodeLocalActions:
                     errors="replace",
                     timeout=10,
                 )
-                components.append(component("codex", "healthy", HealthCode.OK, "Codex CLI 可运行"))
+                components.append(component("codex", "healthy", HealthCode.OK, label + " CLI 可运行"))
             except Exception as exc:
                 components.append(
                     normalize_exception(
                         "codex",
                         exc,
                         code=HealthCode.CLI_NOT_FOUND,
-                        message="Codex CLI 不可用",
+                        message=label + " CLI 不可用",
                     )
                 )
             return report(components)

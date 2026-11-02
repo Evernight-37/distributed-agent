@@ -112,8 +112,10 @@ class AttachmentHttpTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(root / "service"))
+            server.daemon_threads = False
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
+            bridge = None
             try:
                 bridge = QuietBridge(root / "app")
                 url = "http://127.0.0.1:" + str(server.server_port)
@@ -160,6 +162,8 @@ class AttachmentHttpTests(unittest.TestCase):
                 self.assertEqual(status["state"], "queued")
                 self.assertIsNone(status["result"])
             finally:
+                if bridge is not None:
+                    bridge.close()
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)

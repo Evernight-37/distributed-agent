@@ -22,10 +22,17 @@ from agent_harness.common import read_json, write_json
 from agent_harness.coordinator import Coordinator
 from agent_harness.panel import handler_for
 from agent_harness.pull_worker import api
+from agent_harness.worker import GROUP_RULES, reply_schema
 from tests.helpers import provision_account
 
 
 class AgentAttachmentTests(unittest.TestCase):
+    def test_managed_codex_and_dsh_turns_expose_attachment_contract(self):
+        schema = reply_schema()
+        self.assertIn("attachments", schema["required"])
+        self.assertIn("attachments", schema["properties"])
+        self.assertIn("attachments:", GROUP_RULES)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

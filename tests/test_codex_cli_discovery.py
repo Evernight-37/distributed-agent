@@ -42,6 +42,19 @@ class CodexCliDiscoveryTests(unittest.TestCase):
             self.assertFalse(result["found"])
             self.assertIn("重新选择", result["error"])
 
+    def test_discovery_uses_the_worker_version_probe(self):
+        # The macOS Finder-launch test overrides this hook to answer for one
+        # bundled path; discovery must keep calling it rather than its own copy.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            executable = root / "codex.exe"
+            executable.write_bytes(b"not a real cli")
+            write_json(root / "executor.json", {"cli_path": str(executable)})
+            with patch("agent_harness.worker.codex_version", return_value=(7, 8, 9)):
+                result = cli_status(root)
+            self.assertEqual(result["version"], "7.8.9")
+            self.assertFalse(result["configured"] and not result["found"])
+
     def test_app_caches_detected_cli_until_explicit_redetect(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -379,7 +379,7 @@ Use only authorized conversation context and local project evidence; you cannot 
                         agent["name"]
                         + " 未能回复：本机执行状态为 "
                         + task["state"]
-                        + "。请由机器所有者检查 Codex、客户端版本和超时设置。"
+                        + "。请由机器所有者检查本机 Agent（Codex 或 DeepSeek Harness）、客户端版本和超时设置。"
                     )
                 self.store._message(
                     db,
