@@ -617,11 +617,17 @@ class Connector:
     def _health(self):
         """Build a privacy-bounded heartbeat; paths and exception text stay local."""
         components = [component("receiver", "healthy", HealthCode.OK, "接收端运行正常")]
-        cli = read_json(self.root / "codex-cli.json", {})
-        if not isinstance(cli, dict) or not isinstance(cli.get("path"), str) or not cli["path"]:
-            components.append(component("codex", "degraded", HealthCode.NOT_CONFIGURED, "尚未配置 Codex"))
+        # The worker reads the receiver-local executor.json, so the heartbeat must
+        # read the same file; the desktop-side codex-cli.json cache never lands here.
+        setting = read_json(self.root / "executor.json", {})
+        if not isinstance(setting, dict):
+            setting = {}
+        label = "DeepSeek Harness" if setting.get("executor") == "dsh" else "Codex"
+        selected = setting.get("cli_path")
+        if isinstance(selected, str) and selected and Path(selected).is_file():
+            components.append(component("codex", "healthy", HealthCode.OK, label + " 已配置"))
         else:
-            components.append(component("codex", "healthy", HealthCode.OK, "Codex 已配置"))
+            components.append(component("codex", "degraded", HealthCode.NOT_CONFIGURED, "尚未配置 " + label))
         return report(components)
 
 

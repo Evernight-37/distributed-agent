@@ -270,9 +270,81 @@ Object.assign(HarnessDesktop.components, {
   teamServiceCard,
   proxySettingsCard,
   idleSettingsCard,
+  executorCard,
   codexCliCard,
   codexMcpCard,
 });
+function executorCard(current) {
+  const card = el("section", "panel");
+  card.append(el("h2", "", "本机执行器"));
+  note(
+    card,
+    "这台电脑用哪个本地 Agent 执行派来的任务。执行器只影响本机；同一个项目里，不同机器可以各自使用不同的执行器。",
+  );
+  const choice = field(card, "执行器", current?.executor || "codex", [
+    ["codex", "Codex CLI"],
+    ["dsh", "DeepSeek Harness"],
+  ]);
+  choice.id = "executorSelect";
+  const model = field(
+    card,
+    "DeepSeek Harness 模型（可留空）",
+    current?.model || "",
+  );
+  model.id = "executorModel";
+  model.placeholder = "留空则使用 Agent 上设置的模型；例如 deepseek-flash";
+  const provider = field(
+    card,
+    "DeepSeek Harness 模型服务（可留空）",
+    current?.provider || "",
+  );
+  provider.id = "executorProvider";
+  provider.placeholder = "留空则使用 deepseek-official";
+  const sync = () => {
+    const dsh = choice.value === "dsh";
+    [model, provider].forEach((input) => {
+      input.disabled = !dsh;
+      if (input.previousElementSibling)
+        input.previousElementSibling.style.opacity = dsh ? "" : "0.5";
+    });
+  };
+  choice.onchange = sync;
+  sync();
+  note(
+    card,
+    "DeepSeek Harness 的模型服务与 API Key 由它自己的配置决定，Harness 不会读取或保存密钥；它也没有单独的思考强度参数。",
+  );
+  card.append(
+    button(
+      "保存执行器设置",
+      async () => {
+        const result = await api("executor-save", {
+          executor: choice.value,
+          model: model.value.trim(),
+          provider: provider.value.trim(),
+        });
+        const status = result?.status;
+        if (status?.found) {
+          notify(
+            "执行器已保存 · " +
+              (choice.value === "dsh" ? "DeepSeek Harness " : "Codex ") +
+              (status.version || "已检测到程序"),
+          );
+        } else {
+          notify(
+            "执行器已保存，但没有检测到可运行的程序：" +
+              (status?.error || "请在下方手动指定"),
+            true,
+          );
+        }
+        await refresh(true);
+      },
+      "primary",
+    ),
+  );
+  return card;
+}
+
 function proxySettingsCard(current) {
   const card = el("section", "panel");
   card.append(el("h2", "", "模型请求代理"));
@@ -284,7 +356,7 @@ function proxySettingsCard(current) {
   const enabled = el("input", "check");
   enabled.type = "checkbox";
   enabled.checked = !!current?.enabled;
-  row.append(el("span", "", "Codex 使用本机代理"), enabled);
+  row.append(el("span", "", "本机 Agent 使用本机代理"), enabled);
   card.append(row);
   const port = field(card, "代理端口", current?.port ?? "", null, "number");
   port.min = "1";
@@ -348,18 +420,24 @@ function idleSettingsCard(seconds) {
   );
   return card;
 }
-function codexCliCard() {
+function codexCliCard(executor) {
+  const dsh = executor === "dsh";
+  const label = dsh ? "DeepSeek Harness CLI" : "Codex CLI";
   const card = el("section", "panel"),
-    statusLine = el("p", "muted small", "正在检测 Codex CLI…"),
+    statusLine = el("p", "muted small", "正在检测 " + label + "…"),
     controls = el("div", "setting-row");
   statusLine.style.overflowWrap = "anywhere";
-  card.append(el("h2", "", "Codex CLI"), statusLine);
+  card.append(el("h2", "", label), statusLine);
   note(
     card,
-    "Codex 需要在这台电脑上单独安装并登录。这里只读取 CLI 返回的登录状态，不会读取登录凭据。",
+    dsh
+      ? "DeepSeek Harness 需要在这台电脑上单独安装。这里只检测程序能否运行，不读取密钥或登录凭据。"
+      : "Codex 需要在这台电脑上单独安装并登录。这里只读取 CLI 返回的登录状态，不会读取登录凭据。",
   );
   const path = field(card, "手动指定程序（留空则自动检测）", "");
-  path.placeholder = "选择 codex（Mac）或 codex.exe / codex.cmd（Windows）";
+  path.placeholder = dsh
+    ? "选择 dsh（Mac/Linux）或 dsh.cmd（Windows）"
+    : "选择 codex（Mac）或 codex.exe / codex.cmd（Windows）";
   const browse = button("浏览…", async () => {
     const r = await api("codex-cli-choose");
     if (r?.path) path.value = r.path;
@@ -373,7 +451,7 @@ function codexCliCard() {
       const value = path.value.trim();
       const r = await api("codex-cli-save", { path: value });
       path.value = value ? r?.path || value : "";
-      notify(value ? "Codex CLI 路径已保存。" : "已恢复自动检测。");
+      notify(value ? label + " 路径已保存。" : "已恢复自动检测。");
       await load();
     },
     "primary",
@@ -390,13 +468,18 @@ function codexCliCard() {
           "已找到" +
           (r.version ? " · " + r.version : "") +
           (r.path ? " · " + r.path : "") +
-          (r.logged_in ? " · 已登录" : " · " + (r.login_error || "尚未登录"));
+          (r.logged_in
+            ? " · " + (r.credential_warning || "已登录")
+            : " · " + (r.login_error || "尚未登录"));
         if (r.configured && !path.value.trim() && r.path) path.value = r.path;
       } else {
         statusLine.className = "error small";
         statusLine.textContent =
-          "未找到 Codex CLI" +
-          (r?.error ? "：" + r.error : "。请安装后浏览选择 Codex CLI 程序。");
+          "未找到 " +
+          label +
+          (r?.error
+            ? "：" + r.error
+            : "。请安装后浏览选择 " + label + " 程序。");
       }
     } catch (e) {
       statusLine.className = "error small";

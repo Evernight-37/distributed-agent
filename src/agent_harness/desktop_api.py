@@ -1,5 +1,6 @@
 """Desktop control boundary independent from the native UI implementation."""
 
+import re
 import secrets
 import threading
 import time
@@ -91,7 +92,7 @@ class DesktopSessionActions:
 
 
 class DesktopSettingsActions:
-    """Local Codex, proxy, and application settings owned by this desktop."""
+    """Local executor, proxy, and application settings owned by this desktop."""
 
     actions = frozenset(
         {
@@ -103,6 +104,7 @@ class DesktopSettingsActions:
             "codex-cli-redetect",
             "codex-cli-choose",
             "codex-cli-save",
+            "executor-save",
             "proxy-save",
             "warm-idle-save",
             "settings-save",
@@ -124,12 +126,18 @@ class DesktopSettingsActions:
             if path.is_dir() and path.resolve().parent == receivers.resolve()
         ]
 
+    def _cli_cache(self):
+        """The UI cache file for the executor currently in force."""
+        kind = self.bridge._executor().get("executor", "codex")
+        return self.bridge.root / ("codex-cli.json" if kind == "codex" else "dsh-cli.json")
+
     def _cli_status(self):
         from agent_harness.worker import cli_status, codex_login_status
 
-        result = cli_status(self.bridge._runtime().root)
+        root = self.bridge._runtime().root
+        result = cli_status(root)
         if result.get("found"):
-            result.update(codex_login_status(result["path"], self.bridge._runtime().root))
+            result.update(codex_login_status(result["path"], root))
         return result
 
     def invoke(self, action, data):
@@ -169,6 +177,7 @@ class DesktopSettingsActions:
                 "proxy": self.bridge._proxy_settings(),
                 "warm_idle_seconds": self.bridge._idle_seconds(),
                 "codex_mcp": self.bridge._mcp_status(),
+                "executor": self.bridge._executor(),
             }
         if action == "codex-mcp-status":
             return self.bridge._mcp_status()
@@ -179,7 +188,7 @@ class DesktopSettingsActions:
         if action == "codex-cli-status":
             from agent_harness.worker import codex_login_status
 
-            saved = read_json(self.bridge.root / "codex-cli.json", {})
+            saved = read_json(self._cli_cache(), {})
             if (
                 isinstance(saved, dict)
                 and isinstance(saved.get("path"), str)
@@ -208,7 +217,7 @@ class DesktopSettingsActions:
                 }
             result = self._cli_status()
             write_json(
-                self.bridge.root / "codex-cli.json",
+                self._cli_cache(),
                 {
                     "path": result.get("path", ""),
                     "version": result.get("version", ""),
@@ -228,7 +237,7 @@ class DesktopSettingsActions:
             for receiver in self._receiver_paths():
                 self.bridge._sync_cli(DesktopRuntime(receiver), selected)
             write_json(
-                self.bridge.root / "codex-cli.json",
+                self._cli_cache(),
                 {
                     "path": selected,
                     "version": result.get("version", ""),
@@ -244,16 +253,71 @@ class DesktopSettingsActions:
 
             chosen = self.bridge.window.create_file_dialog(webview.FileDialog.OPEN)
             return {"path": chosen[0] if chosen else ""}
+        if action == "executor-save":
+            executor = data.get("executor")
+            if executor not in ("codex", "dsh"):
+                raise ValueError("未知的本地执行器")
+            choice = {"executor": executor}
+            model = data.get("model")
+            if model is not None:
+                if not isinstance(model, str):
+                    raise ValueError("模型名必须是文字")
+                model = model.strip()
+                if model:
+                    if not re.fullmatch(r"[a-zA-Z0-9_.:-]{1,100}", model):
+                        raise ValueError("模型名只能包含字母、数字、下划线、点、冒号和连字符")
+                    choice["model"] = model
+            provider = data.get("provider")
+            if provider is not None:
+                if not isinstance(provider, str):
+                    raise ValueError("模型服务必须是文字")
+                provider = provider.strip()
+                if provider:
+                    if not re.fullmatch(r"[a-zA-Z0-9_.-]{1,64}", provider):
+                        raise ValueError("模型服务名只能包含字母、数字、下划线、点和连字符")
+                    choice["provider"] = provider
+            write_json(self.bridge.root / "executor-choice.json", choice)
+            # The saved binary belongs to the previous executor; drop it while
+            # switching so a stale path cannot mask the new one.
+            for receiver in self._receiver_paths():
+                self.bridge._sync_executor(DesktopRuntime(receiver), choice, reset_path=True)
+            result = self._cli_status()
+            if result.get("found"):
+                for receiver in self._receiver_paths():
+                    self.bridge._sync_cli(DesktopRuntime(receiver), result["path"])
+                write_json(
+                    self._cli_cache(),
+                    {
+                        "path": result["path"],
+                        "version": result.get("version", ""),
+                        "error": "",
+                        "mode": "auto",
+                    },
+                )
+            else:
+                write_json(
+                    self._cli_cache(),
+                    {
+                        "path": "",
+                        "version": "",
+                        "error": result.get("error", ""),
+                        "mode": "auto",
+                    },
+                )
+            return {"executor": executor, "choice": choice, "status": result}
         if action == "codex-cli-save":
             selected = data.get("path", "")
             if not isinstance(selected, str):
-                raise ValueError("Codex 路径必须是文字")
+                raise ValueError("本机 Agent 程序路径必须是文字")
             selected = selected.strip()
             if selected:
-                from agent_harness.worker import codex_version
+                from agent_harness.executors import version as cli_version
 
-                if not Path(selected).is_absolute() or not Path(selected).is_file() or codex_version(selected) is None:
-                    raise ValueError("请选择能运行的 Codex CLI 程序（macOS: codex；Windows: codex.exe 或 codex.cmd）")
+                if not Path(selected).is_absolute() or not Path(selected).is_file() or cli_version(selected) is None:
+                    raise ValueError(
+                        "请选择能运行的本机 Agent 程序（Codex: codex / codex.exe / codex.cmd；"
+                        "DeepSeek Harness: dsh / dsh.cmd）"
+                    )
             for receiver in self._receiver_paths():
                 self.bridge._sync_cli(DesktopRuntime(receiver), selected)
             result = self._cli_status()
@@ -262,7 +326,7 @@ class DesktopSettingsActions:
                 for receiver in self._receiver_paths():
                     self.bridge._sync_cli(DesktopRuntime(receiver), selected)
             write_json(
-                self.bridge.root / "codex-cli.json",
+                self._cli_cache(),
                 {
                     "path": selected,
                     "version": result.get("version", ""),

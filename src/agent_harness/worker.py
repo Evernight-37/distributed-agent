@@ -11,8 +11,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from agent_harness import executors
 from agent_harness.common import (
-    apply_local_proxy,
     events,
     identifier,
     lock,
@@ -88,24 +88,7 @@ def process_stamp(pid):
 
 def codex_version(exe):
     """Probe a candidate without making a model request."""
-    import re
-
-    try:
-        result = subprocess.run(
-            [str(exe), "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=8,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode:
-        return None
-    match = re.search(r"codex-cli (\d+)\.(\d+)\.(\d+)", result.stdout)
-    return tuple(map(int, match.groups())) if match else None
+    return executors.version(exe)
 
 
 def set_root(root):
@@ -117,135 +100,26 @@ def set_root(root):
     return ROOT
 
 
-def executor_environment(root=None):
-    """Build the exact environment used by Codex and its login preflight."""
+def executor_environment(root=None, stage=None, full_access=False):
+    """Build the exact environment used by the local executor and its login preflight."""
     root = ROOT if root is None else Path(root)
-    env = dict(os.environ, PYTHONIOENCODING="utf-8")
-    executor = read_json(Path(root) / "executor.json", {})
-    network = executor.get("network_env", {})
-    if not isinstance(network, dict) or set(network) - {
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "WS_PROXY",
-        "WSS_PROXY",
-    }:
-        raise ValueError("Unsupported worker network environment")
-    for key, value in network.items():
-        if not isinstance(value, str) or "\n" in value or "\r" in value:
-            raise ValueError("Invalid network environment")
-        env[key] = value
-    if "proxy" in executor:
-        env = apply_local_proxy(env, executor["proxy"])
-    return env
+    return executors.child_environment(root, stage, full_access)
 
 
 def codex_login_status(exe, root=None):
-    """Check the selected CLI login without reading credentials or making a model call."""
-    try:
-        root = ROOT if root is None else Path(root)
-        result = subprocess.run(
-            [str(exe), "login", "status"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=executor_environment(root),
-            timeout=12,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-        )
-    except subprocess.TimeoutExpired:
-        return {
-            "logged_in": False,
-            "login_error": "Codex 登录状态检查超时；请检查本机代理",
-        }
-    except OSError:
-        return {"logged_in": False, "login_error": "无法检查 Codex 登录状态"}
-    output = (result.stdout + "\n" + result.stderr).casefold()
-    if result.returncode == 0 and "not logged in" not in output:
-        return {"logged_in": True}
-    return {
-        "logged_in": False,
-        "login_error": "Codex CLI 尚未登录；请使用当前系统用户完成登录",
-    }
+    """Check the selected executor's login without reading credentials.
+
+    The historical name is kept because the worker, the desktop settings API and
+    the Linux receiver all call it through this module.
+    """
+    root = ROOT if root is None else Path(root)
+    return executors.login(root, exe)
 
 
 def cli_status(root=None):
-    """Find a working CLI in the worker account, including npm/PATH installs."""
-    import shutil
-
+    """Find a working local-executor CLI in the worker account."""
     root = ROOT if root is None else Path(root)
-    explicit = read_json(root / "executor.json", {}).get("cli_path")
-    if explicit:
-        if not isinstance(explicit, str) or not Path(explicit).is_absolute() or not Path(explicit).is_file():
-            return {
-                "found": False,
-                "configured": True,
-                "error": "设置的 Codex 路径已失效，请重新选择程序",
-            }
-        version = codex_version(explicit)
-        if version is None:
-            return {
-                "found": False,
-                "configured": True,
-                "error": "所选程序无法运行 Codex CLI，请重新选择",
-            }
-        return {
-            "found": True,
-            "configured": True,
-            "path": explicit,
-            "version": ".".join(map(str, version)),
-        }
-    paths = []
-    if os.name == "nt":
-        local = os.environ.get("LOCALAPPDATA")
-        if local:
-            paths.extend((Path(local) / "OpenAI" / "Codex" / "bin").glob("*/codex.exe"))
-        roaming = os.environ.get("APPDATA")
-        if roaming:
-            paths.extend(Path(roaming) / "npm" / name for name in ("codex.cmd", "codex.exe"))
-    elif sys.platform == "darwin":
-        # Finder-launched apps do not inherit the interactive shell's PATH.
-        paths.extend(
-            Path(name).expanduser()
-            for name in (
-                "/Applications/Codex.app/Contents/Resources/codex",
-                "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
-                "~/Applications/Codex.app/Contents/Resources/codex",
-                "/opt/homebrew/bin/codex",
-                "/usr/local/bin/codex",
-                "~/.npm-global/bin/codex",
-                "~/.local/bin/codex",
-            )
-        )
-        paths.extend((Path.home() / ".nvm" / "versions" / "node").glob("*/bin/codex"))
-    for name in ("codex", "codex.exe", "codex.cmd"):
-        found = shutil.which(name)
-        if found:
-            paths.append(Path(found))
-    seen, valid = set(), []
-    for candidate in paths:
-        key = str(candidate).casefold() if os.name == "nt" else str(candidate)
-        if key in seen or not candidate.is_file():
-            continue
-        seen.add(key)
-        version = codex_version(candidate)
-        if version is not None:
-            valid.append((version, str(candidate)))
-    if not valid:
-        return {
-            "found": False,
-            "configured": False,
-            "error": "未找到可运行的 Codex CLI；请在本机安装 Codex，或在设置中选择程序",
-        }
-    version, path = max(valid)
-    return {
-        "found": True,
-        "configured": False,
-        "path": path,
-        "version": ".".join(map(str, version)),
-    }
+    return executors.status(root)
 
 
 def cli_path(root=None):
@@ -775,7 +649,13 @@ def _rpc(request, managed_runtime=None):
                 },
             )
             try:
-                if config["managed_turn"] and project.get("local_control"):
+                # Only Codex has a persistent app-server to keep warm. DSH runs
+                # one process per turn and resumes through its session id, so its
+                # managed turns take the ordinary supervisor path.
+                warm_turns = bool(
+                    config["managed_turn"] and project.get("local_control") and executors.supports_managed_turns(ROOT)
+                )
+                if warm_turns:
                     warm_path = directory / "warm.json"
                     warm = read_json(warm_path)
                     if (
@@ -861,9 +741,9 @@ def _rpc(request, managed_runtime=None):
             # so normalize that valid idle value before checking whether the
             # fresh launch already committed its ownership record.
             committed_active = read_json(directory / "active.json", {}) or {}
-            if not (config["managed_turn"] and project.get("local_control") and committed_active.get("job") == job):
+            if not (warm_turns and committed_active.get("job") == job):
                 active_record = {"job": job, "pid": pid, "stamp": stamp, "stage": current_stage}
-                if config["managed_turn"] and project.get("local_control") and generation:
+                if warm_turns and generation:
                     active_record["generation"] = generation
                 write_json(directory / "active.json", active_record)
             return {"job": job, "status": "starting", "supervisor_pid": pid}
@@ -902,56 +782,57 @@ Treat reports and memory as claims requiring evidence. Keep the final answer con
 
 
 def build_command(exe, project, thread_id):
-    args = [
-        exe,
-        "exec",
-        "--ignore-user-config",
-        "--skip-git-repo-check",
-        "--json",
-        "-m",
-        project["model"],
-        "-c",
-        'model_reasoning_effort="' + project["effort"] + '"',
-        "-C",
-        project["remote_path"],
-    ]
-    if project.get("local_control"):
-        stage = project.get("_stage", "discuss")
-        args += [
-            "--sandbox",
-            "workspace-write" if stage == "implement" else "read-only",
-            "-c",
-            'approval_policy="never"',
-        ]
-    else:
-        args += ["--approve-for-me"]
-    if thread_id:
-        import re
-
-        if not re.fullmatch(r"[0-9a-fA-F-]{36}", thread_id):
-            raise ValueError("Invalid session ID")
-        args += ["resume", thread_id]
-    return args + ["-"]
+    """Codex argv for one turn; a managed turn adds its schema separately."""
+    return executors.codex_command(exe, project, thread_id)
 
 
 def effective_model(thread_id, since=None):
-    if not thread_id:
-        return None
-    home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-    for path in (home / "sessions").rglob("*" + thread_id + "*.jsonl"):
-        model = None
-        for event in events(tail(path, 2 * 1024 * 1024)):
-            if event["type"] == "turn_context":
-                if since:
-                    timestamp = event.get("timestamp")
-                    if not timestamp or datetime.fromisoformat(
-                        timestamp.replace("Z", "+00:00")
-                    ) < datetime.fromisoformat(since):
-                        continue
-                model = event.get("payload", {}).get("model") or model
-        if model:
-            return model
-    return None
+    """The model the executor actually used, when it records one."""
+    return executors.effective_model(executors.selected(ROOT), thread_id, since)
+
+
+def reply_schema():
+    """Structured reply contract for managed group-chat turns."""
+
+    def obj(properties):
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(properties),
+            "properties": properties,
+        }
+
+    def array(properties):
+        return {"type": "array", "items": obj(properties)}
+
+    return obj(
+        {
+            "reply": {"type": "string"},
+            "done": {"type": "boolean"},
+            "messages": array(
+                {
+                    "recipient": {"type": ["string", "null"]},
+                    "body": {"type": "string"},
+                }
+            ),
+            "tasks": array(
+                {
+                    key: {"type": "string"}
+                    for key in (
+                        "agent",
+                        "title",
+                        "instructions",
+                        "stage",
+                        "allowed_files",
+                        "acceptance",
+                        "validation",
+                    )
+                }
+            ),
+            "executions": array({"template": {"type": "string"}}),
+            "memory_notes": {"type": "array", "items": {"type": "string"}},
+        }
+    )
 
 
 def run(job):
@@ -960,6 +841,7 @@ def run(job):
     state = read_json(path / "state.json", {"job": job})
     proc = None
     try:
+        kind = executors.selected(ROOT)
         config = read_json(path / "request.json")
         directory = project_dir(config["project"]["name"])
         exe = cli_path()
@@ -969,62 +851,23 @@ def run(job):
         command_project = dict(config["project"])
         if command_project.get("local_control"):
             command_project["_stage"] = json.loads(config["prompt"]).get("stage", "discuss")
-        command = build_command(exe, command_project, config["thread_id"])
-        if config.get("managed_turn"):
-            command[2:2] = [
-                "--disable",
-                "apps",
-                "--disable",
-                "plugins",
-                "--disable",
-                "remote_plugin",
-                "--disable",
-                "skill_mcp_dependency_install",
-            ]
-
-            def obj(properties):
-                return {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": list(properties),
-                    "properties": properties,
-                }
-
-            def array(properties):
-                return {"type": "array", "items": obj(properties)}
-
-            schema = obj(
-                {
-                    "reply": {"type": "string"},
-                    "done": {"type": "boolean"},
-                    "messages": array(
-                        {
-                            "recipient": {"type": ["string", "null"]},
-                            "body": {"type": "string"},
-                        }
-                    ),
-                    "tasks": array(
-                        {
-                            key: {"type": "string"}
-                            for key in (
-                                "agent",
-                                "title",
-                                "instructions",
-                                "stage",
-                                "allowed_files",
-                                "acceptance",
-                                "validation",
-                            )
-                        }
-                    ),
-                    "executions": array({"template": {"type": "string"}}),
-                    "memory_notes": {"type": "array", "items": {"type": "string"}},
-                }
-            )
+        # Only Codex can enforce the structured reply with a JSON schema; DSH
+        # managed turns rely on the GROUP_RULES prompt contract alone.
+        managed = bool(config.get("managed_turn"))
+        schema_path = None
+        if managed and kind == executors.CODEX:
             schema_path = path / "reply-schema.json"
-            write_json(schema_path, schema)
-            command[-1:-1] = ["--output-schema", str(schema_path)]
-        rules = GROUP_RULES if config.get("managed_turn") else PEER_RULES
+            write_json(schema_path, reply_schema())
+        command = executors.command(
+            ROOT,
+            exe,
+            command_project,
+            config["thread_id"],
+            scratch=path,
+            managed=managed,
+            schema_path=schema_path,
+        )
+        rules = GROUP_RULES if managed else PEER_RULES
         prompt = (
             rules
             + "\nASSIGNED LOCAL PROJECT DIRECTORY:\n"
@@ -1035,7 +878,11 @@ def run(job):
             + config["prompt"]
         )
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
-        env = executor_environment(ROOT)
+        env = executor_environment(
+            ROOT,
+            command_project.get("_stage"),
+            full_access=not command_project.get("local_control"),
+        )
         with (
             (path / "prompt.txt").open("rb") as source,
             (path / "stderr.log").open("wb") as error,
@@ -1054,7 +901,7 @@ def run(job):
                 status="running",
                 started_at=now(),
                 codex_pid=proc.pid,
-                requested_model=config["project"]["model"],
+                requested_model=executors.requested_model(ROOT, config["project"]["model"]),
                 reasoning_effort=config["project"]["effort"],
                 command=command,
                 thread_id=config["thread_id"],
@@ -1069,23 +916,24 @@ def run(job):
                     for raw in proc.stdout:
                         output.write(raw)
                         output.flush()
-                        for event in events(raw.decode("utf-8", errors="replace")):
-                            seen.append(event)
-                            if event["type"] == "thread.started":
-                                thread = event["thread_id"]
-                                state["thread_id"] = thread
-                                with lock(ROOT / "registry.lock"):
-                                    write_json(
-                                        directory / config.get("session_file", "session.json"),
-                                        {"thread_id": thread, "last_job": job},
-                                    )
-                                write_json(path / "state.json", state)
-                            if (
-                                event["type"] == "item.completed"
-                                and event.get("item", {}).get("type") == "agent_message"
-                            ):
-                                reports.append(event["item"].get("text", ""))
-                                (path / "report.txt").write_text(reports[-1], encoding="utf-8")
+                        for provider_event in events(raw.decode("utf-8", errors="replace")):
+                            for event in executors.normalize(kind, provider_event):
+                                seen.append(event)
+                                if event["type"] == "thread.started":
+                                    thread = event["thread_id"]
+                                    state["thread_id"] = thread
+                                    with lock(ROOT / "registry.lock"):
+                                        write_json(
+                                            directory / config.get("session_file", "session.json"),
+                                            {"thread_id": thread, "last_job": job},
+                                        )
+                                    write_json(path / "state.json", state)
+                                if (
+                                    event["type"] == "item.completed"
+                                    and event.get("item", {}).get("type") == "agent_message"
+                                ):
+                                    reports.append(event["item"].get("text", ""))
+                                    (path / "report.txt").write_text(reports[-1], encoding="utf-8")
 
             def consume_guarded():
                 try:
@@ -1137,6 +985,13 @@ def run(job):
             violation = _check_strict_guard(config.get("strict_guard"))
             if violation:
                 state.update(status="failed", error=violation)
+            if kind == executors.DSH and state["status"] == "failed":
+                # DSH reports its own failure code on stderr; replace the generic
+                # "no report" outcome with something the machine owner can act on.
+                hint = executors.explain_failure(tail(path / "stderr.log", 8000))
+                if hint:
+                    state["provider_error"] = state.get("error")
+                    state["error"] = hint
     except Exception as exc:
         if proc and proc.poll() is None:
             if os.name == "nt":

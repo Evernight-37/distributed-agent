@@ -1,5 +1,14 @@
 # Changelog
 
+## 未发布
+
+- 本机执行器不再写死 Codex：设置页新增“本机执行器”，可在这台机器上选择 Codex CLI 或 DeepSeek Harness。执行器按机器保存，同一项目里不同机器可以各用各的，因此 Codex 与 DeepSeek Harness 的 Agent 可以同时待在一个群聊里。
+- 新增 DeepSeek Harness 执行链路：以 `dsh --profile headless --patch <本轮补丁> --json -` 一次性运行，任务文本走 stdin。每轮生成 JSON 加载补丁固定模型与 `approval: never`（无人值守时失败关闭），沙箱模式由 `DSH_PERMISSION_MODE` 决定——implement 为 workspace-write，讨论与审阅为 read-only。
+- 把 DeepSeek Harness 的 `session`/`status`/`turn_end`/`final` 事件映射为既有的 `thread.started`/`turn.completed`/`item.completed` 契约，worker、broker 与协调器不需要认识第二套方言。会话沿用原来的 `session.json`，通过 `--session-id` 续接。
+- DeepSeek Harness 没有常驻 app-server，群聊的托管轮次对它退回一次性进程，不再尝试启动 warm worker；结构化回复只靠提示词契约约束（Codex 仍使用 JSON schema）。
+- DeepSeek Harness 的失败码会被翻译成可操作的中文提示（缺 API Key、会话无法续接、权限预设冲突、模型不被识别），原始错误保留在 `provider_error`。
+- 修复接收端心跳读错目录的问题：`pull_worker._health` 之前读 `codex-cli.json`，而该文件只写在应用数据目录，接收端目录里从来没有，导致 Codex 组件恒为“尚未配置”；现在改为读接收端自己的 `executor.json`。
+
 ## 2.1.0 - 2026-10-28
 
 - 增加独立“文件速传”：同账户机器自动接收，不同用户先确认；文件与项目、Agent 解耦，不设固定总大小上限，并支持分块续传和 SHA-256 校验。

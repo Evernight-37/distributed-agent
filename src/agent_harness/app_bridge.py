@@ -466,9 +466,9 @@ class AppBridge:
         selected = saved.get("path") if isinstance(saved, dict) else None
         if selected and Path(selected).is_file():
             return selected
-        from agent_harness.worker import cli_status
+        from agent_harness import executors
 
-        status = cli_status(self._runtime().root)
+        status = executors.status_of(self._runtime().root, executors.CODEX)
         if not status.get("found"):
             raise RuntimeError("未找到可运行的 Codex CLI，请先在设置中完成检测")
         return status["path"]
@@ -835,6 +835,41 @@ class AppBridge:
                 executor.pop("cli_path", None)
             write_json(path, executor)
 
+    def _executor(self):
+        """The local executor choice shared by every receiver of this desktop."""
+        saved = read_json(self.root / "executor-choice.json", {})
+        choice = {"executor": "codex"}
+        if not isinstance(saved, dict):
+            return choice
+        if saved.get("executor") in ("codex", "dsh"):
+            choice["executor"] = saved["executor"]
+        for key in ("model", "provider"):
+            value = saved.get(key)
+            if isinstance(value, str) and value.strip():
+                choice[key] = value.strip()
+        return choice
+
+    def _sync_executor(self, runtime, choice, reset_path=False):
+        path = runtime.root / "executor.json"
+        with lock(runtime.root / "executor.lock"):
+            executor = read_json(path, {})
+            kind = choice.get("executor", "codex")
+            if kind == "dsh":
+                executor["executor"] = "dsh"
+            else:
+                # Absent means Codex, so files written by older versions and
+                # files written by this one stay byte-identical.
+                executor.pop("executor", None)
+            for key in ("model", "provider"):
+                value = choice.get(key)
+                if isinstance(value, str) and value.strip():
+                    executor[key] = value.strip()
+                else:
+                    executor.pop(key, None)
+            if reset_path:
+                executor.pop("cli_path", None)
+            write_json(path, executor)
+
     def _idle_seconds(self):
         saved = read_json(self.root / "codex-warm-idle.json", {})
         value = saved.get("seconds", 300) if isinstance(saved, dict) else 300
@@ -866,7 +901,10 @@ class AppBridge:
             self._secure(runtime.config_path)
         if (self.root / "codex-proxy.json").exists():
             self._sync_proxy(runtime, self._proxy_settings())
-        selected = read_json(self.root / "codex-cli.json")
+        choice = self._executor()
+        self._sync_executor(runtime, choice)
+        cache = "codex-cli.json" if choice["executor"] == "codex" else "dsh-cli.json"
+        selected = read_json(self.root / cache)
         if selected is not None:
             self._sync_cli(runtime, selected.get("path", ""))
         self._sync_idle(runtime, self._idle_seconds())
