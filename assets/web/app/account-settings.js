@@ -247,10 +247,11 @@ async function renderSettings() {
     idleSettingsCard(settings.warm_idle_seconds),
     codexCliCard(settings.executor?.executor),
   );
-  // Codex MCP registration is a Codex-only capability; DSH machines see the
-  // executor card instead and keep their collaboration entry points local.
-  if (settings.executor?.executor !== "dsh")
-    list.append(codexMcpCard(settings.codex_mcp));
+  // Each executor has its own collaboration entry point: Codex owns its config
+  // through `codex mcp add`, DeepSeek Harness through its home patch layer.
+  if (settings.executor?.executor === "dsh")
+    list.append(dshMcpCard(settings.dsh_mcp));
+  else list.append(codexMcpCard(settings.codex_mcp));
   const storage = el("section", "panel");
   storage.append(
     el("h2", "", "本机数据"),

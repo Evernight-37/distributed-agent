@@ -8,6 +8,7 @@
 - DeepSeek Harness 没有常驻 app-server，群聊的托管轮次对它退回一次性进程，不再尝试启动 warm worker；结构化回复只靠提示词契约约束（Codex 仍使用 JSON schema）。
 - DeepSeek Harness 的失败码会被翻译成可操作的中文提示（缺 API Key、会话无法续接、权限预设冲突、模型不被识别），原始错误保留在 `provider_error`。
 - 修复接收端心跳读错目录的问题：`pull_worker._health` 之前读 `codex-cli.json`，而该文件只写在应用数据目录，接收端目录里从来没有，导致 Codex 组件恒为“尚未配置”；现在改为读接收端自己的 `executor.json`。
+- 新增“在 DeepSeek Harness 中使用协作”：DeepSeek Harness 没有 `codex mcp add` 的等价命令，因此把 MCP 服务登记进它的 home 补丁层 `$DSH_HOME/cordis.patch.yml`（对所有 profile 生效）。写入只增删 Harness 自己标记的两行，保留 `.agent-harness.bak` 备份，写后用 `dsh --profile headless --dump-config` 验证并自动回滚，遇到非块状列表的文件则拒绝改写并给出可粘贴片段。被派发的 Agent 任务会在本轮补丁里关闭该入口。
 
 ## 2.1.0 - 2026-10-28
 

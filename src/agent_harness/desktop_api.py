@@ -100,6 +100,9 @@ class DesktopSettingsActions:
             "codex-mcp-status",
             "codex-mcp-enable",
             "codex-mcp-disable",
+            "dsh-mcp-status",
+            "dsh-mcp-enable",
+            "dsh-mcp-disable",
             "codex-cli-status",
             "codex-cli-redetect",
             "codex-cli-choose",
@@ -177,10 +180,17 @@ class DesktopSettingsActions:
                 "proxy": self.bridge._proxy_settings(),
                 "warm_idle_seconds": self.bridge._idle_seconds(),
                 "codex_mcp": self.bridge._mcp_status(),
+                "dsh_mcp": self.bridge._dsh_mcp_status(),
                 "executor": self.bridge._executor(),
             }
         if action == "codex-mcp-status":
             return self.bridge._mcp_status()
+        if action == "dsh-mcp-status":
+            return self.bridge._dsh_mcp_status()
+        if action == "dsh-mcp-enable":
+            return self.bridge._enable_dsh_mcp()
+        if action == "dsh-mcp-disable":
+            return self.bridge._disable_dsh_mcp()
         if action == "codex-mcp-enable":
             return self.bridge._enable_mcp()
         if action == "codex-mcp-disable":

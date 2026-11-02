@@ -273,6 +273,7 @@ Object.assign(HarnessDesktop.components, {
   executorCard,
   codexCliCard,
   codexMcpCard,
+  dshMcpCard,
 });
 function executorCard(current) {
   const card = el("section", "panel");
@@ -577,6 +578,74 @@ function codexMcpCard(initial) {
       statusLine.className = "error small";
       statusLine.textContent = "读取状态失败：" + e.message;
       action.disabled = false;
+    }
+  }
+  card.refresh = load;
+  paint(initial);
+  if (!initial) load();
+  return card;
+}
+function dshMcpCard(initial) {
+  const card = el("section", "panel"),
+    statusLine = el("p", "muted small", "正在读取连接状态…"),
+    controls = el("div", "setting-row");
+  statusLine.style.overflowWrap = "anywhere";
+  const action = button(
+    "连接到 DeepSeek Harness",
+    async () => {
+      const connected = !!card.state?.enabled && !!card.state?.configured;
+      action.disabled = true;
+      try {
+        const state = await api(
+          connected ? "dsh-mcp-disable" : "dsh-mcp-enable",
+        );
+        notify(
+          connected
+            ? "已断开 DeepSeek Harness 协作连接。"
+            : "已连接；DeepSeek Harness 的会话现在可以使用协作工具。",
+        );
+        paint(state);
+      } catch (e) {
+        notify("DeepSeek Harness 协作连接失败：" + e.message, true);
+      } finally {
+        action.disabled = false;
+      }
+    },
+    "primary",
+  );
+  controls.append(action);
+  card.append(
+    el("h2", "", "在 DeepSeek Harness 中使用协作"),
+    statusLine,
+    controls,
+  );
+  note(
+    card,
+    "在本机 DeepSeek Harness 的 home 配置里登记一个 stdio MCP 服务，不开放端口，也不读取密钥。Harness 只增删自己标记的两行，不会改写其它配置；被派发的 Agent 任务会关闭这个入口。",
+  );
+  function paint(state) {
+    if (state) card.state = state;
+    const s = card.state || {};
+    const connected = !!s.enabled && !!s.configured;
+    action.textContent = connected
+      ? "断开 DeepSeek Harness"
+      : s.configured
+        ? "重新连接"
+        : "连接到 DeepSeek Harness";
+    statusLine.className = s.configured ? "muted small" : "error small";
+    statusLine.textContent = s.configured
+      ? "已启用 · " + (s.path || "home 配置")
+      : s.enabled
+        ? "已授权，但配置中缺少入口；请重新连接"
+        : "未连接";
+  }
+  async function load(state) {
+    if (state) return paint(state);
+    try {
+      paint(await api("dsh-mcp-status"));
+    } catch (e) {
+      statusLine.className = "error small";
+      statusLine.textContent = "读取状态失败：" + e.message;
     }
   }
   card.refresh = load;

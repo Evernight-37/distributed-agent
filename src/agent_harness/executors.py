@@ -333,6 +333,16 @@ def requested_model(root, project_model):
     return project_model
 
 
+def _collaboration_entry_installed():
+    """Whether the home layer registers the Harness collaboration MCP server."""
+    from agent_harness import dsh_mcp
+
+    try:
+        return dsh_mcp.MARKER in dsh_mcp.patch_path().read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
 def _dsh_patch(root, model):
     """The loader patch that pins DSH to this turn's model and permissions.
 
@@ -340,25 +350,37 @@ def _dsh_patch(root, model):
     restated in full: a preset whose sandbox/approval pair matches no composed
     default makes DSH refuse to start.
     """
-    return [
-        {
-            "id": "agent-default-model",
-            "config": {"provider": settings(root).get("provider") or DSH_PROVIDER, "model": model},
-        },
-        # Unattended turns have no answerer; fail closed instead of hanging.
-        {"id": "approval", "config": {"policy": "never"}},
-        {
-            "id": "permission",
-            "config": {
-                "presets": {
-                    name: {"sandbox": name, "approval": "never"}
-                    for name in ("read-only", "workspace-write", "danger-full-access")
-                }
+    from agent_harness import dsh_mcp
+
+    patch = []
+    if _collaboration_entry_installed():
+        # The home layer gives interactive sessions the collaboration tools.
+        # A dispatched agent must not inherit them: the group contract forbids
+        # using MCP unless a task authorizes it, and the server would otherwise
+        # start a second process and add prompt text to every turn.
+        patch.append({"id": dsh_mcp.ENTRY_ID, "disabled": True})
+    patch.extend(
+        [
+            {
+                "id": "agent-default-model",
+                "config": {"provider": settings(root).get("provider") or DSH_PROVIDER, "model": model},
             },
-        },
-        # Let a key stored by the DeepSeek Harness Models page reach headless runs.
-        {"id": "credentials", "disabled": False},
-    ]
+            # Unattended turns have no answerer; fail closed instead of hanging.
+            {"id": "approval", "config": {"policy": "never"}},
+            {
+                "id": "permission",
+                "config": {
+                    "presets": {
+                        name: {"sandbox": name, "approval": "never"}
+                        for name in ("read-only", "workspace-write", "danger-full-access")
+                    }
+                },
+            },
+            # Let a key stored by the DeepSeek Harness Models page reach headless runs.
+            {"id": "credentials", "disabled": False},
+        ]
+    )
+    return patch
 
 
 def _dsh_session_id(thread_id):

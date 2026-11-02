@@ -595,38 +595,128 @@ class AppBridge:
     def _enable_mcp(self):
         self._retry_mcp_revocations()
         configured = self._configured_mcp()
-        path = self._mcp_grant_path()
-        grant = read_json(path)
-        created = False
-        if not grant:
-            created = True
-            delegate = generate_identity()
-            delegate.update(
-                account_id=self.identity["account_id"],
-                chain=approve_delegate(self.identity, delegate["public_key"], MCP_DELEGATE_SCOPES),
-            )
-            grant = {
-                "version": 1,
-                "profile_id": self.profile["id"],
-                "username": self.profile["username"],
-                "identity": delegate,
-                "scopes": list(MCP_DELEGATE_SCOPES),
-                "servers": self._services(),
-                "created_at": time.time(),
-            }
-            path.parent.mkdir(parents=True, exist_ok=True)
-            write_json(path, grant)
-            self._secure(path)
+        _, created = self._ensure_mcp_grant()
         synced = self._sync_mcp_delegate()
         if not synced["registered"]:
             if created:
-                path.unlink(missing_ok=True)
+                self._mcp_grant_path().unlink(missing_ok=True)
             raise RuntimeError("没有协作服务接受 Codex 授权；请先恢复服务连接再重试")
         # Codex owns config serialization. Only create this profile's unique
         # entry, and never replace a same-name entry whose command differs.
         if configured is None:
             self._codex_mcp("add", self._mcp_name(), "--", *self._mcp_launch())
         return {**self._mcp_status(), **synced}
+
+    def _ensure_mcp_grant(self):
+        """Create this profile's capability-scoped delegate once."""
+        path = self._mcp_grant_path()
+        grant = read_json(path)
+        if grant:
+            return grant, False
+        delegate = generate_identity()
+        delegate.update(
+            account_id=self.identity["account_id"],
+            chain=approve_delegate(self.identity, delegate["public_key"], MCP_DELEGATE_SCOPES),
+        )
+        grant = {
+            "version": 1,
+            "profile_id": self.profile["id"],
+            "username": self.profile["username"],
+            "identity": delegate,
+            "scopes": list(MCP_DELEGATE_SCOPES),
+            "servers": self._services(),
+            "created_at": time.time(),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(path, grant)
+        self._secure(path)
+        return grant, True
+
+    def _dsh_mcp_name(self):
+        from agent_harness import dsh_mcp
+
+        return dsh_mcp.server_name(self._mcp_name())
+
+    def _dsh_mcp_probe(self):
+        """Fail unless DeepSeek Harness can still compose its profile tree."""
+        import subprocess
+
+        from agent_harness import executors
+
+        status = executors.status_of(self._runtime().root, executors.DSH)
+        if not status.get("found"):
+            # Nothing to prove with; the entry stays editable from the UI.
+            return
+        result = subprocess.run(
+            [status["path"], "--profile", "headless", "--dump-config"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode:
+            detail = (result.stderr or result.stdout or "").strip().splitlines()
+            raise RuntimeError(detail[-1][:300] if detail else "配置无法加载")
+
+    def _dsh_mcp_status(self):
+        from agent_harness import dsh_mcp
+
+        grant = read_json(self._mcp_grant_path())
+        try:
+            launch = self._mcp_launch()
+        except (OSError, PermissionError, RuntimeError, ValueError):
+            launch = None
+        state = dsh_mcp.status(launch=launch, name=self._dsh_mcp_name())
+        return {
+            "enabled": bool(grant),
+            "configured": state["installed"],
+            "stale": state["stale"],
+            "path": state["path"],
+        }
+
+    def _enable_dsh_mcp(self):
+        from agent_harness import dsh_mcp
+
+        self._retry_mcp_revocations()
+        _, created = self._ensure_mcp_grant()
+        synced = self._sync_mcp_delegate()
+        if not synced["registered"]:
+            if created:
+                self._mcp_grant_path().unlink(missing_ok=True)
+            raise RuntimeError("没有协作服务接受 DeepSeek Harness 授权；请先恢复服务连接再重试")
+        installed = dsh_mcp.install(
+            self._dsh_home(),
+            self._mcp_launch(),
+            self._dsh_mcp_name(),
+            probe=self._dsh_mcp_probe,
+        )
+        return {**self._dsh_mcp_status(), **synced, **installed}
+
+    def _disable_dsh_mcp(self):
+        from agent_harness import dsh_mcp
+
+        path = self._mcp_grant_path()
+        grant = read_json(path)
+        warnings = []
+        if grant:
+            public = grant.get("identity", {}).get("public_key")
+            self._queue_mcp_revocation(public, list(dict.fromkeys(grant.get("servers", []))))
+            warnings = self._retry_mcp_revocations()
+        removed = dsh_mcp.remove(self._dsh_home())
+        path.unlink(missing_ok=True)
+        return {
+            "enabled": False,
+            "configured": False,
+            "removed": removed["removed"],
+            "warnings": warnings,
+        }
+
+    def _dsh_home(self):
+        from agent_harness import dsh_mcp
+
+        return dsh_mcp.home()
 
     def _disable_mcp(self):
         path = self._mcp_grant_path()

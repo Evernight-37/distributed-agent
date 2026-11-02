@@ -43,6 +43,19 @@ Linux 服务器不要求用户手工照抄安装命令：桌面应用 **账户 �
 
 DeepSeek Harness 的模型与模型服务在 **设置 → 本机执行器** 里指定；留空时使用员工上设置的模型。它没有单独的思考强度参数，这一点在界面上有说明。Harness 不读取、不保存执行器的密钥：Codex 的登录状态通过 `codex login status` 查询，DeepSeek Harness 的密钥由它自己的凭据服务管理。
 
+## 在 DeepSeek Harness 中使用协作
+
+执行器选为 DeepSeek Harness 时，设置页会出现 **在 DeepSeek Harness 中使用协作**，点击“连接到 DeepSeek Harness”即可。
+
+Codex 有 `codex mcp add` 这条官方配置接口，DeepSeek Harness 没有等价命令，因此 Harness 写入的是它自己的 home 补丁层：`$DSH_HOME/cordis.patch.yml`（默认 `~/.dsh/cordis.patch.yml`），该层对你的所有 DSH profile 生效。因为这是你自己的配置文件，写入是受控的：
+
+- 只增删 Harness 自己标记的两行（一行注释、一行 JSON 条目），其它内容逐字节保留；
+- 写入前保留 `cordis.patch.yml.agent-harness.bak`，断开连接会把文件恢复原样；
+- 写完立刻用 `dsh --profile headless --dump-config` 验证一次，加载不通过就自动回滚；
+- 如果该文件不是顶层块状列表（例如整体是 flow 风格），Harness 拒绝改写并给出可粘贴的片段。
+
+被派发的 Agent 任务会在本轮补丁里显式关闭这个入口：Agent 不该拿到协作工具，也不需要为每一轮多启动一个进程。
+
 ## 在 Codex 中协作
 
 登录应用后，打开 **设置 → 在 Codex 中使用协作**，点击“连接到 Codex”。此后可以在普通 Codex 对话中列出 Harness 项目、读取有权查看的会话、发送消息，以及给自己名下的 Agent 派发异步任务。
