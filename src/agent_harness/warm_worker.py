@@ -66,6 +66,7 @@ def response_schema():
     return obj(
         {
             "reply": {"type": "string"},
+            "attachments": array({"path": {"type": "string"}}),
             "done": {"type": "boolean"},
             "messages": array({"recipient": {"type": ["string", "null"]}, "body": {"type": "string"}}),
             "tasks": array(

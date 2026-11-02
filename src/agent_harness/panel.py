@@ -230,7 +230,8 @@ def handler_for(root, backend=None, public_origin=None):
                     if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                         raise ValueError("Expected JSON")
                     size = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < size <= 524288:
+                    limit = 8 * 1024 * 1024 if self.path == "/api/device/task-attachment" else 524288
+                    if not 0 < size <= limit:
                         raise ValueError("Invalid body size")
                     data = json.loads(self.rfile.read(size).decode("utf-8"))
                     if not isinstance(data, dict):

@@ -15,6 +15,7 @@ from unittest.mock import patch
 from scripts.prepare_python_runtime import PYTHON_VERSION, artifact, prepare, validate_runtime, verify_archive
 
 
+@unittest.skipIf(sys.platform == "win32", "Standalone release runtime is used by macOS and Linux builders")
 class StandalonePythonTests(unittest.TestCase):
     def cached_runtime(self, directory):
         root = Path(directory).resolve() / "runtime"

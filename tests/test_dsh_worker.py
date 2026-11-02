@@ -65,14 +65,17 @@ if mode == "error":
     print(json.dumps({"type": "final", "text": ""}))
     sys.exit(1)
 
-reply = json.dumps({
+reply_object = {
     "reply": "done from dsh",
     "done": True,
     "messages": [],
     "tasks": [],
     "executions": [],
     "memory_notes": ["a durable fact"],
-}, ensure_ascii=False)
+}
+if mode == "attachment":
+    reply_object["attachments"] = [{"path": "report.txt"}]
+reply = json.dumps(reply_object, ensure_ascii=False)
 print(json.dumps({"type": "status", "phase": "turn_end", "turn": 1, "reason": {"kind": "completed"}}))
 print(json.dumps({"type": "final", "text": reply}))
 sys.exit(0)
@@ -217,6 +220,16 @@ class DshWorkerTurnTests(unittest.TestCase):
         self.assertEqual(state["status"], "needs_review")
         session = read_json(self.root / "projects" / "demo" / "channels" / "chat1.json")
         self.assertEqual(session["thread_id"], state["thread_id"])
+
+    def test_managed_dsh_turn_keeps_attachment_request_for_receiver(self):
+        job = self._job(channel="chat1")
+        with mock.patch.dict(os.environ, {"FAKE_DSH_MODE": "attachment"}):
+            worker.run("job1")
+        self.assertEqual(read_json(job / "state.json")["status"], "needs_review")
+        self.assertEqual(
+            json.loads((job / "report.txt").read_text(encoding="utf-8"))["attachments"], [{"path": "report.txt"}]
+        )
+        self.assertIn("attachments:", (job / "prompt.txt").read_text(encoding="utf-8"))
 
     def test_failed_turn_translates_the_provider_error(self):
         job = self._job()

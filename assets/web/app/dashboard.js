@@ -111,6 +111,63 @@ function renderDashboard() {
   cols.append(right, left);
   c.append(cols);
   renderApprovals(c);
+  renderAttachmentApprovals(c);
+}
+
+function renderAttachmentApprovals(parent) {
+  const requests = S.dash.attachment_approvals || [];
+  if (!requests.length) return;
+  const panel = el("section", "panel");
+  panel.style.marginTop = "24px";
+  panel.append(el("h2", "", "等待你的附件发送批准"));
+  requests.forEach((request) => {
+    const row = el("div", "setting-row"),
+      info = el("div");
+    info.append(
+      el("strong", "", `${request.agent_name} · ${request.project_name}`),
+      el(
+        "p",
+        "muted small",
+        `${request.manifest.length} 个文件 · ${deviceName(request.node, request.server)}`,
+      ),
+    );
+    row.append(
+      info,
+      button("审阅", () =>
+        modal("批准 Agent 发送附件", (body, actions) => {
+          body.append(
+            el(
+              "p",
+              "muted small",
+              `项目：${request.project_name} · Agent：${request.agent_name} · 发送到：${request.destination}`,
+            ),
+          );
+          request.manifest.forEach((file) => {
+            body.append(el("p", "", `${file.path} · ${fileSize(file.size)}`));
+          });
+          note(
+            body,
+            "批准后，目标机器会再次核对文件内容；文件有变化时不会发送。",
+          );
+          const decide = async (approve) => {
+            await api("attachment-decide", {
+              id: request.id,
+              approve,
+              server: request.server,
+            });
+            closeModal();
+            await refresh(true);
+          };
+          actions.append(
+            button("拒绝", () => decide(false)),
+            button("批准发送", () => decide(true), "primary"),
+          );
+        }),
+      ),
+    );
+    panel.append(row);
+  });
+  parent.append(panel);
 }
 
 function newProject() {
@@ -352,6 +409,20 @@ function employeeSettings(e) {
       ["false", "关闭"],
       ["true", "仅允许 linked worktree 且限制变更文件"],
     ]);
+    const attachmentPolicy = field(
+      b,
+      "附件发送权限",
+      e.attachment_policy || "ask",
+      [
+        ["ask", "请求批准"],
+        ["auto", "帮我批准"],
+        ["full", "完全访问权限"],
+      ],
+    );
+    note(
+      b,
+      "此设置控制 Agent 将当前项目工作目录中的文件作为聊天附件发送。目录外文件始终不能自动发送。",
+    );
     note(
       b,
       "模型与执行权限由目标机器应用。工作目录改为在项目派遣页面按机器设置，不再属于某个员工。",
@@ -370,6 +441,7 @@ function employeeSettings(e) {
             stages: stages.filter(([, c]) => c.checked).map(([s]) => s),
             timeout: Number(timeout.value),
             strict_worktree: strict.value === "true",
+            attachment_policy: attachmentPolicy.value,
           });
           closeModal();
           notify("设置请求已提交，等待目标设备应用。");

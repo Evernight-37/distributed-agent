@@ -158,6 +158,7 @@ _STAGES = {
 
 
 DESKTOP_FIELDS = {
+    "attachment-decide": {"server": _TEXT(2048), "id": _ID, "approve": {"type": "boolean"}},
     "attachment-upload": {"project": _ID, "name": _TEXT(120), "base64": _TEXT(16_000_000)},
     "attachment-get": {"project": _ID, "id": _ID},
     "attachment-save": {"project": _ID, "id": _ID},
@@ -235,6 +236,7 @@ DESKTOP_CONTROL = BoundaryContract(
             "app-exit",
             "app-services",
             "approve-execution",
+            "attachment-decide",
             "attachment-get",
             "attachment-save",
             "attachment-upload",
@@ -308,6 +310,7 @@ DESKTOP_CONTROL = BoundaryContract(
     ),
     required_fields={
         "approve-execution": frozenset({"job_id"}),
+        "attachment-decide": frozenset({"server", "id", "approve"}),
         "attachment-get": frozenset({"project", "id"}),
         "attachment-save": frozenset({"project", "id"}),
         "attachment-upload": frozenset({"project", "name", "base64"}),

@@ -314,6 +314,79 @@ class AccountBackend:
                 )
 
     def _operation(self, user, public, op, p, delegate_scopes=None):
+        if op == "attachment-approvals":
+            with self.store.connect() as db:
+                rows = db.execute(
+                    "SELECT a.*,p.name AS project_name,g.name AS agent_name,t.contract AS task_contract "
+                    "FROM attachment_approvals a JOIN projects p ON p.id=a.project_id "
+                    "JOIN agents g ON g.id=a.agent_id JOIN pull_jobs j ON j.id=a.job_id "
+                    "LEFT JOIN tasks t ON t.job=a.job_id "
+                    "WHERE a.owner_id=? AND a.state='pending' AND j.cancel_requested=0 "
+                    "AND j.state NOT IN ('needs_review','completed','failed','cancelled','timed_out','interrupted') "
+                    "ORDER BY a.created_at",
+                    (user,),
+                ).fetchall()
+                requests = []
+                for row in rows:
+                    contract = json.loads(row["task_contract"] or "{}")
+                    recipient = contract.get("reply_to") if contract.get("private_turn") else None
+                    target = "项目群聊"
+                    if recipient:
+                        person = db.execute("SELECT username FROM users WHERE id=?", (recipient,)).fetchone()
+                        target = "与 " + (person["username"] if person else "成员") + " 的私聊"
+                    requests.append(
+                        {
+                            key: row[key]
+                            for key in (
+                                "id",
+                                "job_id",
+                                "project_id",
+                                "project_name",
+                                "agent_id",
+                                "agent_name",
+                                "node",
+                                "digest",
+                                "created_at",
+                            )
+                        }
+                        | {"manifest": json.loads(row["manifest"]), "destination": target}
+                    )
+                return {"requests": requests}
+        if op == "attachment-decide":
+            approval_id, approve = p.get("id"), p.get("approve")
+            if not isinstance(approval_id, str) or not isinstance(approve, bool):
+                raise ValueError("无效的附件批准决定")
+            with self.store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT * FROM attachment_approvals WHERE id=? AND owner_id=?", (approval_id, user)
+                ).fetchone()
+                if not row:
+                    raise PermissionError("附件请求不存在或不属于当前账户")
+                desired = "approved" if approve else "rejected"
+                if row["state"] != "pending":
+                    if row["state"] != desired:
+                        raise PermissionError("附件请求已经处理或结束")
+                else:
+                    job = db.execute(
+                        "SELECT state,cancel_requested FROM pull_jobs WHERE id=?", (row["job_id"],)
+                    ).fetchone()
+                    if (
+                        not job
+                        or job["state"]
+                        in {"needs_review", "completed", "failed", "cancelled", "timed_out", "interrupted"}
+                        or job["cancel_requested"]
+                    ):
+                        db.execute(
+                            "UPDATE attachment_approvals SET state='closed',updated_at=? WHERE id=?",
+                            (time.time(), approval_id),
+                        )
+                        raise PermissionError("任务已结束或已取消")
+                    db.execute(
+                        "UPDATE attachment_approvals SET state=?,updated_at=? WHERE id=?",
+                        (desired, time.time(), approval_id),
+                    )
+                return {"id": approval_id, "state": desired, "digest": row["digest"]}
         if op == "health-status":
             return self.store.health_status()
         if op == "events-wait":

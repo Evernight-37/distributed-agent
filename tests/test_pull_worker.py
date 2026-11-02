@@ -268,6 +268,24 @@ class PullWorkerTests(unittest.TestCase):
         self.assertEqual(len(self.starts()), 1)
         self.assertEqual(self.reports[-1]["state"], "needs_review")
 
+    def test_cancel_while_attachment_approval_pending_does_not_post_reply(self):
+        job = self.job("attachment-wait")
+        receipt = self.connector.accept(job)
+        receipt.update(
+            phase="waiting_attachment_approval",
+            result={
+                "status": "needs_review",
+                "report": json.dumps({"reply": "unsent", "attachments": [{"path": "file.txt"}]}),
+            },
+            attachment_approval={"id": "approval", "digest": "digest"},
+        )
+        write_json(self.connector.receipt_path(job["id"]), receipt)
+        self.jobs = [job]
+        self.cancellations = [job["id"]]
+        self.connector.cycle()
+        self.assertEqual(self.reports[-1]["state"], "cancelled")
+        self.assertNotIn("report", self.reports[-1]["result"])
+
     def test_crash_launch_receipt_reconciles_instead_of_resubmitting(self):
         job = self.job("ambiguous")
         receipt = self.connector.accept(job)

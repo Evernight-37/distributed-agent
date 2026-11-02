@@ -14,7 +14,7 @@ from pathlib import Path
 from agent_harness.common import lock
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 BACKUP_RETENTION = 5
 
 
@@ -131,6 +131,24 @@ CREATE TABLE IF NOT EXISTS project_workspaces(
     updated_at REAL NOT NULL,
     PRIMARY KEY(project_id,node)
 );
+"""
+
+SCHEMA_V5 = """
+CREATE TABLE IF NOT EXISTS attachment_approvals(
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL UNIQUE,
+    owner_id TEXT NOT NULL,
+    node TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    manifest TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('pending','approved','rejected','closed')),
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS attachment_approvals_owner
+    ON attachment_approvals(owner_id,state,created_at);
 """
 
 
@@ -309,9 +327,14 @@ def migrate_database(database, backup_root=None):
     with lock(database.with_suffix(database.suffix + ".migration.lock")):
         with closing(_open(database)) as connection:
             current = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            layout_current = _v4_layout_current(connection) if current >= 4 else False
             if current > SCHEMA_VERSION:
                 raise RuntimeError(f"协作数据库版本 {current} 高于当前程序支持的 {SCHEMA_VERSION}；请升级应用")
-            if current == SCHEMA_VERSION and _v4_layout_current(connection):
+            if (
+                current == SCHEMA_VERSION
+                and layout_current
+                and connection.execute("SELECT 1 FROM sqlite_master WHERE name='attachment_approvals'").fetchone()
+            ):
                 _integrity(connection)
                 _private(database)
                 return {
@@ -320,7 +343,7 @@ def migrate_database(database, backup_root=None):
                     "backup": None,
                     "migrated": False,
                 }
-        rewrite_v4 = current == SCHEMA_VERSION
+        rewrite_v4 = current >= 4 and not layout_current
         if existed and (current < SCHEMA_VERSION or rewrite_v4):
             backup = _backup(database, backup_root, current, SCHEMA_VERSION)
         with closing(_open(database)) as connection:
@@ -388,6 +411,20 @@ def migrate_database(database, backup_root=None):
                         (4, time.time()),
                     )
                     connection.execute("PRAGMA user_version=4")
+                if (
+                    current < 5
+                    or not connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='attachment_approvals'"
+                    ).fetchone()
+                ):
+                    for statement in SCHEMA_V5.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+                        (5, time.time()),
+                    )
+                    connection.execute("PRAGMA user_version=5")
                 connection.commit()
                 _integrity(connection)
                 connection.execute("PRAGMA journal_mode=WAL")
