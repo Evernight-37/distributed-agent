@@ -435,7 +435,8 @@ class ApplyTests(unittest.TestCase):
             self._stage(folder)
             updates.apply(folder, target=app, spawn=lambda: FakeChild())
             marker = updates.apply_state(folder)
-            self.assertEqual(marker["layout"], "portable")
+            expected_layout = "bundle" if sys.platform == "darwin" else "portable"
+            self.assertEqual(marker["layout"], expected_layout)
             text = Path(marker["helper"]).read_text(encoding="utf-8")
             if os.name == "nt":
                 self.assertIn("Expand-Archive", text)
