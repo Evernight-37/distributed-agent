@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -202,6 +203,10 @@ class AssetTests(unittest.TestCase):
 
     def test_layout_is_read_from_where_the_application_lives(self):
         with tempfile.TemporaryDirectory() as folder:
+            if sys.platform == "darwin":
+                # macOS copies are always replaced as a whole bundle.
+                self.assertEqual(updates.install_layout(folder), "bundle")
+                return
             self.assertEqual(updates.install_layout(folder), "portable")
             if os.name != "nt":
                 return
