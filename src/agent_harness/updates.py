@@ -188,24 +188,54 @@ TAG_API = "https://api.github.com/repos/" + REPOSITORY + "/releases/tags/"
 PENDING_DIR = "updates"
 
 
-def asset_name(version, system=None, machine=None):
-    """The artifact this machine would install, for one version."""
-    import platform
+def install_layout(bundle=None):
+    """How this copy of the application is installed.
+
+    ``installed`` means the per-user Inno install (``%LOCALAPPDATA%``); anything
+    else is an unpacked portable directory, which must be updated by unpacking a
+    zip over it rather than by running the installer.
+    """
+    import os
+
+    if system_platform() == "darwin":
+        return "bundle"
+    if os.name != "nt":
+        return "portable"
+    base = os.environ.get("LOCALAPPDATA")
+    if not base:
+        return "portable"
+    from agent_harness.service_install import application_bundle
+
+    expected = (Path(base) / "AgentHarness" / "app").resolve()
+    actual = Path(bundle or application_bundle()).resolve()
+    return "installed" if actual == expected else "portable"
+
+
+def system_platform():
     import sys
 
-    system = system or sys.platform
+    return sys.platform
+
+
+def asset_name(version, system=None, machine=None, layout=None):
+    """The artifact this machine would install, for one version."""
+    import platform
+
+    system = system or system_platform()
     machine = (machine or platform.machine() or "").lower()
     version = str(version).lstrip("v")
     if system in ("win32", "windows"):
+        if layout == "portable":
+            return "AgentHarness-%s-windows-x64.zip" % version
         return "AgentHarness-%s-windows-x64-setup.exe" % version
     if system == "darwin":
         return "AgentHarness-%s-macos-%s.zip" % (version, "arm64" if machine in {"arm64", "aarch64"} else "x64")
     return "AgentHarness-%s-linux-%s.tar.gz" % (version, "arm64" if machine in {"aarch64", "arm64"} else "x64")
 
 
-def select_asset(assets, version, system=None, machine=None):
+def select_asset(assets, version, system=None, machine=None, layout=None):
     """Pick this machine's artifact and the checksum published beside it."""
-    wanted = asset_name(version, system, machine)
+    wanted = asset_name(version, system, machine, layout)
     found = None
     checksum_url = None
     if not isinstance(assets, list):
@@ -359,14 +389,16 @@ def discard(root):
     return {"discarded": True}
 
 
-def download(root, tag=None, fetch=None, opener=None, timeout=30, progress=None, system=None, machine=None):
+def download(
+    root, tag=None, fetch=None, opener=None, timeout=30, progress=None, system=None, machine=None, layout=None
+):
     """Download, verify and stage one release artifact (blocking)."""
     document = load(root)
     version = tag or document.get("latest_version")
     if not version:
         raise ValueError("还没有检查到可下载的版本")
     release = (fetch or fetch_release)(version)
-    asset = select_asset(release.get("assets"), version, system, machine)
+    asset = select_asset(release.get("assets"), version, system, machine, layout)
     sha256 = asset["sha256"]
     if not sha256 and asset.get("checksum_url"):
         sha256 = _read_checksum(asset["checksum_url"], opener, timeout)
@@ -476,6 +508,38 @@ def windows_helper(installer, target, pid):
     ).format(pid=int(pid), installer=installer, target=target)
 
 
+def windows_zip_helper(archive, target, launcher, pid):
+    """Windows portable layout: unpack the zip over the directory, then relaunch.
+
+    A portable copy has no installer to run, so the only honest update is to put
+    the new files where the old ones were. Files removed in the new version are
+    not deleted; that is a known limitation of overwriting in place.
+    """
+    newline = chr(13) + chr(10)
+    extraction = (
+        "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+        "\"Expand-Archive -LiteralPath '{archive}' -DestinationPath '{target}' -Force\""
+    )
+    return (
+        newline.join(
+            [
+                "@echo off",
+                "setlocal",
+                ":wait_for_exit",
+                'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
+                "if not errorlevel 1 (",
+                "  timeout /t 1 /nobreak >nul",
+                "  goto wait_for_exit",
+                ")",
+                extraction,
+                'start "" "{launcher}"',
+                "exit /b 0",
+            ]
+        )
+        + newline
+    ).format(pid=int(pid), archive=archive, target=target, launcher=launcher)
+
+
 def unix_helper(archive, target, pid):
     """A sh script that waits for the caller, unpacks the zip, then reopens."""
     return (
@@ -510,15 +574,35 @@ def _prune_helpers(root, keep=None):
             path.unlink(missing_ok=True)
 
 
-def write_helper(root, version, installer, target, pid):
+def apply_target(bundle=None):
+    """The path the launcher replaces, and the program it starts afterwards."""
+    import sys
+
+    if system_platform() == "darwin":
+        executable = Path(bundle or sys.executable).resolve()
+        for parent in executable.parents:
+            if parent.suffix == ".app":
+                return parent, executable
+        return executable.parent, executable
+    from agent_harness.service_install import application_bundle
+
+    directory = Path(bundle or application_bundle()).resolve()
+    return directory, directory / "AgentHarness.exe"
+
+
+def write_helper(root, version, installer, target, pid, layout=None, launcher=None):
     """Write the launcher for one apply; returns its path."""
     import os
 
+    layout = layout or install_layout(target)
+    launcher = launcher or target
     _prune_helpers(root)
     path = helper_path(root, version)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if os.name == "nt":
-        text = windows_helper(str(installer), str(target), pid)
+    if os.name == "nt" and layout == "installed":
+        text = windows_helper(str(installer), str(launcher), pid)
+    elif os.name == "nt":
+        text = windows_zip_helper(str(installer), str(target), str(launcher), pid)
     else:
         text = unix_helper(str(installer), str(target), pid)
     path.write_text(text, encoding="utf-8", newline="")
@@ -567,12 +651,10 @@ def apply(root, installer=None, version=None, target=None, pid=None, force=False
         if active and not force:
             raise ValueError("正在进行的任务会中断：" + "、".join(active[:3]))
     to_version = str(version or record.get("version") or "").lstrip("v")
-    if target is None:
-        from agent_harness.desktop_runtime import application_bundle
-
-        target = str(application_bundle())
+    target, launcher = apply_target(target)
+    layout = install_layout(target)
     pid = pid or os.getpid()
-    script = write_helper(root, to_version, installer_path, target, pid)
+    script = write_helper(root, to_version, installer_path, target, pid, layout=layout, launcher=launcher)
     write_json(
         apply_marker_path(root),
         {
@@ -581,6 +663,7 @@ def apply(root, installer=None, version=None, target=None, pid=None, force=False
             "installer": str(installer_path),
             "helper": str(script),
             "target": str(target),
+            "layout": layout,
             "requested_at": time.time(),
         },
     )
