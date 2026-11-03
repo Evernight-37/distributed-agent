@@ -428,3 +428,201 @@ def start_download(root, **kwargs):
 
     threading.Thread(target=run, name="update-download", daemon=True).start()
     return download_state(root)
+
+
+# --- applying a staged artifact -------------------------------------------
+#
+# Replacing an installed application cannot happen from inside it: on Windows a
+# running executable cannot be overwritten, and on macOS the bundle is open. The
+# application therefore writes a small launcher *outside* the install directory
+# (the data root survives upgrades) and exits; the launcher waits for the
+# process to disappear, installs, and starts the new version again.
+#
+# Nothing here downloads anything: the caller passes an already verified file.
+
+APPLY_MARKER = "applied.json"
+
+
+def apply_marker_path(root):
+    return Path(root) / PENDING_DIR / APPLY_MARKER
+
+
+def helper_path(root, version):
+    system = __import__("sys").platform
+    suffix = ".cmd" if system in ("win32", "windows") else ".sh"
+    return Path(root) / PENDING_DIR / ("apply-" + str(version).lstrip("v") + suffix)
+
+
+def windows_helper(installer, target, pid):
+    """A .cmd that waits for the caller, installs silently, then relaunches."""
+    newline = chr(13) + chr(10)
+    return (
+        newline.join(
+            [
+                "@echo off",
+                "setlocal",
+                ":wait_for_exit",
+                'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
+                "if not errorlevel 1 (",
+                "  timeout /t 1 /nobreak >nul",
+                "  goto wait_for_exit",
+                ")",
+                'call "{installer}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
+                'start "" "{target}"',
+                "exit /b 0",
+            ]
+        )
+        + newline
+    ).format(pid=int(pid), installer=installer, target=target)
+
+
+def unix_helper(archive, target, pid):
+    """A sh script that waits for the caller, unpacks the zip, then reopens."""
+    return (
+        chr(10).join(
+            [
+                "#!/bin/sh",
+                "while kill -0 {pid} 2>/dev/null; do sleep 1; done",
+                "staging=$(mktemp -d) || exit 1",
+                'if ! ditto -x -k "{archive}" "$staging" 2>/dev/null; then',
+                '  unzip -q "{archive}" -d "$staging" || exit 1',
+                "fi",
+                'bundle=$(find "$staging" -maxdepth 1 -name "*.app" | head -n 1)',
+                'if [ -z "$bundle" ]; then rm -rf "$staging"; exit 1; fi',
+                'rm -rf "{target}" && cp -R "$bundle" "{target}"',
+                'open "{target}"',
+                'rm -rf "$staging"',
+            ]
+        )
+        + chr(10)
+    ).format(pid=int(pid), archive=archive, target=target)
+
+
+def _prune_helpers(root, keep=None):
+    """Delete launchers from previous applies; they never run twice."""
+    directory = pending_dir(root)
+    if not directory.is_dir():
+        return
+    for path in directory.glob("apply-*"):
+        if keep is not None and path == keep:
+            continue
+        if path.suffix in {".cmd", ".sh"}:
+            path.unlink(missing_ok=True)
+
+
+def write_helper(root, version, installer, target, pid):
+    """Write the launcher for one apply; returns its path."""
+    import os
+
+    _prune_helpers(root)
+    path = helper_path(root, version)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        text = windows_helper(str(installer), str(target), pid)
+    else:
+        text = unix_helper(str(installer), str(target), pid)
+    path.write_text(text, encoding="utf-8", newline="")
+    if os.name != "nt":
+        path.chmod(0o700)
+    return path
+
+
+def apply_state(root):
+    """Whether a previous apply is waiting to be confirmed by the next start."""
+    record = read_json(apply_marker_path(root), None)
+    if not isinstance(record, dict) or not record.get("to_version"):
+        return None
+    return record
+
+
+def mark_running(root):
+    """Confirm the applied version is the one now running, then forget it."""
+    record = apply_state(root)
+    if not record:
+        return None
+    if str(record.get("to_version")).lstrip("v") == str(application_version()).lstrip("v"):
+        apply_marker_path(root).unlink(missing_ok=True)
+        return {"confirmed": True, "version": record.get("to_version")}
+    apply_marker_path(root).unlink(missing_ok=True)
+    return {"confirmed": False, "expected": record.get("to_version"), "running": application_version()}
+
+
+def apply(root, installer=None, version=None, target=None, pid=None, force=False, busy=None, spawn=None):
+    """Launch the helper that installs a verified artifact after this exits."""
+    import os
+    import subprocess
+
+    record = staged(root) if installer is None else {"file": Path(installer).name, "version": version}
+    if not record:
+        raise ValueError("没有已下载并校验的更新")
+    installer_path = Path(installer) if installer else pending_dir(root) / record["file"]
+    if not installer_path.is_file():
+        raise ValueError("安装包不存在，请重新下载")
+    if installer is None:
+        problem = verify_staged(root)
+        if problem:
+            raise ValueError(problem)
+    if busy:
+        active = [item for item in busy() if item]
+        if active and not force:
+            raise ValueError("正在进行的任务会中断：" + "、".join(active[:3]))
+    to_version = str(version or record.get("version") or "").lstrip("v")
+    if target is None:
+        from agent_harness.desktop_runtime import application_bundle
+
+        target = str(application_bundle())
+    pid = pid or os.getpid()
+    script = write_helper(root, to_version, installer_path, target, pid)
+    write_json(
+        apply_marker_path(root),
+        {
+            "from_version": application_version(),
+            "to_version": to_version,
+            "installer": str(installer_path),
+            "helper": str(script),
+            "target": str(target),
+            "requested_at": time.time(),
+        },
+    )
+    if spawn is None:
+        if os.name == "nt":
+            flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_GROUP | NO_WINDOW
+            command = ["cmd.exe", "/c", str(script)]
+            spawn = lambda: subprocess.Popen(  # noqa: E731
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=flags,
+                close_fds=True,
+            )
+        else:
+            command = ["/bin/sh", str(script)]
+            spawn = lambda: subprocess.Popen(  # noqa: E731
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+    try:
+        child = spawn()
+    except Exception:
+        # No launcher means no apply: never leave a marker that would make the
+        # next start believe an update is waiting.
+        apply_marker_path(root).unlink(missing_ok=True)
+        raise
+    return {"started": True, "helper": str(script), "pid": child.pid, "version": to_version}
+
+
+def rollback(root, force=False, busy=None):
+    """Download and apply the release that was running before the last apply."""
+    record = apply_state(root)
+    if not record or not record.get("from_version"):
+        raise ValueError("没有可以回退的上一个版本")
+    previous = str(record["from_version"])
+    if str(previous).lstrip("v") == str(application_version()).lstrip("v"):
+        raise ValueError("当前已经运行在这个版本上")
+    downloaded = download(root, tag="v" + previous.lstrip("v"))
+    return apply(root, version=downloaded["version"], force=force, busy=busy)

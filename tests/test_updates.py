@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -299,6 +300,146 @@ class DownloadTests(unittest.TestCase):
             self.assertIsNone(updates.verify_staged(folder))
             (updates.pending_dir(folder) / record["file"]).write_bytes(b"swapped")
             self.assertIn("不一致", updates.verify_staged(folder))
+
+
+class HelperTests(unittest.TestCase):
+    def test_the_windows_launcher_waits_installs_and_relaunches(self):
+        text = updates.windows_helper(r"C:\data\setup.exe", r"C:\app\AgentHarness.exe", 4321)
+        self.assertIn('tasklist /FI "PID eq 4321"', text)
+        self.assertIn('call "C:\\data\\setup.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART', text)
+        self.assertIn('start "" "C:\\app\\AgentHarness.exe"', text)
+        self.assertIn("goto wait_for_exit", text)
+        self.assertTrue(text.endswith("\r\n"))
+
+    def test_previous_launchers_are_pruned(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder) / "updates" / "pending"
+            directory.mkdir(parents=True)
+            old = directory / "apply-2.1.0.cmd"
+            old.write_text("old", encoding="utf-8")
+            keep = updates.write_helper(folder, "2.2.0", "setup.exe", "app", 1)
+            self.assertFalse(old.exists())
+            self.assertTrue(keep.is_file())
+
+    def test_the_unix_launcher_waits_unpacks_and_reopens(self):
+        text = updates.unix_helper("/tmp/new.zip", "/Applications/AgentHarness.app", 99)
+        self.assertIn("while kill -0 99", text)
+        self.assertIn('unzip -q "/tmp/new.zip"', text)
+        self.assertIn('open "/Applications/AgentHarness.app"', text)
+
+    def test_the_launcher_is_written_outside_the_install_directory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = updates.write_helper(folder, "v2.2.0", "setup.exe", "app", 1234)
+            self.assertTrue(path.is_file())
+            self.assertIn(str(Path(folder)), str(path))
+
+
+class FakeChild:
+    pid = 4242
+
+
+class ApplyTests(unittest.TestCase):
+    def _stage(self, folder, data=b"installer"):
+        import hashlib
+
+        directory = updates.pending_dir(folder)
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / "AgentHarness-2.2.0-windows-x64-setup.exe"
+        target.write_bytes(data)
+        write_json(
+            directory / "meta.json",
+            {
+                "version": "2.2.0",
+                "file": target.name,
+                "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            },
+        )
+        return target
+
+    def test_apply_refuses_without_a_staged_package(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(ValueError) as raised:
+                updates.apply(folder, target="app", spawn=lambda: FakeChild())
+            self.assertIn("没有已下载", str(raised.exception))
+
+    def test_apply_refuses_a_tampered_package(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = self._stage(folder)
+            target.write_bytes(b"swapped")
+            with self.assertRaises(ValueError) as raised:
+                updates.apply(folder, target="app", spawn=lambda: FakeChild())
+            self.assertIn("不一致", str(raised.exception))
+
+    def test_apply_refuses_while_work_is_running_unless_forced(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self._stage(folder)
+            with self.assertRaises(ValueError) as raised:
+                updates.apply(folder, target="app", busy=lambda: ["文件传输"], spawn=lambda: FakeChild())
+            self.assertIn("会中断", str(raised.exception))
+            started = updates.apply(
+                folder, target="app", busy=lambda: ["文件传输"], force=True, spawn=lambda: FakeChild()
+            )
+            self.assertTrue(started["started"])
+
+    def test_apply_writes_a_launcher_and_a_marker_then_spawns_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self._stage(folder)
+            calls = []
+
+            def spawn():
+                calls.append(1)
+                return FakeChild()
+
+            started = updates.apply(folder, target="app", pid=99, spawn=spawn)
+            self.assertEqual(started["version"], "2.2.0")
+            self.assertEqual(len(calls), 1)
+            marker = updates.apply_state(folder)
+            self.assertEqual(marker["to_version"], "2.2.0")
+            helper = Path(marker["helper"])
+            self.assertTrue(helper.is_file())
+            text = helper.read_text(encoding="utf-8")
+            if os.name == "nt":
+                self.assertIn('tasklist /FI "PID eq 99"', text)
+            else:
+                self.assertIn("while kill -0 99", text)
+
+    def test_a_failed_spawn_leaves_no_marker(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self._stage(folder)
+
+            def spawn():
+                raise OSError("boom")
+
+            with self.assertRaises(OSError):
+                updates.apply(folder, target="app", spawn=spawn)
+            self.assertIsNone(updates.apply_state(folder))
+
+
+class MarkerTests(unittest.TestCase):
+    def _marker(self, folder, to_version):
+        write_json(updates.apply_marker_path(folder), {"from_version": "2.0.0", "to_version": to_version})
+
+    def test_running_the_applied_version_confirms_and_clears_the_marker(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self._marker(folder, updates.application_version())
+            result = updates.mark_running(folder)
+            self.assertTrue(result["confirmed"])
+            self.assertIsNone(updates.apply_state(folder))
+
+    def test_running_another_version_reports_the_mismatch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self._marker(folder, "9.9.9")
+            result = updates.mark_running(folder)
+            self.assertFalse(result["confirmed"])
+            self.assertEqual(result["expected"], "9.9.9")
+            self.assertIsNone(updates.apply_state(folder))
+
+    def test_rollback_needs_a_recorded_previous_version(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(ValueError) as raised:
+                updates.rollback(folder)
+            self.assertIn("没有可以回退", str(raised.exception))
 
 
 if __name__ == "__main__":

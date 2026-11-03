@@ -196,6 +196,8 @@ DESKTOP_FIELDS = {
     },
     "update-status": {"force": {"type": "boolean"}},
     "update-download-status": {},
+    "update-apply": {"force": {"type": "boolean"}},
+    "update-rollback": {"force": {"type": "boolean"}},
     "update-schedule-save": {
         "schedule": {"type": "string", "enum": ["daily", "weekly", "monthly", "never"]},
     },
@@ -313,6 +315,8 @@ DESKTOP_CONTROL = BoundaryContract(
             "update-download",
             "update-download-status",
             "update-discard",
+            "update-apply",
+            "update-rollback",
             "update-schedule-save",
             "update-status",
             "warm-idle-save",

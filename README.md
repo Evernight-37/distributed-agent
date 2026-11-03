@@ -123,7 +123,9 @@ python tests/cleanroom_release.py dist/AgentHarness build/cleanroom
 
 若要同时运行便携包接收端集成测试，请把 `AGENT_HARNESS_TEST_BUNDLE` 指向已构建的 `AgentHarness` 目录，再运行 `python -m unittest tests.test_desktop.PackagedReceiverTests -v`。
 
-运行数据、令牌、密钥、日志、构建缓存和发布包均由 `.gitignore` 排除。发布流水线只负责生成并上传 Windows per-user 安装器、Windows 便携包、Linux x64/ARM64 包和 macOS ZIP；项目不包含平台证书、公证或应用内自动更新体系。用户从项目的 GitHub Releases 手动下载和替换程序，持久数据保存在应用目录之外。
+运行数据、令牌、密钥、日志、构建缓存和发布包均由 `.gitignore` 排除。发布流水线只负责生成并上传 Windows per-user 安装器、Windows 便携包、Linux x64/ARM64 包和 macOS ZIP；项目不包含平台证书、公证或代码签名。
+
+应用内提供可配置的版本检查：设置 → 应用更新 可选每天/每周/每月/从不，只向本仓库的 GitHub Releases 查询最新 tag；发现新版本后可在后台预先把本机对应的安装包下载并校验，安装时先退出应用、替换程序目录、再自动重启。**安装始终需要用户点一次确认**，不会在后台静默替换。安装包完整性用发布页提供的 SHA-256 校验（HTTPS 加发布校验值，防传输损坏与替换，不防"发布者本人"）；项目不持有更新签名密钥，因此不提供无提示自动安装。二进制文件未签名，首次安装时系统可能提示未知发布者。持久数据保存在应用目录之外，升级和回退都不会触碰它。
 
 ## 源码目录
 

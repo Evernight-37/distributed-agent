@@ -112,6 +112,8 @@ class DesktopSettingsActions:
             "update-download",
             "update-download-status",
             "update-discard",
+            "update-apply",
+            "update-rollback",
             "update-schedule-save",
             "update-open",
             "proxy-save",
@@ -139,6 +141,23 @@ class DesktopSettingsActions:
         """The UI cache file for the executor currently in force."""
         kind = self.bridge._executor().get("executor", "codex")
         return self.bridge.root / ("codex-cli.json" if kind == "codex" else "dsh-cli.json")
+
+    def _active_work(self):
+        """Work that replacing the application now would interrupt."""
+        busy = []
+        try:
+            for job in self.bridge.file_transfers.jobs():
+                if job.get("state") in {"running", "hashing", "uploading", "downloading", "verifying"}:
+                    busy.append("文件传输")
+                    break
+        except (OSError, RuntimeError, ValueError):
+            pass
+        for receiver in self._receiver_paths():
+            active = read_json(receiver / "active.json", None)
+            if isinstance(active, dict) and active.get("job"):
+                busy.append("本机 Agent 任务")
+                break
+        return busy
 
     def _cli_status(self):
         from agent_harness.worker import cli_status, codex_login_status
@@ -354,7 +373,11 @@ class DesktopSettingsActions:
         if action == "update-status":
             from agent_harness import updates
 
-            return updates.status(self.bridge.root, force=bool(data.get("force")))
+            # Running at all confirms the version a previous apply installed.
+            confirmed = updates.mark_running(self.bridge.root)
+            state = updates.status(self.bridge.root, force=bool(data.get("force")))
+            state["apply"] = confirmed or updates.apply_state(self.bridge.root)
+            return state
         if action == "update-download":
             from agent_harness import updates
 
@@ -370,6 +393,14 @@ class DesktopSettingsActions:
             from agent_harness import updates
 
             return updates.discard(self.bridge.root)
+        if action == "update-apply":
+            from agent_harness import updates
+
+            return updates.apply(self.bridge.root, force=bool(data.get("force")), busy=self._active_work)
+        if action == "update-rollback":
+            from agent_harness import updates
+
+            return updates.rollback(self.bridge.root, force=bool(data.get("force")), busy=self._active_work)
         if action == "update-schedule-save":
             from agent_harness import updates
 

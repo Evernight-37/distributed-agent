@@ -407,6 +407,19 @@ function updateCard() {
     },
     "primary",
   );
+  const install = button(
+    "安装并重启",
+    async () => {
+      await begin("update-apply", false);
+    },
+    "primary",
+  );
+  const installAnyway = button("仍然安装并重启", async () => {
+    await begin("update-apply", true);
+  });
+  const rollback = button("回到上一版本", async () => {
+    await begin("update-rollback", true);
+  });
   const discard = button("删除已下载的更新", async () => {
     await api("update-discard");
     paintDownload({ status: "idle" });
@@ -415,11 +428,50 @@ function updateCard() {
   const open = button("打开下载页", async () => {
     await api("update-open");
   });
-  fetchButton.classList.add("hidden");
-  discard.classList.add("hidden");
-  open.classList.add("hidden");
-  actions.append(check, fetchButton, discard, open);
+  for (const item of [
+    fetchButton,
+    install,
+    installAnyway,
+    rollback,
+    discard,
+    open,
+  ])
+    item.classList.add("hidden");
+  actions.append(
+    check,
+    fetchButton,
+    install,
+    installAnyway,
+    rollback,
+    discard,
+    open,
+  );
   card.append(schedule, statusLine, actions);
+
+  async function begin(action, force) {
+    for (const item of [install, installAnyway, rollback]) item.disabled = true;
+    try {
+      const result = await api(action, { force });
+      notify(
+        "正在退出并" +
+          (action === "update-rollback" ? "回退" : "安装") +
+          "到 " +
+          result.version +
+          "，应用会自动重启。",
+      );
+      await api("app-exit");
+    } catch (e) {
+      statusLine.className = "error small";
+      statusLine.textContent = e.message;
+      installAnyway.classList.toggle(
+        "hidden",
+        !String(e.message).includes("会中断"),
+      );
+    } finally {
+      install.disabled = false;
+      rollback.disabled = false;
+    }
+  }
 
   let latest = "";
   let poller = null;
@@ -455,8 +507,9 @@ function updateCard() {
         (d.version || latest) +
         "（" +
         megabytes(d.total) +
-        "），SHA-256 已校验。安装会在下一步提供，届时需要你点一次确认。";
+        "），SHA-256 已校验。安装会先退出应用，替换完成后自动重启。";
       fetchButton.classList.add("hidden");
+      install.classList.remove("hidden");
       discard.classList.remove("hidden");
       if (poller) {
         clearInterval(poller);
@@ -510,6 +563,21 @@ function updateCard() {
       statusLine.className = "muted small";
       statusLine.textContent =
         "当前版本 " + (s.current || "未知") + "；尚未到检查时间。";
+    }
+    // A marker left by the previous apply is only reported when the version it
+    // installed is not the one now running.
+    if (s.apply && s.apply.confirmed === false) {
+      statusLine.className = "error small";
+      statusLine.textContent =
+        "上次更新没有生效：期望运行 " +
+        s.apply.expected +
+        "，当前是 " +
+        s.apply.running +
+        "。可以回到之前的版本。";
+      rollback.classList.remove("hidden");
+    } else if (s.apply && s.apply.confirmed === true) {
+      statusLine.className = "muted small";
+      statusLine.textContent = "已更新到 " + s.apply.version + "。";
     }
     if (s.staged) {
       paintDownload({
