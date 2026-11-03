@@ -11,7 +11,23 @@ CURRENT = "2.1.0"
 WEEK = 7 * 86400
 
 
-def fake_fetch(tag="v2.2.0", url="https://github.com/Evernight-37/distributed-agent/releases/tag/v2.2.0"):
+def running_version():
+    return updates.application_version()
+
+
+def next_version():
+    """A version strictly newer than the one this source tree declares."""
+    parts = [int(piece) for piece in running_version().split(".")[:3]]
+    while len(parts) < 3:
+        parts.append(0)
+    parts[1] += 1
+    return "v" + ".".join(str(piece) for piece in parts)
+
+
+def fake_fetch(tag=None, url=None):
+    """A release payload whose page URL matches the tag unless overridden."""
+    tag = tag or next_version()
+    url = url or "https://github.com/Evernight-37/distributed-agent/releases/tag/" + tag
     return lambda timeout=8: {"tag": tag, "url": url}
 
 
@@ -90,18 +106,19 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(result["status"], "idle")
 
     def test_a_newer_release_is_reported(self):
+        newer = next_version()
         with tempfile.TemporaryDirectory() as folder:
-            result = updates.status(folder, force=True, fetch=fake_fetch())
+            result = updates.status(folder, force=True, fetch=fake_fetch(tag=newer))
             self.assertEqual(result["status"], "update")
-            self.assertEqual(result["latest"], "v2.2.0")
-            self.assertIn("releases/tag/v2.2.0", result["url"])
+            self.assertEqual(result["latest"], newer)
+            self.assertIn("releases/tag/" + newer, result["url"])
             stored = read_json(Path(folder) / "updates.json")
-            self.assertEqual(stored["latest_version"], "v2.2.0")
+            self.assertEqual(stored["latest_version"], newer)
             self.assertIn("last_checked", stored)
 
     def test_the_same_release_is_current(self):
         with tempfile.TemporaryDirectory() as folder:
-            result = updates.status(folder, force=True, fetch=fake_fetch(tag="v2.1.0"))
+            result = updates.status(folder, force=True, fetch=fake_fetch(tag="v" + running_version()))
             self.assertEqual(result["status"], "current")
 
     def test_offline_records_only_the_attempt(self):
@@ -123,7 +140,7 @@ class StatusTests(unittest.TestCase):
             document = updates.load(folder)
             document["last_checked"] = 10**9
             updates.save(folder, document)
-            result = updates.status(folder, force=True, now=10**9 + 60, fetch=fake_fetch())
+            result = updates.status(folder, force=True, now=10**9 + 60, fetch=fake_fetch(tag=next_version()))
             self.assertEqual(result["status"], "update")
 
 
