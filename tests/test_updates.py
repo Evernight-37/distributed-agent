@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -191,6 +192,31 @@ class AssetTests(unittest.TestCase):
         self.assertEqual(updates.asset_name("v2.2.0", "darwin", "arm64"), "AgentHarness-2.2.0-macos-arm64.zip")
         self.assertEqual(updates.asset_name("v2.2.0", "linux", "x86_64"), "AgentHarness-2.2.0-linux-x64.tar.gz")
         self.assertEqual(updates.asset_name("v2.2.0", "linux", "aarch64"), "AgentHarness-2.2.0-linux-arm64.tar.gz")
+
+    def test_a_portable_windows_copy_installs_from_the_zip(self):
+        self.assertEqual(
+            updates.asset_name("v2.2.0", "win32", "AMD64", "portable"), "AgentHarness-2.2.0-windows-x64.zip"
+        )
+        self.assertEqual(
+            updates.asset_name("v2.2.0", "win32", "AMD64", "installed"), "AgentHarness-2.2.0-windows-x64-setup.exe"
+        )
+
+    def test_layout_is_read_from_where_the_application_lives(self):
+        with tempfile.TemporaryDirectory() as folder:
+            if sys.platform == "darwin":
+                # macOS copies are always replaced as a whole bundle.
+                self.assertEqual(updates.install_layout(folder), "bundle")
+                return
+            self.assertEqual(updates.install_layout(folder), "portable")
+            if os.name != "nt":
+                return
+            import unittest.mock
+
+            with unittest.mock.patch.dict(os.environ, {"LOCALAPPDATA": str(Path(folder) / "Local")}):
+                expected = Path(folder) / "Local" / "AgentHarness" / "app"
+                expected.mkdir(parents=True)
+                self.assertEqual(updates.install_layout(expected), "installed")
+                self.assertEqual(updates.install_layout(folder), "portable")
 
     def test_digest_is_preferred_and_a_checksum_asset_is_kept(self):
         release = release_for("AgentHarness-2.2.0-windows-x64-setup.exe", b"x", digest="a" * 64, with_sha_asset=True)
@@ -403,6 +429,20 @@ class ApplyTests(unittest.TestCase):
                 self.assertIn('tasklist /FI "PID eq 99"', text)
             else:
                 self.assertIn("while kill -0 99", text)
+
+    def test_apply_records_the_layout_and_writes_the_matching_launcher(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as app:
+            self._stage(folder)
+            updates.apply(folder, target=app, spawn=lambda: FakeChild())
+            marker = updates.apply_state(folder)
+            expected_layout = "bundle" if sys.platform == "darwin" else "portable"
+            self.assertEqual(marker["layout"], expected_layout)
+            text = Path(marker["helper"]).read_text(encoding="utf-8")
+            if os.name == "nt":
+                self.assertIn("Expand-Archive", text)
+                self.assertNotIn("/VERYSILENT", text)
+            else:
+                self.assertIn("unzip", text)
 
     def test_a_failed_spawn_leaves_no_marker(self):
         with tempfile.TemporaryDirectory() as folder:

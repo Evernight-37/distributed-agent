@@ -384,7 +384,7 @@ class DesktopSettingsActions:
             state = updates.status(self.bridge.root)
             if state.get("status") != "update":
                 raise ValueError("当前没有可下载的新版本")
-            return updates.start_download(self.bridge.root)
+            return updates.start_download(self.bridge.root, layout=updates.install_layout())
         if action == "update-download-status":
             from agent_harness import updates
 
