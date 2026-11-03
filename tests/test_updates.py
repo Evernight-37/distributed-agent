@@ -370,6 +370,14 @@ class HelperTests(unittest.TestCase):
         self.assertIn('unzip -q "/tmp/new.zip"', text)
         self.assertIn('open "/Applications/AgentHarness.app"', text)
 
+    def test_the_portable_launcher_unwraps_the_archive_root(self):
+        text = updates.windows_zip_helper(r"C:\d\u.zip", r"C:\app", r"C:\app\AgentHarness.exe", 7)
+        # The release zip keeps everything under one directory; extracting it
+        # straight into the target would nest a copy instead of replacing it.
+        self.assertIn("$items.Count -eq 1", text)
+        self.assertIn("Copy-Item", text)
+        self.assertNotIn("-DestinationPath 'C:\\app'", text)
+
     def test_the_launcher_is_written_outside_the_install_directory(self):
         with tempfile.TemporaryDirectory() as folder:
             path = updates.write_helper(folder, "v2.2.0", "setup.exe", "app", 1234)

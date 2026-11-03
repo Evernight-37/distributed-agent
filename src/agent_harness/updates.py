@@ -511,14 +511,25 @@ def windows_helper(installer, target, pid):
 def windows_zip_helper(archive, target, launcher, pid):
     """Windows portable layout: unpack the zip over the directory, then relaunch.
 
+    The release archive keeps everything under a single top-level directory, so
+    extracting straight into the target would nest a second copy instead of
+    replacing the first. The launcher extracts beside it, unwraps that single
+    directory when there is one, and copies the result over the target.
+
     A portable copy has no installer to run, so the only honest update is to put
     the new files where the old ones were. Files removed in the new version are
     not deleted; that is a known limitation of overwriting in place.
     """
     newline = chr(13) + chr(10)
     extraction = (
-        "powershell -NoProfile -ExecutionPolicy Bypass -Command "
-        "\"Expand-Archive -LiteralPath '{archive}' -DestinationPath '{target}' -Force\""
+        'powershell -NoProfile -ExecutionPolicy Bypass -Command "'
+        "$ErrorActionPreference='Stop'; "
+        "$staging=Join-Path $env:TEMP ('ah-update-'+[guid]::NewGuid().ToString('N')); "
+        "Expand-Archive -LiteralPath '{archive}' -DestinationPath $staging -Force; "
+        "$items=@(Get-ChildItem -LiteralPath $staging); "
+        "if ($items.Count -eq 1 -and $items[0].PSIsContainer) {{ $staging=$items[0].FullName }}; "
+        "Copy-Item -Path (Join-Path $staging '*') -Destination '{target}' -Recurse -Force; "
+        'Remove-Item -LiteralPath $staging -Recurse -Force"'
     )
     return (
         newline.join(
