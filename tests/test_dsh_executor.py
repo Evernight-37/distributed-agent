@@ -100,6 +100,18 @@ class ModelTableTests(unittest.TestCase):
             write_json(root / "executor.json", {"executor": "codex", "models": []})
             self.assertTrue(executors.models(root))
 
+    def test_dispatch_routes_by_model_and_falls_back_for_unlisted_ones(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertEqual(executors.kind_or_selected(root, "deepseek-flash"), "dsh")
+            self.assertEqual(executors.kind_or_selected(root, "gpt-6.1-sol"), "codex")
+            # An agent configured before the table existed keeps its machine.
+            write_json(root / "executor.json", {"executor": "dsh"})
+            self.assertEqual(executors.kind_or_selected(root, "brand-new-model"), "dsh")
+            # And configuring such a model is still refused up front.
+            with self.assertRaises(ValueError):
+                executors.kind_for(root, "brand-new-model")
+
 
 class DshDiscoveryTests(unittest.TestCase):
     def test_explicit_dsh_path_is_probed(self):
