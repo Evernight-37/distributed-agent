@@ -476,6 +476,56 @@ APPLY_MARKER = "applied.json"
 # be reused by the system, so an unbounded wait can spin forever on an unrelated
 # process; giving up is safer than leaving a hidden watcher behind.
 WAIT_LIMIT = 600
+# Directories a release owns. Anything else in the installation directory is
+# either user data or generated, and is never deleted by an update.
+OWNED_TOP = ("client", "runtime", "_internal")
+NEVER_DELETE = ("data", "service-runtime")
+
+
+def plan_stale_files(target, archive):
+    """Paths the release no longer ships, relative to the installation directory.
+
+    An in-place update copies files over the old ones, so a module removed in a
+    new version would otherwise stay on disk and remain importable. The caller
+    restricts deletion to this list; the launcher never decides on its own.
+    """
+    import zipfile
+
+    target = Path(target)
+    if not target.is_dir():
+        return []
+    with zipfile.ZipFile(archive) as bundle:
+        names = []
+        for info in bundle.infolist():
+            if info.is_dir():
+                continue
+            name = info.filename.replace("\\", "/").strip("/")
+            parts = [part for part in name.split("/") if part and part != "."]
+            if parts:
+                names.append(parts)
+    if not names:
+        return []
+    roots = {parts[0] for parts in names}
+    strip = len(names[0]) > 1 and len(roots) == 1
+    shipped = {"/".join(parts[1:] if strip else parts).casefold() for parts in names}
+
+    stale = []
+    for path in target.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(target)
+        top = relative.parts[0]
+        if top in NEVER_DELETE:
+            continue
+        if len(relative.parts) > 1 and top not in OWNED_TOP:
+            continue
+        key = "/".join(relative.parts).casefold()
+        if key in shipped:
+            continue
+        if ".." in relative.parts:
+            continue
+        stale.append("/".join(relative.parts))
+    return sorted(stale)
 
 
 def apply_marker_path(root):
@@ -524,7 +574,7 @@ def windows_helper(installer, target, pid, directory=None):
     ).format(pid=int(pid), installer=installer, target=target, directory=directory or "")
 
 
-def windows_zip_helper(archive, target, launcher, pid):
+def windows_zip_helper(archive, target, launcher, pid, prune=None):
     """Windows portable layout: unpack the zip over the directory, then relaunch.
 
     The release archive keeps everything under a single top-level directory, so
@@ -532,9 +582,9 @@ def windows_zip_helper(archive, target, launcher, pid):
     replacing the first. The launcher extracts beside it, unwraps that single
     directory when there is one, and copies the result over the target.
 
-    A portable copy has no installer to run, so the only honest update is to put
-    the new files where the old ones were. Files removed in the new version are
-    not deleted; that is a known limitation of overwriting in place.
+    A copy is then made equal to the release, not just covered by it: files the
+    new version no longer ships are removed, read from a list this application
+    prepared (the launcher never decides on its own what to delete).
     """
     newline = chr(13) + chr(10)
     extraction = (
@@ -547,29 +597,36 @@ def windows_zip_helper(archive, target, launcher, pid):
         "Copy-Item -Path (Join-Path $staging '*') -Destination '{target}' -Recurse -Force; "
         'Remove-Item -LiteralPath $staging -Recurse -Force"'
     )
-    return (
-        newline.join(
-            [
-                "@echo off",
-                "setlocal",
-                "set tries=0",
-                ":wait_for_exit",
-                'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
-                "if errorlevel 1 goto run_update",
-                "set /a tries=tries+1",
-                "if %tries% GEQ " + str(WAIT_LIMIT) + " goto give_up",
-                "ping -n 2 127.0.0.1 >nul",
-                "goto wait_for_exit",
-                ":run_update",
-                extraction,
-                'start "" "{launcher}"',
-                "exit /b 0",
-                ":give_up",
-                "exit /b 1",
-            ]
-        )
-        + newline
-    ).format(pid=int(pid), archive=archive, target=target, launcher=launcher)
+    pruning = (
+        'powershell -NoProfile -ExecutionPolicy Bypass -Command "'
+        "$ErrorActionPreference='SilentlyContinue'; "
+        "Get-Content -LiteralPath '{prune}' | ForEach-Object {{ "
+        "$name=$_.Trim(); if ($name) {{ "
+        "$path=Join-Path '{target}' $name; "
+        "if (Test-Path -LiteralPath $path -PathType Leaf) {{ Remove-Item -LiteralPath $path -Force }} }} }}" + '"'
+    )
+    steps = [
+        "@echo off",
+        "setlocal",
+        "set tries=0",
+        ":wait_for_exit",
+        'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
+    ]
+    steps += ["if errorlevel 1 goto run_update"]
+    steps += [
+        "set /a tries=tries+1",
+        "if %tries% GEQ " + str(WAIT_LIMIT) + " goto give_up",
+        "ping -n 2 127.0.0.1 >nul",
+        "goto wait_for_exit",
+        ":run_update",
+        extraction,
+    ]
+    if prune:
+        steps.append(pruning)
+    steps += ['start "" "{launcher}"', "exit /b 0", ":give_up", "exit /b 1"]
+    return (newline.join(steps) + newline).format(
+        pid=int(pid), archive=archive, target=target, launcher=launcher, prune=prune or ""
+    )
 
 
 def unix_helper(archive, target, pid):
@@ -627,7 +684,7 @@ def apply_target(bundle=None):
     return directory, directory / "AgentHarness.exe"
 
 
-def write_helper(root, version, installer, target, pid, layout=None, launcher=None):
+def write_helper(root, version, installer, target, pid, layout=None, launcher=None, prune=None):
     """Write the launcher for one apply; returns its path."""
     import os
 
@@ -639,7 +696,7 @@ def write_helper(root, version, installer, target, pid, layout=None, launcher=No
     if os.name == "nt" and layout == "installed":
         text = windows_helper(str(installer), str(launcher), pid, str(target))
     elif os.name == "nt":
-        text = windows_zip_helper(str(installer), str(target), str(launcher), pid)
+        text = windows_zip_helper(str(installer), str(target), str(launcher), pid, str(prune) if prune else None)
     else:
         text = unix_helper(str(installer), str(target), pid)
     path.write_text(text, encoding="utf-8", newline="")
@@ -657,15 +714,26 @@ def apply_state(root):
 
 
 def mark_running(root):
-    """Confirm the applied version is the one now running, then forget it."""
+    """Confirm the applied version is the one now running, then forget it.
+
+    A mismatch keeps the marker: it is the only record of which version to fall
+    back to, and the settings page offers that fallback exactly in this case.
+    Clearing it here made the offer unusable — by the time the user clicked, the
+    version it needed was gone.
+    """
     record = apply_state(root)
     if not record:
         return None
     if str(record.get("to_version")).lstrip("v") == str(application_version()).lstrip("v"):
         apply_marker_path(root).unlink(missing_ok=True)
         return {"confirmed": True, "version": record.get("to_version")}
-    apply_marker_path(root).unlink(missing_ok=True)
     return {"confirmed": False, "expected": record.get("to_version"), "running": application_version()}
+
+
+def dismiss_apply(root):
+    """Forget a failed apply after the user has decided what to do about it."""
+    apply_marker_path(root).unlink(missing_ok=True)
+    return {"dismissed": True}
 
 
 def apply(root, installer=None, version=None, target=None, pid=None, force=False, busy=None, spawn=None):
@@ -691,7 +759,15 @@ def apply(root, installer=None, version=None, target=None, pid=None, force=False
     target, launcher = apply_target(target)
     layout = install_layout(target)
     pid = pid or os.getpid()
-    script = write_helper(root, to_version, installer_path, target, pid, layout=layout, launcher=launcher)
+    prune_file = None
+    if layout == "portable" and installer_path.suffix.lower() == ".zip":
+        stale = plan_stale_files(target, installer_path)
+        if stale:
+            prune_file = pending_dir(root) / ("prune-" + to_version + ".txt")
+            prune_file.write_text("\n".join(stale) + "\n", encoding="utf-8", newline="\n")
+    script = write_helper(
+        root, to_version, installer_path, target, pid, layout=layout, launcher=launcher, prune=prune_file
+    )
     write_json(
         apply_marker_path(root),
         {

@@ -70,6 +70,52 @@ class EntryTests(unittest.TestCase):
             dsh_mcp.line([], NAME)
 
 
+class RepairTests(unittest.TestCase):
+    def _installed(self, home, launch):
+        dsh_mcp.install(home, launch, NAME)
+        return dsh_mcp.patch_path(dsh_mcp.DEFAULT_PROFILE, home)
+
+    def test_a_moved_launcher_is_re_pointed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            old = [str(Path(folder) / "old" / "launch.cmd")]
+            patch = self._installed(home, old)
+            self.assertEqual(dsh_mcp.recorded_launch(home), old[0])
+            self.assertTrue(patch.is_file())
+
+            new = [str(Path(folder) / "new" / "launch.cmd")]
+            Path(new[0]).parent.mkdir(parents=True)
+            Path(new[0]).write_text("@echo off\n", encoding="utf-8")
+
+            result = dsh_mcp.repair(home, new, NAME)
+            self.assertTrue(result["repaired"])
+            self.assertFalse(result["stale"])
+            self.assertEqual(dsh_mcp.recorded_launch(home), new[0])
+
+    def test_a_working_command_that_is_not_ours_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            home_launch = Path(folder) / "elsewhere" / "launch.cmd"
+            home_launch.parent.mkdir(parents=True)
+            home_launch.write_text("@echo off\n", encoding="utf-8")
+            self._installed(home, [str(home_launch)])
+
+            new = [str(Path(folder) / "new" / "launch.cmd")]
+            Path(new[0]).parent.mkdir(parents=True)
+            Path(new[0]).write_text("@echo off\n", encoding="utf-8")
+
+            result = dsh_mcp.repair(home, new, NAME)
+            self.assertFalse(result["repaired"])
+            self.assertIn("另一个仍然存在", result["reason"])
+
+    def test_a_missing_entry_is_not_created(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = make_home(folder)
+            result = dsh_mcp.repair(home, [str(Path(folder) / "launch.cmd")], NAME)
+            self.assertFalse(result["repaired"])
+            self.assertFalse(dsh_mcp.status(home, [str(Path(folder) / "launch.cmd")], NAME)["installed"])
+
+
 class InstallTests(unittest.TestCase):
     def _install(self, home, launch=None, probe=None):
         return dsh_mcp.install(home, launch or LAUNCH, NAME, probe=probe)

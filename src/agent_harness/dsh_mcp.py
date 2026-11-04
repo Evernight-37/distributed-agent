@@ -148,6 +148,55 @@ def _write(path, text):
     os.replace(temporary, path)
 
 
+def recorded_launch(root_home=None, profile=DEFAULT_PROFILE):
+    """The command the managed entry currently names, if it can be read."""
+    path = patch_path(profile, root_home)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    lines = text.splitlines()
+    for index, raw in enumerate(lines):
+        if raw.strip() != MARKER or index + 1 >= len(lines):
+            continue
+        candidate = lines[index + 1].strip()
+        if not candidate.startswith("- "):
+            continue
+        try:
+            document = json.loads(candidate[2:])
+        except ValueError:
+            continue
+        command = document.get("command")
+        if not isinstance(command, str):
+            inserted = document.get("insert")
+            if isinstance(inserted, list) and inserted and isinstance(inserted[0], dict):
+                config = inserted[0].get("config")
+                if isinstance(config, dict):
+                    command = config.get("command")
+        if isinstance(command, str) and command:
+            return command
+    return None
+
+
+def repair(root_home=None, launch=None, name="harness", probe=None, profile=DEFAULT_PROFILE):
+    """Re-point a stale entry whose command no longer exists.
+
+    Moving user data leaves the recorded launcher path pointing at the old
+    location, and DeepSeek Harness then starts nothing. A command that still
+    works is left alone: it may be a deliberate choice.
+    """
+    if not launch:
+        return {"repaired": False, "reason": "缺少 MCP 启动命令"}
+    state = status(root_home=root_home, launch=launch, name=name, profile=profile)
+    if not state.get("installed") or not state.get("stale"):
+        return {"repaired": False, **state}
+    recorded = recorded_launch(root_home=root_home, profile=profile)
+    if recorded and Path(recorded).exists() and Path(recorded) != Path(launch[0]):
+        return {"repaired": False, "reason": "条目指向另一个仍然存在的启动器", **state}
+    install(root_home=root_home, launch=launch, name=name, probe=probe, profile=profile)
+    return {"repaired": True, **status(root_home=root_home, launch=launch, name=name, profile=profile)}
+
+
 def status(root_home=None, launch=None, name="harness", profile=DEFAULT_PROFILE):
     """Report whether this module's entry is present and still up to date."""
     path = patch_path(profile, root_home)
