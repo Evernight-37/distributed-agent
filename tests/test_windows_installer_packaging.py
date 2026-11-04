@@ -10,7 +10,8 @@ class WindowsInstallerPackagingTests(unittest.TestCase):
         script = (ROOT / "installer" / "windows" / "AgentHarness.iss").read_text(encoding="utf-8")
         self.assertIn("PrivilegesRequired=lowest", script)
         self.assertIn("DefaultDirName={localappdata}\\AgentHarness\\app", script)
-        self.assertIn("DisableDirPage=yes", script)
+        # The destination is the user's choice now; the default is only a suggestion.
+        self.assertNotIn("DisableDirPage=yes", script)
         self.assertIn("OutputDir=..\\..", script)
         self.assertIn('Name: "{autoprograms}\\{#AppName}"', script)
         self.assertNotIn('AppId "AgentHarness-" + MyAppVersion', script)

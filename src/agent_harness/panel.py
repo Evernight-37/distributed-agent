@@ -11,7 +11,7 @@ from urllib.parse import quote, urlsplit
 from agent_harness.file_transfers import CHUNK_BYTES, FileTransfers
 from agent_harness.collaboration_store import Store
 from agent_harness.coordinator import Coordinator
-from agent_harness.runtime_paths import ASSET_ROOT, DEFAULT_STATE
+from agent_harness.runtime_paths import ASSET_ROOT, default_state
 from agent_harness.broker import PullBackend
 from agent_harness.common import lock, read_json
 from agent_harness.protocol import hub_advertisement
@@ -256,7 +256,7 @@ def handler_for(root, backend=None, public_origin=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--state", default=str(DEFAULT_STATE))
+    parser.add_argument("--state", default=str(default_state()))
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--origin", help="HTTPS reverse-proxy origin; backend remains loopback-only")
     parser.add_argument(

@@ -227,13 +227,17 @@ class AssetTests(unittest.TestCase):
             self.assertEqual(updates.install_layout(folder), "portable")
             if os.name != "nt":
                 return
-            import unittest.mock
+            # An install can live in any directory now; the uninstaller is what
+            # proves the copy came from the installer.
+            (Path(folder) / "unins000.exe").write_text("stub", encoding="utf-8")
+            self.assertEqual(updates.install_layout(folder), "installed")
 
-            with unittest.mock.patch.dict(os.environ, {"LOCALAPPDATA": str(Path(folder) / "Local")}):
-                expected = Path(folder) / "Local" / "AgentHarness" / "app"
-                expected.mkdir(parents=True)
-                self.assertEqual(updates.install_layout(expected), "installed")
-                self.assertEqual(updates.install_layout(folder), "portable")
+    def test_a_custom_install_directory_still_installs_into_itself(self):
+        text = updates.windows_helper(
+            r"C:\setup.exe", r"D:\apps\AgentHarness\AgentHarness.exe", 5, r"D:\apps\AgentHarness"
+        )
+        self.assertIn('/DIR="D:\\apps\\AgentHarness"', text)
+        self.assertIn("/VERYSILENT", text)
 
     def test_digest_is_preferred_and_a_checksum_asset_is_kept(self):
         release = release_for("AgentHarness-2.2.0-windows-x64-setup.exe", b"x", digest="a" * 64, with_sha_asset=True)
