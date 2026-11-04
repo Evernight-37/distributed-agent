@@ -22,6 +22,19 @@ def bundled_root():
     return Path(sys.executable).resolve().parent
 
 
+def installation_root():
+    """Where files belonging to the installation may be written.
+
+    On Windows everything the application owns lives in the directory it was
+    unpacked into. A macOS .app is a sealed bundle, so derived files go to the
+    platform location there instead.
+    """
+    if sys.platform == "darwin":
+        return application_home()
+    root = bundled_root()
+    return root if root is not None else application_home()
+
+
 def _writable(directory):
     """Whether data could actually be written here, without creating anything."""
     probe = Path(directory)

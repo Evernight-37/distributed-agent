@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 from agent_harness.common import lock
-from agent_harness.runtime_paths import application_home
+from agent_harness.runtime_paths import installation_root
 
 _installed = None
 
@@ -84,9 +84,33 @@ def install_bundle(bundle, destination):
     return target
 
 
+def _prune(destination, keep):
+    """Remove runtimes from earlier versions; a busy one is left alone.
+
+    Each release hashes differently, so without this every update would leave
+    another full copy of the runtime behind.
+    """
+    try:
+        entries = list(destination.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry == keep or not entry.is_dir():
+            continue
+        name = entry.name
+        if len(name) != 16 or any(character not in "0123456789abcdef" for character in name):
+            continue
+        try:
+            shutil.rmtree(entry)
+        except OSError:
+            # A receiver may still be running from it.
+            continue
+
+
 def installed_bundle():
     global _installed
     if _installed is None:
-        home = application_home() / "service-runtime"
+        home = installation_root() / "service-runtime"
         _installed = install_bundle(application_bundle(), home)
+        _prune(home, _installed)
     return _installed
