@@ -45,6 +45,30 @@ MCP_DELEGATE_SCOPES = [
 ]
 
 
+def pick_host_state(default, saved, has_database, knows_account, is_legacy=None):
+    """Choose the collaboration service's state directory.
+
+    A saved path can outlive the data it pointed at: moving user data leaves the
+    profile pointing at the old directory, and starting the service there creates
+    an empty database whose account has no devices. Data that actually holds this
+    account wins; a location the user deliberately chose is still honoured; a path
+    inside the directory we migrated away from is treated as stale.
+    """
+    default = Path(default)
+    saved = Path(saved) if saved else None
+    if saved is None or saved == default:
+        return default
+    if knows_account(default):
+        return default
+    if knows_account(saved):
+        return saved
+    if is_legacy and is_legacy(saved):
+        return default
+    if has_database(default) and not has_database(saved):
+        return default
+    return saved
+
+
 class AppBridge:
     def __init__(self, root=None):
         self.root = Path(root or default_state()).resolve()
@@ -141,10 +165,53 @@ class AppBridge:
         return server
 
     def _host_state_root(self):
+        from agent_harness.runtime_paths import legacy_data
+
+        default = self.root / "team-service"
         saved = (self.profile or {}).get("local_host_state")
-        if saved:
-            return Path(saved).resolve()
-        return self.root / "team-service"
+        legacy = legacy_data().resolve()
+
+        def is_legacy(state):
+            candidate = Path(state).expanduser().resolve()
+            try:
+                candidate.relative_to(legacy)
+            except ValueError:
+                return False
+            return True
+
+        chosen = pick_host_state(
+            default,
+            saved,
+            has_database=self._state_has_database,
+            knows_account=self._state_knows_account,
+            is_legacy=is_legacy,
+        )
+        if saved and chosen != Path(saved).expanduser().resolve() and self.profile is not None:
+            # Remember the correction so the next start does not repeat the search.
+            self.profile["local_host_state"] = str(chosen)
+            try:
+                self._save_public_profile()
+            except (OSError, RuntimeError, ValueError):
+                pass
+        return chosen
+
+    def _state_has_database(self, state):
+        return (Path(state).expanduser().resolve() / "collaboration.sqlite3").is_file()
+
+    def _state_knows_account(self, state):
+        """Whether this state directory's database holds the signed-in account."""
+        import sqlite3
+        from contextlib import closing
+
+        account = (self.identity or {}).get("account_id")
+        database = Path(state).expanduser().resolve() / "collaboration.sqlite3"
+        if not account or not database.is_file():
+            return False
+        try:
+            with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+                return db.execute("SELECT 1 FROM account_devices WHERE account_id=?", (account,)).fetchone() is not None
+        except (sqlite3.Error, TypeError):
+            return False
 
     def _active_host_state(self):
         if os.name != "nt":
