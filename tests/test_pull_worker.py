@@ -30,6 +30,33 @@ class PullWorkerTests(unittest.TestCase):
             self.assertEqual((root / "VERSION").read_text(encoding="utf-8"), expected)
             self.assertTrue((root / "release_info.py").is_file())
 
+    def test_a_moved_receiver_uses_its_own_directory_not_a_stale_path(self):
+        # Enrollment stores an absolute root. Moving user data leaves it pointing
+        # at the old location; honouring it would recreate a second receiver there.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "receivers" / "device-1"
+            root.mkdir(parents=True)
+            (root / "worker.py").write_text("# receiver\n", encoding="utf-8")
+            stale = Path(directory) / "old" / "receivers" / "device-1"
+            write_json(root / "pull-config.json", {"server": "http://127.0.0.1:9", "root": str(stale)})
+            connector = Connector(root / "pull-config.json")
+            self.assertEqual(connector.root, root.resolve())
+            self.assertEqual(read_json(root / "pull-config.json")["root"], str(root.resolve()))
+
+    def test_a_configuration_kept_outside_a_receiver_root_keeps_its_recorded_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "receiver"
+            root.mkdir()
+            config = Path(directory) / "config.json"
+            write_json(config, {"server": "http://127.0.0.1:9", "root": str(root)})
+            self.assertEqual(Connector(config).root, root.resolve())
+
+    def test_a_configuration_without_a_recorded_root_uses_its_own_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "pull-config.json"
+            write_json(config, {"server": "http://127.0.0.1:9"})
+            self.assertEqual(Connector(config).root, Path(directory).resolve())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
