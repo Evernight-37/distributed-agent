@@ -18,10 +18,12 @@ AppId={#AppId}
 AppName={#AppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#AppPublisher}
+; Per-user install: any directory the user can write to is allowed, and the
+; wizard asks for it. Choosing a protected directory fails with a permission
+; error instead of silently installing elsewhere.
 DefaultDirName={localappdata}\AgentHarness\app
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
-DisableDirPage=yes
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible

@@ -27,7 +27,7 @@ from agent_harness.desktop_actions import (
     DesktopProjectActions,
     DesktopTransferActions,
 )
-from agent_harness.runtime_paths import application_home
+from agent_harness.runtime_paths import default_state
 from agent_harness.pull_worker import validate_server
 from agent_harness.broker_transport import broker_opener
 from agent_harness.account_identity import (
@@ -47,8 +47,7 @@ MCP_DELEGATE_SCOPES = [
 
 class AppBridge:
     def __init__(self, root=None):
-        base = application_home()
-        self.root = Path(root or base / "data").resolve()
+        self.root = Path(root or default_state()).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.identity = None
         self.profile = None

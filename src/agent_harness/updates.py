@@ -191,9 +191,10 @@ PENDING_DIR = "updates"
 def install_layout(bundle=None):
     """How this copy of the application is installed.
 
-    ``installed`` means the per-user Inno install (``%LOCALAPPDATA%``); anything
-    else is an unpacked portable directory, which must be updated by unpacking a
-    zip over it rather than by running the installer.
+    ``installed`` means an Inno Setup install, wherever it was placed: the
+    uninstaller next to the executable is the reliable evidence, since the
+    destination is no longer fixed. Anything else is an unpacked portable
+    directory, which is updated by unpacking a zip over it.
     """
     import os
 
@@ -201,14 +202,12 @@ def install_layout(bundle=None):
         return "bundle"
     if os.name != "nt":
         return "portable"
-    base = os.environ.get("LOCALAPPDATA")
-    if not base:
-        return "portable"
     from agent_harness.service_install import application_bundle
 
-    expected = (Path(base) / "AgentHarness" / "app").resolve()
-    actual = Path(bundle or application_bundle()).resolve()
-    return "installed" if actual == expected else "portable"
+    root = Path(bundle or application_bundle()).resolve()
+    if root.is_dir() and any(root.glob("unins*.exe")):
+        return "installed"
+    return "portable"
 
 
 def system_platform():
@@ -485,9 +484,17 @@ def helper_path(root, version):
     return Path(root) / PENDING_DIR / ("apply-" + str(version).lstrip("v") + suffix)
 
 
-def windows_helper(installer, target, pid):
-    """A .cmd that waits for the caller, installs silently, then relaunches."""
+def windows_helper(installer, target, pid, directory=None):
+    """A .cmd that waits for the caller, installs silently, then relaunches.
+
+    ``/DIR`` pins the silent install to the directory that is already in use: the
+    installer is allowed to be placed anywhere now, so letting it fall back to its
+    default would create a second copy somewhere else.
+    """
     newline = chr(13) + chr(10)
+    command = 'call "{installer}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+    if directory:
+        command += ' /DIR="{directory}"'
     return (
         newline.join(
             [
@@ -499,13 +506,13 @@ def windows_helper(installer, target, pid):
                 "  timeout /t 1 /nobreak >nul",
                 "  goto wait_for_exit",
                 ")",
-                'call "{installer}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
+                command,
                 'start "" "{target}"',
                 "exit /b 0",
             ]
         )
         + newline
-    ).format(pid=int(pid), installer=installer, target=target)
+    ).format(pid=int(pid), installer=installer, target=target, directory=directory or "")
 
 
 def windows_zip_helper(archive, target, launcher, pid):
@@ -611,7 +618,7 @@ def write_helper(root, version, installer, target, pid, layout=None, launcher=No
     path = helper_path(root, version)
     path.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt" and layout == "installed":
-        text = windows_helper(str(installer), str(launcher), pid)
+        text = windows_helper(str(installer), str(launcher), pid, str(target))
     elif os.name == "nt":
         text = windows_zip_helper(str(installer), str(target), str(launcher), pid)
     else:
