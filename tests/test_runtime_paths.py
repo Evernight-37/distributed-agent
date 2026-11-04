@@ -1,5 +1,6 @@
 import os
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,6 +17,9 @@ class DataHomeTests(unittest.TestCase):
         patches = [
             mock.patch.object(runtime_paths, "legacy_data", lambda: self.legacy),
             mock.patch.object(runtime_paths, "bundled_root", lambda: self.app),
+            # Treat every case as Windows unless a test says otherwise; macOS
+            # deliberately keeps the platform location.
+            mock.patch.object(runtime_paths, "sys", types.SimpleNamespace(platform="win32")),
             mock.patch.dict(os.environ, {}, clear=False),
         ]
         for patch in patches:
@@ -23,6 +27,11 @@ class DataHomeTests(unittest.TestCase):
             self.addCleanup(patch.stop)
         self.addCleanup(self.folder.cleanup)
         os.environ.pop("AGENT_HARNESS_STATE", None)
+
+    def test_macos_keeps_the_platform_location(self):
+        with mock.patch.object(runtime_paths, "sys", types.SimpleNamespace(platform="darwin")):
+            self.app.mkdir(parents=True)
+            self.assertEqual(runtime_paths.data_home(), self.legacy)
 
     def test_an_explicit_override_wins(self):
         os.environ["AGENT_HARNESS_STATE"] = str(self.root / "custom")
