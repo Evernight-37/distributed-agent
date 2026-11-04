@@ -358,6 +358,20 @@ class HelperTests(unittest.TestCase):
         self.assertIn("goto wait_for_exit", text)
         self.assertTrue(text.endswith("\r\n"))
 
+    def test_the_launcher_gives_up_instead_of_waiting_forever(self):
+        # A PID can be reused by an unrelated process, so an unbounded wait would
+        # leave a hidden watcher spinning indefinitely.
+        for text in (
+            updates.windows_helper(r"C:\data\setup.exe", r"C:\app\AgentHarness.exe", 4321),
+            updates.windows_zip_helper(r"C:\d\u.zip", r"C:\app", r"C:\app\AgentHarness.exe", 4321),
+        ):
+            self.assertIn("if %tries% GEQ " + str(updates.WAIT_LIMIT), text)
+            self.assertIn("goto give_up", text)
+            self.assertIn(":give_up", text)
+        unix = updates.unix_helper("/tmp/new.zip", "/Applications/AgentHarness.app", 99)
+        self.assertIn("tries=$((tries + 1))", unix)
+        self.assertIn("-ge " + str(updates.WAIT_LIMIT), unix)
+
     def test_previous_launchers_are_pruned(self):
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder) / "updates" / "pending"
