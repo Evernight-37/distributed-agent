@@ -9,7 +9,7 @@ class HostStateTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
-        self.root = Path(self.folder.name)
+        self.root = Path(self.folder.name).resolve()
         self.current = self.root / "app" / "data" / "team-service"
         self.saved = self.root / "local" / "data" / "team-service"
 
