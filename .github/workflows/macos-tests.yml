@@ -2,7 +2,7 @@ name: Verify macOS support
 
 on:
   push:
-    branches: [main, macos-improvements]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
