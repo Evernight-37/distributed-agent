@@ -318,6 +318,15 @@ class DesktopOwnerActions:
             settings = {k: data[k] for k in ("model", "effort", "enabled", "stages", "timeout")}
             settings["strict_worktree"] = bool(data.get("strict_worktree", False))
             settings["attachment_policy"] = data.get("attachment_policy", "ask")
+            # The model decides which local CLI runs the turn, so it has to be one
+            # this machine's table lists; otherwise dispatch would fail later with
+            # a far less useful error.
+            from agent_harness import executors
+
+            model = settings.get("model")
+            if isinstance(model, str) and model.strip():
+                if executors.model_kind(bridge.root, model.strip()) is None:
+                    raise ValueError("本机模型表里没有 " + model.strip() + "；请先在本机执行器设置中添加该模型")
             return bridge._owner(
                 "configure",
                 employee["node"],

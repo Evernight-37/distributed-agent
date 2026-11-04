@@ -43,6 +43,21 @@ DSH_PROFILE = "headless"
 DSH_PROVIDER = "deepseek-official"
 DSH_MODEL = "deepseek-flash"
 
+# A machine runs whichever CLIs its owner installed, and the model decides which
+# one executes a turn. Neither CLI can enumerate its models offline (Codex's come
+# from the account, DeepSeek Harness's from its provider), so the table is local
+# configuration seeded from what is actually there: Codex's configured model and
+# the model DeepSeek Harness has been using.
+# Every model the product has offered so far, so an existing agent keeps working
+# after the table becomes the source of truth.
+DEFAULT_MODELS = (
+    {"name": "gpt-5.6-sol", "executor": CODEX},
+    {"name": "gpt-6.1-sol", "executor": CODEX},
+    {"name": "gpt-5.6-luna", "executor": CODEX},
+    {"name": "deepseek-flash", "executor": DSH},
+    {"name": "deepseek-reasoner", "executor": DSH},
+)
+
 # The managed-turn structured reply is enforced by a Codex JSON schema.  DSH has
 # no equivalent flag, so its managed turns rely on the prompt contract alone.
 MANAGED_TURNS = {CODEX: True, DSH: False}
@@ -72,6 +87,42 @@ def settings(root):
 def selected(root):
     """The executor this machine runs."""
     return settings(root).get("executor", CODEX)
+
+
+def models(root):
+    """This machine's model table: which models it can run, and with which CLI.
+
+    An empty or malformed table falls back to the defaults rather than leaving the
+    machine unable to dispatch anything.
+    """
+    value = settings(root).get("models")
+    if isinstance(value, list):
+        cleaned, seen = [], set()
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            name, kind = item.get("name"), item.get("executor")
+            if not isinstance(name, str) or not name.strip() or kind not in KINDS:
+                continue
+            name = name.strip()
+            if name.casefold() in seen:
+                continue
+            seen.add(name.casefold())
+            cleaned.append({"name": name, "executor": kind})
+        if cleaned:
+            return cleaned
+    return [dict(entry) for entry in DEFAULT_MODELS]
+
+
+def model_kind(root, model):
+    """Which CLI runs this model, or None when the machine's table lacks it."""
+    if not isinstance(model, str):
+        return None
+    wanted = model.strip().casefold()
+    for entry in models(root):
+        if entry["name"].casefold() == wanted:
+            return entry["executor"]
+    return None
 
 
 def supports_managed_turns(root):

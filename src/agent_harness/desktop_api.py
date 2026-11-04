@@ -293,6 +293,30 @@ class DesktopSettingsActions:
             if executor not in ("codex", "dsh"):
                 raise ValueError("未知的本地执行器")
             choice = {"executor": executor}
+            models = data.get("models")
+            if models is not None:
+                if not isinstance(models, list):
+                    raise ValueError("模型表必须是列表")
+                cleaned, seen = [], set()
+                for item in models:
+                    if not isinstance(item, dict):
+                        raise ValueError("模型表的每一项必须是对象")
+                    name = item.get("name")
+                    kind = item.get("executor")
+                    if not isinstance(name, str) or not name.strip():
+                        raise ValueError("模型名不能为空")
+                    name = name.strip()
+                    if not re.fullmatch(r"[a-zA-Z0-9_.:-]{1,100}", name):
+                        raise ValueError("模型名只能包含字母、数字、下划线、点、冒号和连字符")
+                    if kind not in ("codex", "dsh"):
+                        raise ValueError("模型必须标注由 codex 还是 dsh 执行")
+                    if name.casefold() in seen:
+                        continue
+                    seen.add(name.casefold())
+                    cleaned.append({"name": name, "executor": kind})
+                if not cleaned:
+                    raise ValueError("模型表至少要有一个模型")
+                choice["models"] = cleaned
             model = data.get("model")
             if model is not None:
                 if not isinstance(model, str):
