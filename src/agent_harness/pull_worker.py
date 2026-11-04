@@ -175,10 +175,31 @@ class Connector:
         if not self.config:
             raise ValueError("Enroll this machine first")
         validate_server(self.config["server"])
-        self.root = Path(self.config["root"]).resolve()
+        self.root = self._resolve_root()
         self.transport = transport
         self.executor = executor or self.rpc
         self.headless_transfers = None
+
+    def _resolve_root(self):
+        """Where this receiver's mutable state lives.
+
+        Enrollment writes the configuration inside the receiver directory, so that
+        directory is the truth. A stored absolute path is only trusted when the
+        configuration does not sit in a receiver root at all: moving user data
+        leaves the recorded path pointing at the old location, and honouring it
+        would silently recreate a second receiver there.
+        """
+        here = self.config_path.resolve().parent
+        recorded = self.config.get("root")
+        if not recorded:
+            return here
+        stored = Path(recorded).resolve()
+        if (here / "worker.py").is_file():
+            if stored != here:
+                self.config["root"] = str(here)
+                write_json(self.config_path, self.config)
+            return here
+        return stored
 
     def rpc(self, request):
         result = subprocess.run(
