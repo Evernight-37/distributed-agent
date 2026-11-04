@@ -657,15 +657,26 @@ def apply_state(root):
 
 
 def mark_running(root):
-    """Confirm the applied version is the one now running, then forget it."""
+    """Confirm the applied version is the one now running, then forget it.
+
+    A mismatch keeps the marker: it is the only record of which version to fall
+    back to, and the settings page offers that fallback exactly in this case.
+    Clearing it here made the offer unusable — by the time the user clicked, the
+    version it needed was gone.
+    """
     record = apply_state(root)
     if not record:
         return None
     if str(record.get("to_version")).lstrip("v") == str(application_version()).lstrip("v"):
         apply_marker_path(root).unlink(missing_ok=True)
         return {"confirmed": True, "version": record.get("to_version")}
-    apply_marker_path(root).unlink(missing_ok=True)
     return {"confirmed": False, "expected": record.get("to_version"), "running": application_version()}
+
+
+def dismiss_apply(root):
+    """Forget a failed apply after the user has decided what to do about it."""
+    apply_marker_path(root).unlink(missing_ok=True)
+    return {"dismissed": True}
 
 
 def apply(root, installer=None, version=None, target=None, pid=None, force=False, busy=None, spawn=None):

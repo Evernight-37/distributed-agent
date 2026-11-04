@@ -516,6 +516,16 @@ class MarkerTests(unittest.TestCase):
             result = updates.mark_running(folder)
             self.assertFalse(result["confirmed"])
             self.assertEqual(result["expected"], "9.9.9")
+
+    def test_a_failed_apply_stays_offerable_until_the_user_decides(self):
+        # The page offers "go back" exactly when the applied version is not
+        # running, so the record it needs must survive repeated status refreshes.
+        with tempfile.TemporaryDirectory() as folder:
+            self._marker(folder, "9.9.9")
+            for _ in range(3):
+                self.assertFalse(updates.mark_running(folder)["confirmed"])
+                self.assertIsNotNone(updates.apply_state(folder))
+            self.assertTrue(updates.dismiss_apply(folder)["dismissed"])
             self.assertIsNone(updates.apply_state(folder))
 
     def test_rollback_needs_a_recorded_previous_version(self):
