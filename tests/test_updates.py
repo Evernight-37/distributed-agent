@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from agent_harness import updates
@@ -497,6 +498,60 @@ class ApplyTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 updates.apply(folder, target="app", spawn=spawn)
             self.assertIsNone(updates.apply_state(folder))
+
+
+class StaleFileTests(unittest.TestCase):
+    def _layout(self, folder):
+        app = Path(folder) / "app"
+        (app / "client" / "agent_harness").mkdir(parents=True)
+        (app / "client" / "agent_harness" / "kept.py").write_text("keep\n", encoding="utf-8")
+        (app / "client" / "agent_harness" / "dropped.py").write_text("old\n", encoding="utf-8")
+        (app / "data").mkdir()
+        (app / "data" / "desktop.db").write_text("user\n", encoding="utf-8")
+        (app / "service-runtime" / "abc").mkdir(parents=True)
+        (app / "service-runtime" / "abc" / "worker.py").write_text("runtime\n", encoding="utf-8")
+        (app / "notes").mkdir()
+        (app / "notes" / "mine.txt").write_text("other\n", encoding="utf-8")
+        (app / "VERSION").write_text("2.0.0\n", encoding="utf-8")
+        archive = Path(folder) / "release.zip"
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("AgentHarness/client/agent_harness/kept.py", "keep\n")
+            bundle.writestr("AgentHarness/VERSION", "2.1.0\n")
+        return app, archive
+
+    def test_files_the_release_dropped_are_listed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, archive = self._layout(folder)
+            self.assertEqual(updates.plan_stale_files(app, archive), ["client/agent_harness/dropped.py"])
+
+    def test_user_data_and_generated_runtime_are_never_listed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, archive = self._layout(folder)
+            planned = updates.plan_stale_files(app, archive)
+            self.assertFalse(any(item.startswith("data/") for item in planned))
+            self.assertFalse(any(item.startswith("service-runtime/") for item in planned))
+
+    def test_unknown_top_level_directories_are_left_alone(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, archive = self._layout(folder)
+            self.assertNotIn("notes/mine.txt", updates.plan_stale_files(app, archive))
+
+    def test_a_flat_archive_is_compared_without_stripping(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app = Path(folder) / "app"
+            (app / "client").mkdir(parents=True)
+            (app / "client" / "dropped.py").write_text("old\n", encoding="utf-8")
+            archive = Path(folder) / "flat.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("client/kept.py", "keep\n")
+            self.assertEqual(updates.plan_stale_files(app, archive), ["client/dropped.py"])
+
+    def test_the_launcher_prunes_only_when_given_a_list(self):
+        without = updates.windows_zip_helper(r"C:\d\u.zip", r"C:\app", r"C:\app\App.exe", 1)
+        self.assertNotIn("prune", without.lower())
+        with_list = updates.windows_zip_helper(r"C:\d\u.zip", r"C:\app", r"C:\app\App.exe", 1, r"C:\d\prune.txt")
+        self.assertIn("Get-Content -LiteralPath 'C:\\d\\prune.txt'", with_list)
+        self.assertIn("Remove-Item", with_list)
 
 
 class MarkerTests(unittest.TestCase):

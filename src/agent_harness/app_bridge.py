@@ -786,17 +786,32 @@ class AppBridge:
         from agent_harness import dsh_mcp
 
         grant = read_json(self._mcp_grant_path())
+        launch = [str(self._dsh_mcp_launcher_path())]
         # Self-heal after an upgrade: the launcher path is stable but its
-        # contents track the current runtime.
+        # contents track the current runtime. A failure here is reported rather
+        # than swallowed: it makes the integration silently stop working.
+        launcher_error = None
         try:
             self._ensure_dsh_mcp_launcher()
-        except OSError:
-            pass
-        state = dsh_mcp.status(
-            launch=[str(self._dsh_mcp_launcher_path())],
-            name=self._dsh_mcp_name(),
-            root_home=self._dsh_home(),
-        )
+        except OSError as exc:
+            launcher_error = str(exc)
+        repaired = False
+        state = dsh_mcp.status(launch=launch, name=self._dsh_mcp_name(), root_home=self._dsh_home())
+        if state.get("stale") and launcher_error is None:
+            # Moving user data leaves the entry pointing at a launcher that no
+            # longer exists; re-point it when it is demonstrably dead.
+            try:
+                repaired = bool(
+                    dsh_mcp.repair(
+                        root_home=self._dsh_home(),
+                        launch=launch,
+                        name=self._dsh_mcp_name(),
+                        probe=self._dsh_mcp_probe(),
+                    ).get("repaired")
+                )
+            except (OSError, ValueError, RuntimeError):
+                repaired = False
+            state = dsh_mcp.status(launch=launch, name=self._dsh_mcp_name(), root_home=self._dsh_home())
         return {
             "enabled": bool(grant),
             "configured": state["installed"],
@@ -804,6 +819,8 @@ class AppBridge:
             "path": state["path"],
             "profile": state["profile"],
             "launcher": str(self._dsh_mcp_launcher_path()),
+            "repaired": repaired,
+            "launcher_error": launcher_error,
         }
 
     def _enable_dsh_mcp(self):

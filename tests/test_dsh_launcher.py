@@ -58,19 +58,23 @@ class DshLauncherTests(unittest.TestCase):
         self.bridge._ensure_dsh_mcp_launcher()
         self.assertIn("mcp_adapter.py", path.read_text(encoding="utf-8"))
 
-    def test_status_marks_an_entry_pointing_at_a_different_command(self):
+    def test_status_repairs_an_entry_pointing_at_a_dead_command(self):
         launch = [str(self.bridge._dsh_mcp_launcher_path())]
         name = self.bridge._dsh_mcp_name()
         dsh_mcp.install(self.home, launch, name)
         fresh = self.bridge._dsh_mcp_status()
         self.assertTrue(fresh["configured"])
         self.assertFalse(fresh["stale"])
+        self.assertFalse(fresh["repaired"])
 
-        # An entry written by the older, content-addressed form must be flagged.
+        # An entry left behind by a moved data directory points at nothing; it is
+        # re-pointed instead of only being reported as stale.
         dsh_mcp.install(self.home, [r"C:\old\service-runtime\abc\runtime\python.exe"], name)
-        stale = self.bridge._dsh_mcp_status()
-        self.assertTrue(stale["configured"])
-        self.assertTrue(stale["stale"])
+        healed = self.bridge._dsh_mcp_status()
+        self.assertTrue(healed["configured"])
+        self.assertTrue(healed["repaired"])
+        self.assertFalse(healed["stale"])
+        self.assertEqual(dsh_mcp.recorded_launch(self.home), str(self.bridge._dsh_mcp_launcher_path()))
 
     def test_status_reports_the_launcher_it_expects(self):
         state = self.bridge._dsh_mcp_status()
