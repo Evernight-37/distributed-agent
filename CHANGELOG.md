@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.1 - 2026-11-04
+
+- 后台接收端的运行时副本从 `%LOCALAPPDATA%\AgentHarness\service-runtime` 移到**安装目录下的 `service-runtime\`**。此前它和用户数据是两处例外，现在 Windows 上属于应用的东西都在安装目录内：程序、`data\`、`service-runtime\`。
+- 每次发布都会产生一个新哈希的运行时副本，不清理会随每次更新在安装目录里堆积（每份约 70 MB）。现在启动时只保留当前使用的那一份，旧的自动删除；正在被接收端占用而删不掉的目录会跳过，不影响启动。
+- macOS 仍把数据和运行时放在 `~/Library/Application Support/AgentHarness`：`.app` 是封签目录，不能写入。
+
 ## 2.3.0 - 2026-11-04
 
 - 用户数据默认改到**应用目录下的 `data\`**（Windows 便携/安装版都是），不再放在 `%LOCALAPPDATA%\AgentHarness\data`。升级与回退只替换程序文件，从不写入或删除该目录，所以数据不会被更新覆盖。旧位置的数据会在首次启动时**复制**过去，原目录改名为 `data.migrated-<时间>` 保留；复制失败则继续使用旧位置，不会出现"数据丢失"的半成品。macOS 仍遵循平台惯例放在 `~/Library/Application Support/AgentHarness`（`.app` 是封签目录，不适合写入用户数据）。仍可用 `AGENT_HARNESS_STATE` 指定任意目录。

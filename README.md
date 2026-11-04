@@ -131,9 +131,13 @@ python tests/cleanroom_release.py dist/AgentHarness build/cleanroom
 
 安装器是 per-user 的（不需要管理员），目标目录由用户选择，默认 `%LOCALAPPDATA%\AgentHarness\app`；无法写入的目录会在安装时报错，而不是悄悄装到别处。便携包解压到任何可写目录即可。
 
-用户数据默认放在**应用目录下的 `data\`**（Windows；macOS 仍遵循平台惯例放在 `~/Library/Application Support/AgentHarness`）。升级和回退只替换程序文件，从不写入或删除 `data\`，所以升级不会影响用户数据。旧版本的 `%LOCALAPPDATA%\AgentHarness\data` 会在首次启动时复制过去，原目录改名为 `data.migrated-<时间>` 保留作为备份。
+**Windows 上属于这个应用的东西都在安装目录内**：程序本身、用户数据 `data\`、后台接收端运行时 `service-runtime\`。整个目录可以直接复制或备份；升级只替换程序文件，从不写入或删除 `data\`。
+
+用户数据默认放在 `data\`。旧版本的 `%LOCALAPPDATA%\AgentHarness\data` 会在首次启动时复制过去，原目录改名为 `data.migrated-<时间>` 保留作为备份；复制失败则继续使用旧位置。`service-runtime\` 是运行时的按版本哈希副本，启动时只保留当前使用的一份，旧版本自动清理。
 
 需要把数据放到别处时，设置环境变量 `AGENT_HARNESS_STATE` 指向目标目录即可（任意路径、任意磁盘）。注意：数据在应用目录内，意味着**手动删除应用文件夹会一并删除数据**；改用应用内更新则不会有这个问题。
+
+macOS 是例外：`.app` 是封签目录，数据和运行时放在 `~/Library/Application Support/AgentHarness`。
 
 ## 源码目录
 

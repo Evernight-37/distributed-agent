@@ -11,10 +11,32 @@ from unittest import mock
 
 from agent_harness.app_lifecycle import Lifecycle
 from agent_harness.host_control import managed_handler
-from agent_harness.service_install import install_bundle
+from agent_harness.service_install import _prune, install_bundle
 
 
 class ServiceInstallTests(unittest.TestCase):
+    def test_runtimes_from_earlier_versions_are_cleaned_up(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("0123456789abcdef", "fedcba9876543210", "keep-me", "0123456789abcde"):
+                (root / name).mkdir()
+            current = root / "fedcba9876543210"
+            _prune(root, current)
+            self.assertTrue(current.is_dir())
+            # A directory that is not a runtime name is left alone.
+            self.assertTrue((root / "keep-me").is_dir())
+            self.assertFalse((root / "0123456789abcdef").exists())
+            self.assertTrue((root / "0123456789abcde").is_dir())
+
+    def test_a_runtime_that_cannot_be_deleted_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / "0123456789abcdef"
+            old.mkdir()
+            with mock.patch("agent_harness.service_install.shutil.rmtree", side_effect=OSError("in use")):
+                _prune(root, root / "fedcba9876543210")
+            self.assertTrue(old.is_dir())
+
     def test_versioned_install_reuses_valid_copy_and_keeps_old_version(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

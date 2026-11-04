@@ -33,6 +33,18 @@ class DataHomeTests(unittest.TestCase):
             self.app.mkdir(parents=True)
             self.assertEqual(runtime_paths.data_home(), self.legacy)
 
+    def test_installation_files_live_in_the_application_directory(self):
+        self.app.mkdir(parents=True)
+        self.assertEqual(runtime_paths.installation_root(), self.app)
+
+    def test_macos_never_writes_into_the_bundle(self):
+        with mock.patch.object(runtime_paths, "sys", types.SimpleNamespace(platform="darwin")):
+            self.assertEqual(runtime_paths.installation_root(), runtime_paths.application_home())
+
+    def test_a_source_run_never_writes_into_the_checkout(self):
+        with mock.patch.object(runtime_paths, "bundled_root", lambda: None):
+            self.assertEqual(runtime_paths.installation_root(), runtime_paths.application_home())
+
     def test_an_explicit_override_wins(self):
         os.environ["AGENT_HARNESS_STATE"] = str(self.root / "custom")
         self.assertEqual(runtime_paths.data_home(), self.root / "custom")
