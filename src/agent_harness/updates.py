@@ -472,6 +472,10 @@ def start_download(root, **kwargs):
 # Nothing here downloads anything: the caller passes an already verified file.
 
 APPLY_MARKER = "applied.json"
+# How long the launcher waits for the application to exit, in seconds. A PID can
+# be reused by the system, so an unbounded wait can spin forever on an unrelated
+# process; giving up is safer than leaving a hidden watcher behind.
+WAIT_LIMIT = 600
 
 
 def apply_marker_path(root):
@@ -500,15 +504,20 @@ def windows_helper(installer, target, pid, directory=None):
             [
                 "@echo off",
                 "setlocal",
+                "set tries=0",
                 ":wait_for_exit",
                 'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
-                "if not errorlevel 1 (",
-                "  timeout /t 1 /nobreak >nul",
-                "  goto wait_for_exit",
-                ")",
+                "if errorlevel 1 goto run_install",
+                "set /a tries=tries+1",
+                "if %tries% GEQ " + str(WAIT_LIMIT) + " goto give_up",
+                "ping -n 2 127.0.0.1 >nul",
+                "goto wait_for_exit",
+                ":run_install",
                 command,
                 'start "" "{target}"',
                 "exit /b 0",
+                ":give_up",
+                "exit /b 1",
             ]
         )
         + newline
@@ -543,15 +552,20 @@ def windows_zip_helper(archive, target, launcher, pid):
             [
                 "@echo off",
                 "setlocal",
+                "set tries=0",
                 ":wait_for_exit",
                 'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
-                "if not errorlevel 1 (",
-                "  timeout /t 1 /nobreak >nul",
-                "  goto wait_for_exit",
-                ")",
+                "if errorlevel 1 goto run_update",
+                "set /a tries=tries+1",
+                "if %tries% GEQ " + str(WAIT_LIMIT) + " goto give_up",
+                "ping -n 2 127.0.0.1 >nul",
+                "goto wait_for_exit",
+                ":run_update",
                 extraction,
                 'start "" "{launcher}"',
                 "exit /b 0",
+                ":give_up",
+                "exit /b 1",
             ]
         )
         + newline
@@ -564,7 +578,12 @@ def unix_helper(archive, target, pid):
         chr(10).join(
             [
                 "#!/bin/sh",
-                "while kill -0 {pid} 2>/dev/null; do sleep 1; done",
+                "tries=0",
+                "while kill -0 {pid} 2>/dev/null; do",
+                "  tries=$((tries + 1))",
+                '  [ "$tries" -ge ' + str(WAIT_LIMIT) + " ] && exit 1",
+                "  sleep 1",
+                "done",
                 "staging=$(mktemp -d) || exit 1",
                 'if ! ditto -x -k "{archive}" "$staging" 2>/dev/null; then',
                 '  unzip -q "{archive}" -d "$staging" || exit 1',
