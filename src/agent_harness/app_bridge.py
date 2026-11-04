@@ -1110,6 +1110,13 @@ class AppBridge:
             value = saved.get(key)
             if isinstance(value, str) and value.strip():
                 choice[key] = value.strip()
+        models = saved.get("models")
+        if isinstance(models, list) and models:
+            choice["models"] = models
+        else:
+            from agent_harness import executors
+
+            choice["models"] = [dict(entry) for entry in executors.DEFAULT_MODELS]
         return choice
 
     def _sync_executor(self, runtime, choice, reset_path=False):
@@ -1129,6 +1136,11 @@ class AppBridge:
                     executor[key] = value.strip()
                 else:
                     executor.pop(key, None)
+            models = choice.get("models")
+            if isinstance(models, list) and models:
+                executor["models"] = models
+            else:
+                executor.pop("models", None)
             if reset_path:
                 executor.pop("cli_path", None)
             write_json(path, executor)

@@ -362,18 +362,54 @@ function deleteEmployee(e) {
   });
 }
 function employeeSettings(e) {
+  // The model decides which local CLI runs the turn, so it is chosen from this
+  // machine's table instead of being typed freely.
+  api("settings-get")
+    .catch(() => null)
+    .then((settings) =>
+      openEmployeeSettings(e, settings?.executor?.models || []),
+    );
+}
+
+function openEmployeeSettings(e, models) {
   modal("员工设置 · " + e.name, (b, a) => {
-    const name = field(b, "员工名称", e.name),
-      model = field(b, "模型", e.model || "gpt-5.6-sol");
-    model.setAttribute("list", "models");
-    const dl = el("datalist");
-    dl.id = "models";
-    ["gpt-5.6-sol", "gpt-6.1-sol", "gpt-5.6-luna"].forEach((v) => {
-      const o = el("option");
-      o.value = v;
-      dl.append(o);
+    const name = field(b, "员工名称", e.name);
+    const modelRow = el("label", "setting-row");
+    const model = el("select");
+    const groups = { codex: [], dsh: [] };
+    (models.length
+      ? models
+      : [{ name: e.model || "gpt-5.6-sol", executor: "codex" }]
+    ).forEach((item) => {
+      (groups[item.executor === "dsh" ? "dsh" : "codex"] || groups.codex).push(
+        item,
+      );
     });
-    b.append(dl);
+    [
+      ["codex", "Codex CLI"],
+      ["dsh", "DeepSeek Harness"],
+    ].forEach(([kind, label]) => {
+      if (!groups[kind].length) return;
+      const group = el("optgroup");
+      group.label = label;
+      groups[kind].forEach((item) => {
+        const option = el("option", "", item.name);
+        option.value = item.name;
+        group.append(option);
+      });
+      model.append(group);
+    });
+    model.value = e.model || models[0]?.name || "gpt-5.6-sol";
+    modelRow.append(el("span", "", "模型"), model);
+    b.append(modelRow);
+    if (!models.length)
+      b.append(
+        el(
+          "p",
+          "muted small",
+          "本机还没有配置模型表；请先到设置 → 本机执行器里添加模型。",
+        ),
+      );
     const effort = field(
       b,
       "思考强度",
