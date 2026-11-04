@@ -54,8 +54,8 @@ def pick_host_state(default, saved, has_database, knows_account, is_legacy=None)
     account wins; a location the user deliberately chose is still honoured; a path
     inside the directory we migrated away from is treated as stale.
     """
-    default = Path(default)
-    saved = Path(saved) if saved else None
+    default = Path(default).expanduser().resolve()
+    saved = Path(saved).expanduser().resolve() if saved else None
     if saved is None or saved == default:
         return default
     if knows_account(default):
