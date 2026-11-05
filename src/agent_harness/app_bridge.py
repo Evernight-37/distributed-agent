@@ -1116,7 +1116,7 @@ class AppBridge:
         else:
             from agent_harness import executors
 
-            choice["models"] = [dict(entry) for entry in executors.DEFAULT_MODELS]
+            choice["models"] = executors.default_models()
         return choice
 
     def _sync_executor(self, runtime, choice, reset_path=False):

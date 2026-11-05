@@ -45,19 +45,51 @@ DSH_MODEL = "deepseek-flash"
 
 # A machine runs whichever CLIs its owner installed, and the model decides which
 # one executes a turn. Neither CLI can enumerate its models offline (Codex's come
-# from the account, DeepSeek Harness's from its provider), so the table is local
-# configuration seeded from what is actually there: Codex's configured model and
-# the model DeepSeek Harness has been using.
-# Every model the product has offered so far, so an existing agent keeps working
-# after the table becomes the source of truth.
-DEFAULT_MODELS = (
-    {"name": "gpt-5.6-sol", "executor": CODEX},
-    {"name": "gpt-6.1-sol", "executor": CODEX},
-    {"name": "gpt-5.6-luna", "executor": CODEX},
-    # The only DeepSeek model actually observed running on this configuration.
-    # Anything else belongs to a provider route this project has not verified.
-    {"name": "deepseek-flash", "executor": DSH},
-)
+# from the account, DeepSeek Harness's from its provider), so the table starts
+# from what is actually configured and everything else is added by the operator.
+DSH_DEFAULT_MODEL = DSH_MODEL
+
+
+def codex_config_model(home=None):
+    """The model Codex itself is configured with, if its config can be read.
+
+    ``CODEX_HOME`` relocates the directory, exactly as it does for Codex.
+    """
+    base = home or os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
+    path = Path(base) / "config.toml"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    model = None
+    try:
+        import tomllib
+
+        document = tomllib.loads(text)
+        model = document.get("model")
+    except Exception:
+        # A config we cannot parse is not worth failing a settings page over.
+        model = None
+    if not isinstance(model, str) or not model.strip():
+        for line in text.splitlines():
+            match = re.match(r'^\s*model\s*=\s*"([^"]+)"\s*$', line)
+            if match:
+                model = match.group(1)
+                break
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
+
+
+def default_models(home=None):
+    """The seed table: the model each installed CLI is actually set up with."""
+    models = []
+    codex = codex_config_model(home)
+    if codex:
+        models.append({"name": codex, "executor": CODEX})
+    models.append({"name": DSH_DEFAULT_MODEL, "executor": DSH})
+    return models
+
 
 # The managed-turn structured reply is enforced by a Codex JSON schema.  DSH has
 # no equivalent flag, so its managed turns rely on the prompt contract alone.
@@ -112,7 +144,7 @@ def models(root):
             cleaned.append({"name": name, "executor": kind})
         if cleaned:
             return cleaned
-    return [dict(entry) for entry in DEFAULT_MODELS]
+    return default_models()
 
 
 def model_kind(root, model):

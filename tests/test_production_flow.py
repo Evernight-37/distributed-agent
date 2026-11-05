@@ -14,6 +14,16 @@ from agent_harness.common import read_json, write_json
 
 
 class ProductionFlow(unittest.TestCase):
+    def setUp(self):
+        # The model table is seeded from whatever Codex is configured with, so these
+        # tests need their own Codex home rather than the developer's.
+        self._codex_home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._codex_home.cleanup)
+        Path(self._codex_home.name, "config.toml").write_text('model = "gpt-5.6-sol"\n', encoding="utf-8")
+        codex_env = patch.dict("os.environ", {"CODEX_HOME": self._codex_home.name})
+        codex_env.start()
+        self.addCleanup(codex_env.stop)
+
     def test_default_local_state_uses_unversioned_data_namespace(self):
         with (
             tempfile.TemporaryDirectory() as td,

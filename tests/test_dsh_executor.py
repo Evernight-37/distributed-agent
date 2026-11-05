@@ -55,19 +55,36 @@ class ExecutorSelectionTests(unittest.TestCase):
 
 
 class ModelTableTests(unittest.TestCase):
-    def test_a_machine_without_a_table_gets_the_defaults(self):
+    def setUp(self):
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self._env = mock.patch.dict(os.environ, {"CODEX_HOME": self._home.name})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def write_codex_config(self, model):
+        Path(self._home.name, "config.toml").write_text('model = "%s"\n' % model, encoding="utf-8")
+
+    def test_a_machine_without_a_table_is_seeded_from_the_codex_config(self):
+        self.write_codex_config("gpt-6.1-sol")
         with tempfile.TemporaryDirectory() as folder:
             table = executors.models(Path(folder))
             self.assertIn({"name": "gpt-6.1-sol", "executor": "codex"}, table)
             self.assertIn({"name": "deepseek-flash", "executor": "dsh"}, table)
 
-    def test_defaults_only_list_models_this_project_has_shipped(self):
-        # A model nobody verified must not become a default: routing it would send
-        # real work to a provider route that may not exist.
-        names = {entry["name"] for entry in executors.DEFAULT_MODELS}
-        self.assertEqual(names, {"gpt-5.6-sol", "gpt-6.1-sol", "gpt-5.6-luna", "deepseek-flash"})
+    def test_only_the_configured_codex_model_is_seeded(self):
+        # The product must not invent Codex models: Codex's list comes from the
+        # account, so anything beyond the configured one is the operator's choice.
+        self.write_codex_config("gpt-5.6-luna")
+        names = {entry["name"] for entry in executors.default_models()}
+        self.assertEqual(names, {"gpt-5.6-luna", "deepseek-flash"})
+
+    def test_without_a_codex_config_only_the_deepseek_model_is_seeded(self):
+        names = {entry["name"] for entry in executors.default_models()}
+        self.assertEqual(names, {"deepseek-flash"})
 
     def test_the_model_decides_which_cli_runs_the_turn(self):
+        self.write_codex_config("gpt-6.1-sol")
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             self.assertEqual(executors.model_kind(root, "gpt-6.1-sol"), "codex")
