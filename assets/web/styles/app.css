@@ -421,6 +421,33 @@ main {
   border: 0;
   padding-bottom: 0;
 }
+/* The model table is a form, not a label/control pair: give it its own grid so the
+   name field can flex while the executor and the remove action stay put. */
+.model-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 168px 64px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.model-row input,
+.model-row select {
+  width: 100%;
+  min-width: 0;
+}
+.model-row button.link {
+  justify-self: start;
+  padding: 6px 0;
+}
+.model-table + button {
+  margin-top: 12px;
+}
 .device {
   display: flex;
   gap: 10px;

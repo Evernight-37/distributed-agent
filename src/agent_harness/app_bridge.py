@@ -561,10 +561,20 @@ class AppBridge:
         return [str(self._write_launcher(self._mcp_launcher_path(), self._mcp_launch_command()))]
 
     def _mcp_entry_is_ours(self, transport):
-        """Whether an existing Codex entry was written by this application."""
+        """Whether an existing Codex entry was written by this application.
+
+        Deliberately structural: the adapter and the grant path both move when the
+        application data does, so an entry from an older layout must still be
+        recognised as ours before it can be re-pointed. The caller has already
+        checked that the entry name is this profile's.
+        """
         parts = [str(transport.get("command") or "")] + [str(arg) for arg in transport.get("args") or []]
-        joined = " ".join(parts)
-        return "mcp_adapter.py" in joined and str(self._mcp_grant_path()) in joined
+        joined = " ".join(parts).replace("\\", "/")
+        if "mcp_adapter.py" in joined and "--grant" in joined:
+            return True
+        # The stable launcher this application registers, wherever it used to live.
+        name = Path(str(transport.get("command") or "")).name.lower()
+        return name.startswith("launch-") and name.endswith((".cmd", ".sh"))
 
     def _codex_mcp(self, *arguments, check=True):
         import subprocess

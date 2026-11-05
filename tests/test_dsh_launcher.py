@@ -53,6 +53,27 @@ class CodexLauncherTests(unittest.TestCase):
         self.assertTrue(self.bridge._mcp_entry_is_ours(transport))
         self.assertFalse(self.bridge._mcp_entry_is_ours({"type": "stdio", "command": "other.exe", "args": []}))
 
+    def test_an_entry_from_a_previous_data_location_is_still_ours(self):
+        # The recorded grant path moves with user data; an entry written before the
+        # move must still be recognised, or the toggle keeps refusing to repair it.
+        transport = {
+            "type": "stdio",
+            "command": "C:\\Users\\old\\AppData\\Local\\AgentHarness\\service-runtime\\abc\\runtime\\python.exe",
+            "args": [
+                "-X",
+                "utf8",
+                "C:\\Users\\old\\AppData\\Local\\AgentHarness\\service-runtime\\abc\\client\\mcp_adapter.py",
+                "--grant",
+                "C:\\Users\\old\\AppData\\Local\\AgentHarness\\data\\mcp\\grant-profile-one.json",
+            ],
+        }
+        self.assertTrue(self.bridge._mcp_entry_is_ours(transport))
+        self.assertTrue(
+            self.bridge._mcp_entry_is_ours(
+                {"type": "stdio", "command": "D:\\elsewhere\\mcp\\launch-profile-one.cmd", "args": []}
+            )
+        )
+
 
 class DshLauncherTests(unittest.TestCase):
     def setUp(self):

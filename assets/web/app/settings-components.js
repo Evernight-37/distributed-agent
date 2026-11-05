@@ -296,11 +296,11 @@ function executorCard(current) {
   const models = Array.isArray(current?.models)
     ? current.models.map((item) => ({ ...item }))
     : [];
-  const rows = el("div");
+  const rows = el("div", "model-table");
   const draw = () => {
     rows.replaceChildren();
     models.forEach((item, index) => {
-      const row = el("div", "setting-row");
+      const row = el("div", "model-row");
       const name = el("input");
       name.type = "text";
       name.value = item.name || "";
@@ -324,10 +324,14 @@ function executorCard(current) {
       row.append(
         name,
         kind,
-        button("删除", () => {
-          models.splice(index, 1);
-          draw();
-        }),
+        button(
+          "删除",
+          () => {
+            models.splice(index, 1);
+            draw();
+          },
+          "link",
+        ),
       );
       rows.append(row);
     });
