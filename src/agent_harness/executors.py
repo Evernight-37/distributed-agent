@@ -43,6 +43,21 @@ DSH_PROFILE = "headless"
 DSH_PROVIDER = "deepseek-official"
 DSH_MODEL = "deepseek-flash"
 
+# A machine runs whichever CLIs its owner installed, and the model decides which
+# one executes a turn. Neither CLI can enumerate its models offline (Codex's come
+# from the account, DeepSeek Harness's from its provider), so the table is local
+# configuration seeded from what is actually there: Codex's configured model and
+# the model DeepSeek Harness has been using.
+# Every model the product has offered so far, so an existing agent keeps working
+# after the table becomes the source of truth.
+DEFAULT_MODELS = (
+    {"name": "gpt-5.6-sol", "executor": CODEX},
+    {"name": "gpt-6.1-sol", "executor": CODEX},
+    {"name": "gpt-5.6-luna", "executor": CODEX},
+    {"name": "deepseek-flash", "executor": DSH},
+    {"name": "deepseek-reasoner", "executor": DSH},
+)
+
 # The managed-turn structured reply is enforced by a Codex JSON schema.  DSH has
 # no equivalent flag, so its managed turns rely on the prompt contract alone.
 MANAGED_TURNS = {CODEX: True, DSH: False}
@@ -72,6 +87,42 @@ def settings(root):
 def selected(root):
     """The executor this machine runs."""
     return settings(root).get("executor", CODEX)
+
+
+def models(root):
+    """This machine's model table: which models it can run, and with which CLI.
+
+    An empty or malformed table falls back to the defaults rather than leaving the
+    machine unable to dispatch anything.
+    """
+    value = settings(root).get("models")
+    if isinstance(value, list):
+        cleaned, seen = [], set()
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            name, kind = item.get("name"), item.get("executor")
+            if not isinstance(name, str) or not name.strip() or kind not in KINDS:
+                continue
+            name = name.strip()
+            if name.casefold() in seen:
+                continue
+            seen.add(name.casefold())
+            cleaned.append({"name": name, "executor": kind})
+        if cleaned:
+            return cleaned
+    return [dict(entry) for entry in DEFAULT_MODELS]
+
+
+def model_kind(root, model):
+    """Which CLI runs this model, or None when the machine's table lacks it."""
+    if not isinstance(model, str):
+        return None
+    wanted = model.strip().casefold()
+    for entry in models(root):
+        if entry["name"].casefold() == wanted:
+            return entry["executor"]
+    return None
 
 
 def supports_managed_turns(root):
@@ -230,9 +281,9 @@ def status_of(root, kind, probe=None):
     }
 
 
-def login(root, exe):
-    """Report whether the selected executor can authenticate, without reading secrets."""
-    if selected(root) == DSH:
+def login(root, exe, kind=None):
+    """Report whether the executor that will run this turn can authenticate."""
+    if (kind or selected(root)) == DSH:
         # DSH headless resolves credentials from DEEPSEEK_API_KEY or from the
         # credential service the desktop Models page writes to.  Presence of the
         # environment variable is the only check that costs nothing and reads no
@@ -322,7 +373,7 @@ def environment(root, stage=None, full_access=False):
     return {"DSH_PERMISSION_MODE": mode}
 
 
-def requested_model(root, project_model):
+def requested_model(root, project_model, kind=None):
     """The model this machine actually asks for when a turn is dispatched.
 
     Only DeepSeek Harness takes a receiver-level override, because its provider
@@ -330,12 +381,44 @@ def requested_model(root, project_model):
     leftover value from a previous DeepSeek Harness selection must not make the
     effective-model check fail every turn.
     """
-    if selected(root) != DSH:
+    if (kind or selected(root)) != DSH:
         return project_model
     override = settings(root).get("model")
     if isinstance(override, str) and override.strip():
         return override.strip()
     return project_model
+
+
+def binary(root, kind=None, probe=None):
+    """The executable that runs this kind, or a clear failure."""
+    kind = kind or selected(root)
+    found = status_of(root, kind, probe)
+    if not found.get("found"):
+        raise RuntimeError(found.get("error") or ("这台机器没有可用的 %s CLI" % _label(kind)))
+    return found["path"]
+
+
+def kind_for(root, model):
+    """Which CLI has to run this model on this machine.
+
+    Only the model table is consulted: whether that CLI is actually installed is
+    the next question (``binary``), and keeping them apart lets a caller report
+    "model not listed" separately from "CLI missing".
+    """
+    kind = model_kind(root, model)
+    if kind is None:
+        raise ValueError("本机模型表里没有 " + str(model) + "；请先在本机执行器设置中添加该模型")
+    return kind
+
+
+def kind_or_selected(root, model):
+    """Route a dispatched turn, tolerating a model the table does not list yet.
+
+    Existing agents were configured before the table existed. Rather than failing
+    their next turn, they run on the machine's own executor, exactly as before the
+    table became the source of truth.
+    """
+    return model_kind(root, model) or selected(root)
 
 
 # DeepSeek Harness validates the reasoning effort against the model's own
@@ -454,9 +537,9 @@ def dsh_command(root, exe, project, thread_id, scratch):
     return args + ["-"]
 
 
-def command(root, exe, project, thread_id, scratch=None, managed=False, schema_path=None):
-    """Build one turn's argv for the executor this machine runs."""
-    if selected(root) == DSH:
+def command(root, exe, project, thread_id, scratch=None, managed=False, schema_path=None, kind=None):
+    """Build one turn's argv for the executor that model needs."""
+    if (kind or selected(root)) == DSH:
         return dsh_command(root, exe, project, thread_id, scratch)
     return codex_command(exe, project, thread_id, managed, schema_path)
 

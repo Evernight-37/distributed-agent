@@ -539,14 +539,11 @@ class AppBridge:
             raise RuntimeError("未找到可运行的 Codex CLI，请先在设置中完成检测")
         return status["path"]
 
-    def _mcp_launch(self):
-        # Headless Linux installations keep a stable launcher inside the
-        # private data directory. Its contents can be refreshed during a
-        # side-by-side upgrade without changing Codex's registered command.
-        if self.profile and os.name != "nt":
-            launcher = self.root / "mcp" / ("launch-" + self.profile["id"] + ".sh")
-            if launcher.is_file() and launcher.resolve().parent == (self.root / "mcp").resolve():
-                return [str(launcher)]
+    def _mcp_launcher_path(self):
+        suffix = ".cmd" if os.name == "nt" else ".sh"
+        return self.root / "mcp" / ("launch-" + self.profile["id"] + suffix)
+
+    def _mcp_launch_command(self):
         return [
             python_command(),
             "-X",
@@ -555,6 +552,19 @@ class AppBridge:
             "--grant",
             str(self._mcp_grant_path()),
         ]
+
+    def _mcp_launch(self):
+        # Codex stores the command it was given and compares it verbatim, so this
+        # path has to survive an upgrade: the runtime it points at lives under a
+        # content-addressed directory that changes on every release. Registering
+        # that path made an update look like a stranger's entry.
+        return [str(self._write_launcher(self._mcp_launcher_path(), self._mcp_launch_command()))]
+
+    def _mcp_entry_is_ours(self, transport):
+        """Whether an existing Codex entry was written by this application."""
+        parts = [str(transport.get("command") or "")] + [str(arg) for arg in transport.get("args") or []]
+        joined = " ".join(parts)
+        return "mcp_adapter.py" in joined and str(self._mcp_grant_path()) in joined
 
     def _codex_mcp(self, *arguments, check=True):
         import subprocess
@@ -580,13 +590,26 @@ class AppBridge:
         transport = value.get("transport", {})
         expected = self._mcp_launch()
         if (
-            value.get("name") != self._mcp_name()
-            or transport.get("type") != "stdio"
-            or transport.get("command") != expected[0]
-            or transport.get("args") != expected[1:]
+            value.get("name") == self._mcp_name()
+            and transport.get("type") == "stdio"
+            and transport.get("command") == expected[0]
+            and transport.get("args") == expected[1:]
         ):
-            raise RuntimeError("Codex 中已有同名但来源不同的 MCP 配置；为避免覆盖，Harness 未修改它")
-        return value
+            return value
+        if (
+            value.get("name") == self._mcp_name()
+            and transport.get("type") == "stdio"
+            and self._mcp_entry_is_ours(transport)
+        ):
+            # Our own entry, recorded against an older install layout. Re-point it
+            # instead of refusing: after an upgrade it would otherwise look like a
+            # stranger's configuration forever.
+            self._codex_mcp("remove", self._mcp_name(), check=False)
+            self._codex_mcp("add", self._mcp_name(), "--", *expected)
+            refreshed = self._codex_mcp("get", self._mcp_name(), "--json", check=False)
+            if refreshed.returncode == 0:
+                return json.loads(refreshed.stdout)
+        raise RuntimeError("Codex 中已有同名但来源不同的 MCP 配置；为避免覆盖，Harness 未修改它")
 
     def _retry_mcp_revocations(self):
         path = self._mcp_revocation_path()
@@ -719,18 +742,11 @@ class AppBridge:
         suffix = ".cmd" if os.name == "nt" else ".sh"
         return self.root / "mcp" / ("launch-" + self.profile["id"] + "-dsh" + suffix)
 
-    def _ensure_dsh_mcp_launcher(self):
-        """Refresh the stable launcher the DeepSeek Harness entry points at.
-
-        The runtime lives under a content-addressed directory, so pinning it in
-        DeepSeek Harness's profile would break on every application upgrade. The
-        launcher path is stable; only its contents are rewritten.
-        """
+    def _write_launcher(self, path, command):
+        """Write a launcher whose path is stable while its contents track the runtime."""
         import shlex
         import subprocess
 
-        path = self._dsh_mcp_launcher_path()
-        command = self._dsh_mcp_command()
         if os.name == "nt":
             body = "@echo off\r\n" + subprocess.list2cmdline(command) + "\r\n"
         else:
@@ -750,6 +766,15 @@ class AppBridge:
                 temporary.chmod(0o700)
             os.replace(temporary, path)
         return path
+
+    def _ensure_dsh_mcp_launcher(self):
+        """Refresh the stable launcher the DeepSeek Harness entry points at.
+
+        The runtime lives under a content-addressed directory, so pinning it in
+        DeepSeek Harness's profile would break on every application upgrade. The
+        launcher path is stable; only its contents are rewritten.
+        """
+        return self._write_launcher(self._dsh_mcp_launcher_path(), self._dsh_mcp_command())
 
     def _dsh_mcp_probe(self):
         """Fail unless DeepSeek Harness can still parse the profile patch.
@@ -1085,6 +1110,13 @@ class AppBridge:
             value = saved.get(key)
             if isinstance(value, str) and value.strip():
                 choice[key] = value.strip()
+        models = saved.get("models")
+        if isinstance(models, list) and models:
+            choice["models"] = models
+        else:
+            from agent_harness import executors
+
+            choice["models"] = [dict(entry) for entry in executors.DEFAULT_MODELS]
         return choice
 
     def _sync_executor(self, runtime, choice, reset_path=False):
@@ -1104,6 +1136,11 @@ class AppBridge:
                     executor[key] = value.strip()
                 else:
                     executor.pop(key, None)
+            models = choice.get("models")
+            if isinstance(models, list) and models:
+                executor["models"] = models
+            else:
+                executor.pop("models", None)
             if reset_path:
                 executor.pop("cli_path", None)
             write_json(path, executor)

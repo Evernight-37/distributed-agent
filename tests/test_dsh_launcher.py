@@ -10,6 +10,50 @@ from agent_harness import dsh_mcp
 from agent_harness.app_bridge import AppBridge
 
 
+class CodexLauncherTests(unittest.TestCase):
+    """The Codex entry must survive an upgrade too."""
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.root = Path(self._temp.name) / "data"
+        self.bridge = AppBridge(self.root)
+        self.bridge.profile = {
+            "id": "profile-one",
+            "node": "device-local",
+            "server": "http://127.0.0.1:8765",
+        }
+        self.bridge.identity = {"account_id": "local"}
+        self.addCleanup(self._temp.cleanup)
+
+    def test_the_registered_command_is_a_stable_launcher(self):
+        command = self.bridge._mcp_launch()
+        self.assertEqual(len(command), 1)
+        launcher = Path(command[0])
+        self.assertEqual(launcher.parent, (self.root / "mcp").resolve())
+        self.assertTrue(launcher.is_file())
+        text = launcher.read_text(encoding="utf-8")
+        self.assertIn("mcp_adapter.py", text)
+        self.assertIn("--grant", text)
+
+    def test_the_launcher_is_rewritten_when_the_runtime_moves(self):
+        first = self.bridge._mcp_launch()[0]
+        launcher = Path(first)
+        launcher.write_text("stale\n", encoding="utf-8")
+        second = self.bridge._mcp_launch()[0]
+        self.assertEqual(first, second)
+        self.assertIn("mcp_adapter.py", launcher.read_text(encoding="utf-8"))
+
+    def test_an_entry_of_ours_from_an_older_layout_is_refreshed(self):
+        grants = [str(self.bridge._mcp_grant_path())]
+        transport = {
+            "type": "stdio",
+            "command": "C:\\old\\service-runtime\\abc\\runtime\\python.exe",
+            "args": ["-X", "utf8", "C:\\old\\mcp_adapter.py", "--grant", grants[0]],
+        }
+        self.assertTrue(self.bridge._mcp_entry_is_ours(transport))
+        self.assertFalse(self.bridge._mcp_entry_is_ours({"type": "stdio", "command": "other.exe", "args": []}))
+
+
 class DshLauncherTests(unittest.TestCase):
     def setUp(self):
         self._temp = tempfile.TemporaryDirectory()

@@ -253,17 +253,6 @@ async function renderSettings() {
     list.append(dshMcpCard(settings.dsh_mcp));
   else list.append(codexMcpCard(settings.codex_mcp));
   list.append(updateCard());
-  const storage = el("section", "panel");
-  storage.append(
-    el("h2", "", "本机数据"),
-    el("p", "muted small", "本机数据位置：" + settings.data_root),
-    el(
-      "p",
-      "muted small",
-      "项目工作目录不自动同步。模型凭据和运行环境也保留在各自机器。",
-    ),
-  );
-  list.append(storage);
   const diagnostics = el("section", "panel");
   diagnostics.append(
     el("h2", "", "安全诊断"),

@@ -106,14 +106,14 @@ def executor_environment(root=None, stage=None, full_access=False):
     return executors.child_environment(root, stage, full_access)
 
 
-def codex_login_status(exe, root=None):
-    """Check the selected executor's login without reading credentials.
+def codex_login_status(exe, root=None, kind=None):
+    """Check the executor that will run this turn, without reading credentials.
 
     The historical name is kept because the worker, the desktop settings API and
     the Linux receiver all call it through this module.
     """
     root = ROOT if root is None else Path(root)
-    return executors.login(root, exe)
+    return executors.login(root, exe, kind)
 
 
 def cli_status(root=None):
@@ -123,8 +123,9 @@ def cli_status(root=None):
     return executors.status(root, codex_version)
 
 
-def cli_path(root=None):
-    result = cli_status(root)
+def cli_path(root=None, kind=None):
+    root = ROOT if root is None else Path(root)
+    result = cli_status(root) if kind is None else executors.status_of(root, kind, codex_version)
     if not result["found"]:
         raise RuntimeError(result["error"])
     return result["path"]
@@ -623,11 +624,21 @@ def _rpc(request, managed_runtime=None):
             job = identifier(request["job"])
             path = job_dir(job)
             path.mkdir(parents=True, exist_ok=False)
+            # The agent's model decides which local CLI runs this turn. A model the
+            # table does not list falls back to the machine's own executor, so an
+            # existing agent keeps working before its model is added to the table.
+            kind = executors.kind_or_selected(ROOT, project.get("model"))
             channel = request.get("session_channel")
-            session_file = "session.json"
+            session_file = "session-" + kind + ".json"
             if channel:
                 identifier(channel)
-                session_file = "channels/" + channel + ".json"
+                session_file = "channels/" + channel + "-" + kind + ".json"
+            elif (ROOT / "projects").joinpath(project["name"]).joinpath(session_file).is_file() is False:
+                # Older installs kept one thread id for the single executor the
+                # machine ran before routing existed; adopt it only for that one.
+                legacy = directory / "session.json"
+                if legacy.is_file() and kind == executors.selected(ROOT):
+                    session_file = "session.json"
             session = read_json(directory / session_file, {"thread_id": None})
             config = {
                 "project": project,
@@ -654,7 +665,7 @@ def _rpc(request, managed_runtime=None):
                 # one process per turn and resumes through its session id, so its
                 # managed turns take the ordinary supervisor path.
                 warm_turns = bool(
-                    config["managed_turn"] and project.get("local_control") and executors.supports_managed_turns(ROOT)
+                    config["managed_turn"] and project.get("local_control") and executors.MANAGED_TURNS.get(kind, False)
                 )
                 if warm_turns:
                     warm_path = directory / "warm.json"
@@ -844,11 +855,11 @@ def run(job):
     state = read_json(path / "state.json", {"job": job})
     proc = None
     try:
-        kind = executors.selected(ROOT)
         config = read_json(path / "request.json")
         directory = project_dir(config["project"]["name"])
-        exe = cli_path()
-        login = codex_login_status(exe, ROOT)
+        kind = executors.kind_or_selected(ROOT, config["project"].get("model"))
+        exe = cli_path(ROOT, kind)
+        login = codex_login_status(exe, ROOT, kind=kind)
         if not login["logged_in"]:
             raise RuntimeError(login["login_error"])
         command_project = dict(config["project"])
@@ -869,6 +880,7 @@ def run(job):
             scratch=path,
             managed=managed,
             schema_path=schema_path,
+            kind=kind,
         )
         rules = GROUP_RULES if managed else PEER_RULES
         prompt = (
@@ -926,7 +938,7 @@ def run(job):
                 status="running",
                 started_at=now(),
                 codex_pid=proc.pid,
-                requested_model=executors.requested_model(ROOT, config["project"]["model"]),
+                requested_model=executors.requested_model(ROOT, config["project"]["model"], kind=kind),
                 reasoning_effort=config["project"]["effort"],
                 command=command,
                 thread_id=config["thread_id"],

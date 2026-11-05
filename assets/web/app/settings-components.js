@@ -280,13 +280,71 @@ function executorCard(current) {
   card.append(el("h2", "", "本机执行器"));
   note(
     card,
-    "这台电脑用哪个本地 Agent 执行派来的任务。执行器只影响本机；同一个项目里，不同机器可以各自使用不同的执行器。",
+    "这台电脑装了哪些 CLI，以及哪些模型由它们执行。派来的任务按「模型」自动选择执行器：DeepSeek 模型走 DeepSeek Harness，GPT 模型走 Codex。两边都装了就能同机并行承担两种任务。",
   );
-  const choice = field(card, "执行器", current?.executor || "codex", [
-    ["codex", "Codex CLI"],
-    ["dsh", "DeepSeek Harness"],
-  ]);
+  const choice = field(
+    card,
+    "默认执行器（模型表未列出时使用）",
+    current?.executor || "codex",
+    [
+      ["codex", "Codex CLI"],
+      ["dsh", "DeepSeek Harness"],
+    ],
+  );
   choice.id = "executorSelect";
+
+  const models = Array.isArray(current?.models)
+    ? current.models.map((item) => ({ ...item }))
+    : [];
+  const rows = el("div");
+  const draw = () => {
+    rows.replaceChildren();
+    models.forEach((item, index) => {
+      const row = el("div", "setting-row");
+      const name = el("input");
+      name.type = "text";
+      name.value = item.name || "";
+      name.placeholder = "模型名，例如 deepseek-flash";
+      name.oninput = () => {
+        models[index].name = name.value.trim();
+      };
+      const kind = el("select");
+      [
+        ["codex", "Codex CLI"],
+        ["dsh", "DeepSeek Harness"],
+      ].forEach(([value, label]) => {
+        const option = el("option", "", label);
+        option.value = value;
+        kind.append(option);
+      });
+      kind.value = item.executor === "dsh" ? "dsh" : "codex";
+      kind.onchange = () => {
+        models[index].executor = kind.value;
+      };
+      row.append(
+        name,
+        kind,
+        button("删除", () => {
+          models.splice(index, 1);
+          draw();
+        }),
+      );
+      rows.append(row);
+    });
+  };
+  draw();
+  card.append(el("p", "muted small", "本机模型表"));
+  card.append(rows);
+  card.append(
+    button("添加模型", () => {
+      models.push({ name: "", executor: "codex" });
+      draw();
+    }),
+  );
+  note(
+    card,
+    "模型表是封闭的：派发时只认这里的模型。两边的完整模型清单无法离线枚举，所以把实际可用的模型填进来；填错不影响别的模型，派发到它时执行器会给出明确错误。",
+  );
   const model = field(
     card,
     "DeepSeek Harness 模型（可留空）",
@@ -323,6 +381,7 @@ function executorCard(current) {
           executor: choice.value,
           model: model.value.trim(),
           provider: provider.value.trim(),
+          models: models.filter((item) => item.name && item.name.trim()),
         });
         const status = result?.status;
         if (status?.found) {

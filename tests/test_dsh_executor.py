@@ -54,6 +54,65 @@ class ExecutorSelectionTests(unittest.TestCase):
                 executors.selected(root)
 
 
+class ModelTableTests(unittest.TestCase):
+    def test_a_machine_without_a_table_gets_the_defaults(self):
+        with tempfile.TemporaryDirectory() as folder:
+            table = executors.models(Path(folder))
+            self.assertIn({"name": "gpt-6.1-sol", "executor": "codex"}, table)
+            self.assertIn({"name": "deepseek-flash", "executor": "dsh"}, table)
+
+    def test_the_model_decides_which_cli_runs_the_turn(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertEqual(executors.model_kind(root, "gpt-6.1-sol"), "codex")
+            self.assertEqual(executors.model_kind(root, "deepseek-flash"), "dsh")
+            # Case is not significant: agents store what the operator typed.
+            self.assertEqual(executors.model_kind(root, "DEEPSEEK-FLASH"), "dsh")
+            self.assertIsNone(executors.model_kind(root, "claude-4"))
+
+    def test_a_saved_table_wins_and_drops_broken_entries(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(
+                root / "executor.json",
+                {
+                    "executor": "codex",
+                    "models": [
+                        {"name": "gpt-5.6-luna", "executor": "codex"},
+                        {"name": "deepseek-flash", "executor": "dsh"},
+                        {"name": "  ", "executor": "dsh"},
+                        {"name": "gpt-5.6-luna", "executor": "dsh"},
+                        {"name": "no-cli", "executor": "gemini"},
+                    ],
+                },
+            )
+            self.assertEqual(
+                executors.models(root),
+                [
+                    {"name": "gpt-5.6-luna", "executor": "codex"},
+                    {"name": "deepseek-flash", "executor": "dsh"},
+                ],
+            )
+
+    def test_an_empty_table_falls_back_instead_of_blocking_dispatch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(root / "executor.json", {"executor": "codex", "models": []})
+            self.assertTrue(executors.models(root))
+
+    def test_dispatch_routes_by_model_and_falls_back_for_unlisted_ones(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertEqual(executors.kind_or_selected(root, "deepseek-flash"), "dsh")
+            self.assertEqual(executors.kind_or_selected(root, "gpt-6.1-sol"), "codex")
+            # An agent configured before the table existed keeps its machine.
+            write_json(root / "executor.json", {"executor": "dsh"})
+            self.assertEqual(executors.kind_or_selected(root, "brand-new-model"), "dsh")
+            # And configuring such a model is still refused up front.
+            with self.assertRaises(ValueError):
+                executors.kind_for(root, "brand-new-model")
+
+
 class DshDiscoveryTests(unittest.TestCase):
     def test_explicit_dsh_path_is_probed(self):
         with tempfile.TemporaryDirectory() as folder:

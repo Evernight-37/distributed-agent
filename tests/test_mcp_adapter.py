@@ -160,7 +160,11 @@ class McpAdapterTests(unittest.TestCase):
             mcp_name = self.bridge._mcp_name()
             self.assertTrue(mcp_name.startswith("agent-harness-"))
             add = next(call for call in calls if call[:2] == ("add", mcp_name))
-            self.assertIn("mcp_adapter.py", " ".join(map(str, add)))
+            # The entry registers a stable launcher; the adapter path lives inside
+            # it, so an upgrade never changes the command Codex remembers.
+            launcher = Path(str(add[3]))
+            self.assertTrue(launcher.is_file())
+            self.assertIn("mcp_adapter.py", launcher.read_text(encoding="utf-8"))
             disabled = self.bridge._disable_mcp()
             self.assertFalse(disabled["enabled"])
             self.assertFalse(self.bridge._mcp_grant_path().exists())
