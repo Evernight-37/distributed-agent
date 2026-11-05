@@ -573,7 +573,9 @@ class AppBridge:
         if "mcp_adapter.py" in joined and "--grant" in joined:
             return True
         # The stable launcher this application registers, wherever it used to live.
-        name = Path(str(transport.get("command") or "")).name.lower()
+        # Split on both separators: the entry is written on Windows but may be read
+        # by a build running anywhere.
+        name = str(transport.get("command") or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
         return name.startswith("launch-") and name.endswith((".cmd", ".sh"))
 
     def _codex_mcp(self, *arguments, check=True):
