@@ -54,8 +54,9 @@ DEFAULT_MODELS = (
     {"name": "gpt-5.6-sol", "executor": CODEX},
     {"name": "gpt-6.1-sol", "executor": CODEX},
     {"name": "gpt-5.6-luna", "executor": CODEX},
+    # The only DeepSeek model actually observed running on this configuration.
+    # Anything else belongs to a provider route this project has not verified.
     {"name": "deepseek-flash", "executor": DSH},
-    {"name": "deepseek-reasoner", "executor": DSH},
 )
 
 # The managed-turn structured reply is enforced by a Codex JSON schema.  DSH has

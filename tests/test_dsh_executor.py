@@ -61,6 +61,12 @@ class ModelTableTests(unittest.TestCase):
             self.assertIn({"name": "gpt-6.1-sol", "executor": "codex"}, table)
             self.assertIn({"name": "deepseek-flash", "executor": "dsh"}, table)
 
+    def test_defaults_only_list_models_this_project_has_shipped(self):
+        # A model nobody verified must not become a default: routing it would send
+        # real work to a provider route that may not exist.
+        names = {entry["name"] for entry in executors.DEFAULT_MODELS}
+        self.assertEqual(names, {"gpt-5.6-sol", "gpt-6.1-sol", "gpt-5.6-luna", "deepseek-flash"})
+
     def test_the_model_decides_which_cli_runs_the_turn(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
