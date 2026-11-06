@@ -22,6 +22,12 @@ class Transfers:
             raise PermissionError("只能在自己名下的机器之间传输")
         return node
 
+    def _owner_of(self, db, node):
+        row = db.execute("SELECT owner_id FROM nodes WHERE name=?", (node,)).fetchone()
+        if not row:
+            raise ValueError("未知设备")
+        return row["owner_id"]
+
     def offer(self, owner, from_node, to_node, name, size, address):
         if not isinstance(name, str) or not 1 <= len(name) <= NAME_LIMIT or "\0" in name:
             raise ValueError("文件名无效")
@@ -33,23 +39,40 @@ class Transfers:
             raise ValueError("不能发给自己")
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            self._node(db, owner, from_node)
-            self._node(db, owner, to_node)
+            if self._owner_of(db, from_node) != owner:
+                raise PermissionError("发送设备不属于当前账户")
+            recipient = self._owner_of(db, to_node)
+            same = recipient == owner
+            if not same and not self._shares_project(db, owner, recipient):
+                raise PermissionError("只能向与自己共同参与项目的成员发送文件")
             transfer = uid("transfer")
             now = time.time()
+            # Inside one account the owner already consented by starting the
+            # transfer; across accounts the recipient has to accept it.
+            state = "accepted" if same else "queued"
             db.execute(
-                "INSERT INTO direct_transfers(id,from_node,to_node,owner_id,name,size,address,state,transferred,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,'queued',0,?,?)",
-                (transfer, from_node, to_node, owner, name, size, address, now, now),
+                "INSERT INTO direct_transfers(id,from_node,to_node,owner_id,recipient_id,name,size,address,state,transferred,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,0,?,?)",
+                (transfer, from_node, to_node, owner, recipient, name, size, address, state, now, now),
             )
-            return {"id": transfer, "state": "queued", "size": size, "name": name}
+            return {"id": transfer, "state": state, "size": size, "name": name}
+
+    @staticmethod
+    def _shares_project(db, first, second):
+        return bool(
+            db.execute(
+                "SELECT 1 FROM project_users a JOIN project_users b ON b.project_id=a.project_id "
+                "WHERE a.user_id=? AND b.user_id=? LIMIT 1",
+                (first, second),
+            ).fetchone()
+        )
 
     def respond(self, owner, transfer, accept):
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM direct_transfers WHERE id=?", (transfer,)).fetchone()
-            if not row or row["owner_id"] != owner:
-                raise PermissionError("传输不存在")
+            if not row or row["recipient_id"] != owner:
+                raise PermissionError("只有接收方可以接受或拒绝")
             if row["state"] != "queued":
                 raise ValueError("传输已被处理")
             state = "accepted" if accept else "rejected"
@@ -71,7 +94,7 @@ class Transfers:
         if state is not None and state not in {"running", "done", "failed"}:
             raise ValueError("传输状态无效")
         row = db.execute("SELECT * FROM direct_transfers WHERE id=?", (transfer,)).fetchone()
-        if not row or row["owner_id"] != owner:
+        if not row or owner not in {row["owner_id"], row["recipient_id"]}:
             raise PermissionError("传输不存在")
         values = [transferred, time.time()]
         statement = "UPDATE direct_transfers SET transferred=?,updated_at=?"
@@ -103,7 +126,7 @@ class Transfers:
     def view(self, owner):
         with self.store.connect() as db:
             rows = db.execute(
-                "SELECT * FROM direct_transfers WHERE owner_id=? ORDER BY created_at DESC LIMIT 50",
-                (owner,),
+                "SELECT * FROM direct_transfers WHERE owner_id=? OR recipient_id=? ORDER BY created_at DESC LIMIT 50",
+                (owner, owner),
             ).fetchall()
             return [dict(row) for row in rows]
