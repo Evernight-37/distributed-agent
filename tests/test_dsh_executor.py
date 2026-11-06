@@ -123,15 +123,14 @@ class ModelTableTests(unittest.TestCase):
             write_json(root / "executor.json", {"executor": "codex", "models": []})
             self.assertTrue(executors.models(root))
 
-    def test_dispatch_routes_by_model_and_falls_back_for_unlisted_ones(self):
+    def test_dispatch_requires_the_model_to_be_in_the_table(self):
+        self.write_codex_config("gpt-6.1-sol")
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            self.assertEqual(executors.kind_or_selected(root, "deepseek-flash"), "dsh")
-            self.assertEqual(executors.kind_or_selected(root, "gpt-6.1-sol"), "codex")
-            # An agent configured before the table existed keeps its machine.
-            write_json(root / "executor.json", {"executor": "dsh"})
-            self.assertEqual(executors.kind_or_selected(root, "brand-new-model"), "dsh")
-            # And configuring such a model is still refused up front.
+            self.assertEqual(executors.kind_for(root, "deepseek-flash"), "dsh")
+            self.assertEqual(executors.kind_for(root, "gpt-6.1-sol"), "codex")
+            # There is no default executor any more: an unlisted model is refused
+            # instead of being handed to whichever CLI happens to be installed.
             with self.assertRaises(ValueError):
                 executors.kind_for(root, "brand-new-model")
 

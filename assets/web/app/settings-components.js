@@ -277,21 +277,11 @@ Object.assign(HarnessDesktop.components, {
 });
 function executorCard(current) {
   const card = el("section", "panel");
-  card.append(el("h2", "", "本机执行器"));
+  card.append(el("h2", "", "本机可用模型"));
   note(
     card,
-    "这台电脑装了哪些 CLI，以及哪些模型由它们执行。派来的任务按「模型」自动选择执行器：DeepSeek 模型走 DeepSeek Harness，GPT 模型走 Codex。两边都装了就能同机并行承担两种任务。",
+    "这台电脑能跑哪些模型，以及每个模型由哪个 CLI 执行。员工的模型必须从这里选；派发时按模型自动决定用 Codex 还是 DeepSeek Harness，不存在“默认执行器”。",
   );
-  const choice = field(
-    card,
-    "默认执行器（模型表未列出时使用）",
-    current?.executor || "codex",
-    [
-      ["codex", "Codex CLI"],
-      ["dsh", "DeepSeek Harness"],
-    ],
-  );
-  choice.id = "executorSelect";
 
   const models = Array.isArray(current?.models)
     ? current.models.map((item) => ({ ...item }))
@@ -347,57 +337,21 @@ function executorCard(current) {
   );
   note(
     card,
-    "模型表是封闭的：派发时只认这里的模型。两边的完整模型清单无法离线枚举，所以把实际可用的模型填进来；填错不影响别的模型，派发到它时执行器会给出明确错误。",
-  );
-  const model = field(
-    card,
-    "DeepSeek Harness 模型（可留空）",
-    current?.model || "",
-  );
-  model.id = "executorModel";
-  model.placeholder = "留空则使用 Agent 上设置的模型；例如 deepseek-flash";
-  const provider = field(
-    card,
-    "DeepSeek Harness 模型服务（可留空）",
-    current?.provider || "",
-  );
-  provider.id = "executorProvider";
-  provider.placeholder = "留空则使用 deepseek-official";
-  const sync = () => {
-    const dsh = choice.value === "dsh";
-    [model, provider].forEach((input) => {
-      input.disabled = !dsh;
-      if (input.previousElementSibling)
-        input.previousElementSibling.style.opacity = dsh ? "" : "0.5";
-    });
-  };
-  choice.onchange = sync;
-  sync();
-  note(
-    card,
-    "DeepSeek Harness 的模型服务与 API Key 由它自己的配置决定，Harness 不会读取或保存密钥。思考强度按模型校验：medium 使用模型默认档，xhigh/max/ultra 按 high 发送。",
+    "模型表是封闭的：派的模型必须在这里，否则不会派发。两边的完整模型清单无法离线枚举，所以把实际可用的模型填进来；填错不影响别的模型，派发到它时执行器会给出明确错误。",
   );
   card.append(
     button(
-      "保存执行器设置",
+      "保存模型表",
       async () => {
         const result = await api("executor-save", {
-          executor: choice.value,
-          model: model.value.trim(),
-          provider: provider.value.trim(),
           models: models.filter((item) => item.name && item.name.trim()),
         });
         const status = result?.status;
         if (status?.found) {
-          notify(
-            "执行器已保存 · " +
-              (choice.value === "dsh" ? "DeepSeek Harness " : "Codex ") +
-              (status.version || "已检测到程序"),
-          );
+          notify("模型表已保存 · " + (status.version || "已检测到程序"));
         } else {
           notify(
-            "执行器已保存，但没有检测到可运行的程序：" +
-              (status?.error || "请在下方手动指定"),
+            "模型表已保存，但没有检测到可运行的 CLI：" + (status?.error || "请检查安装"),
             true,
           );
         }

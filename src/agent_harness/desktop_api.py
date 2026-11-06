@@ -11,6 +11,13 @@ from agent_harness.common import read_json, validate_local_proxy, write_json
 from agent_harness.desktop_runtime import DesktopRuntime
 
 
+def executors_status_of(root, kind):
+    """Status of one specific CLI, for the page that lists the model table."""
+    from agent_harness import executors
+
+    return executors.status_of(root, kind)
+
+
 class DesktopControlAPI:
     def __init__(self, handler, action_groups=()):
         self.handler = handler
@@ -159,13 +166,13 @@ class DesktopSettingsActions:
                 break
         return busy
 
-    def _cli_status(self):
+    def _cli_status(self, kind=None):
         from agent_harness.worker import cli_status, codex_login_status
 
         root = self.bridge._runtime().root
-        result = cli_status(root)
+        result = cli_status(root) if kind is None else executors_status_of(root, kind)
         if result.get("found"):
-            result.update(codex_login_status(result["path"], root))
+            result.update(codex_login_status(result["path"], root, kind=kind))
         return result
 
     def invoke(self, action, data):
@@ -289,81 +296,46 @@ class DesktopSettingsActions:
             chosen = self.bridge.window.create_file_dialog(webview.FileDialog.OPEN)
             return {"path": chosen[0] if chosen else ""}
         if action == "executor-save":
-            executor = data.get("executor")
-            if executor not in ("codex", "dsh"):
-                raise ValueError("未知的本地执行器")
-            choice = {"executor": executor}
+            # Only the model table is configured here. Which CLI runs a turn is
+            # decided by the model itself, so there is no machine-wide default to
+            # save and no per-machine model override to keep in sync.
+            choice = {}
             models = data.get("models")
-            if models is not None:
-                if not isinstance(models, list):
-                    raise ValueError("模型表必须是列表")
-                cleaned, seen = [], set()
-                for item in models:
-                    if not isinstance(item, dict):
-                        raise ValueError("模型表的每一项必须是对象")
-                    name = item.get("name")
-                    kind = item.get("executor")
-                    if not isinstance(name, str) or not name.strip():
-                        raise ValueError("模型名不能为空")
-                    name = name.strip()
-                    if not re.fullmatch(r"[a-zA-Z0-9_.:-]{1,100}", name):
-                        raise ValueError("模型名只能包含字母、数字、下划线、点、冒号和连字符")
-                    if kind not in ("codex", "dsh"):
-                        raise ValueError("模型必须标注由 codex 还是 dsh 执行")
-                    if name.casefold() in seen:
-                        continue
-                    seen.add(name.casefold())
-                    cleaned.append({"name": name, "executor": kind})
-                if not cleaned:
-                    raise ValueError("模型表至少要有一个模型")
-                choice["models"] = cleaned
-            model = data.get("model")
-            if model is not None:
-                if not isinstance(model, str):
-                    raise ValueError("模型名必须是文字")
-                model = model.strip()
-                if model:
-                    if not re.fullmatch(r"[a-zA-Z0-9_.:-]{1,100}", model):
-                        raise ValueError("模型名只能包含字母、数字、下划线、点、冒号和连字符")
-                    choice["model"] = model
-            provider = data.get("provider")
-            if provider is not None:
-                if not isinstance(provider, str):
-                    raise ValueError("模型服务必须是文字")
-                provider = provider.strip()
-                if provider:
-                    if not re.fullmatch(r"[a-zA-Z0-9_.-]{1,64}", provider):
-                        raise ValueError("模型服务名只能包含字母、数字、下划线、点和连字符")
-                    choice["provider"] = provider
+            if models is None:
+                raise ValueError("缺少模型表")
+            if not isinstance(models, list):
+                raise ValueError("模型表必须是列表")
+            cleaned, seen = [], set()
+            for item in models:
+                if not isinstance(item, dict):
+                    raise ValueError("模型表的每一项必须是对象")
+                name = item.get("name")
+                kind = item.get("executor")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("模型名不能为空")
+                name = name.strip()
+                if not re.fullmatch(r"[a-zA-Z0-9_.:-]{1,100}", name):
+                    raise ValueError("模型名只能包含字母、数字、下划线、点、冒号和连字符")
+                if kind not in ("codex", "dsh"):
+                    raise ValueError("模型必须标注由 codex 还是 dsh 执行")
+                if name.casefold() in seen:
+                    continue
+                seen.add(name.casefold())
+                cleaned.append({"name": name, "executor": kind})
+            if not cleaned:
+                raise ValueError("模型表至少要有一个模型")
+            choice["models"] = cleaned
             write_json(self.bridge.root / "executor-choice.json", choice)
-            # The saved binary belongs to the previous executor; drop it while
-            # switching so a stale path cannot mask the new one.
             for receiver in self._receiver_paths():
-                self.bridge._sync_executor(DesktopRuntime(receiver), choice, reset_path=True)
-            result = self._cli_status()
+                self.bridge._sync_executor(DesktopRuntime(receiver), choice)
+            # Report the CLI of the first model so the page can say what is
+            # installed; the model table itself is the source of truth.
+            first = cleaned[0]["executor"]
+            result = self._cli_status(first)
             if result.get("found"):
                 for receiver in self._receiver_paths():
                     self.bridge._sync_cli(DesktopRuntime(receiver), result["path"])
-                write_json(
-                    self._cli_cache(),
-                    {
-                        "path": result["path"],
-                        "version": result.get("version", ""),
-                        "error": "",
-                        "mode": "auto",
-                    },
-                )
-            else:
-                write_json(
-                    self._cli_cache(),
-                    {
-                        "path": "",
-                        "version": "",
-                        "error": result.get("error", ""),
-                        "mode": "auto",
-                    },
-                )
-            return {"executor": executor, "choice": choice, "status": result}
+            return {"choice": choice, "status": result}
         if action == "codex-cli-save":
             selected = data.get("path", "")
             if not isinstance(selected, str):

@@ -27,7 +27,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
 
         manager = warm_worker.WarmManager("project")
         server = Server()
-        settings = {"model": "test-model", "cwd": "C:\\project"}
+        settings = {"model": "gpt-5.6-sol", "cwd": "C:\\project"}
         first, replaced = manager.attach_thread(server, settings, "existing-thread")
         second, replaced_again = manager.attach_thread(server, settings, "existing-thread")
         self.assertEqual((first, second), ("existing-thread", "existing-thread"))
@@ -46,7 +46,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
 
         manager = warm_worker.WarmManager("project")
         server = Server()
-        settings = {"model": "test-model", "cwd": "C:\\project"}
+        settings = {"model": "gpt-5.6-sol", "cwd": "C:\\project"}
         manager.attach_thread(server, settings, "group-thread")
         manager.attach_thread(server, settings, "private-thread")
         manager.attach_thread(server, settings, "group-thread")
@@ -70,7 +70,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
 
         manager = warm_worker.WarmManager("project")
         server = Server()
-        settings = {"model": "test-model", "cwd": "C:\\project"}
+        settings = {"model": "gpt-5.6-sol", "cwd": "C:\\project"}
         thread_id, replaced = manager.attach_thread(server, settings, "old-thread")
         self.assertEqual(thread_id, "replacement-thread")
         self.assertEqual(replaced, "old-thread")
@@ -210,7 +210,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             project = {
                 "name": "project",
                 "remote_path": str(root),
-                "model": "test-model",
+                "model": "gpt-5.6-sol",
                 "effort": "low",
                 "timeout": 30,
                 "local_control": True,
@@ -258,7 +258,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             project = {
                 "name": "project",
                 "remote_path": str(root),
-                "model": "test-model",
+                "model": "gpt-5.6-sol",
                 "effort": "low",
                 "timeout": 30,
                 "local_control": True,
@@ -487,7 +487,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             project = {
                 "name": "project",
                 "remote_path": str(root),
-                "model": "test-model",
+                "model": "gpt-5.6-sol",
                 "effort": "low",
                 "timeout": 30,
                 "local_control": True,
@@ -618,7 +618,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             project = {
                 "name": "project",
                 "remote_path": str(root),
-                "model": "test-model",
+                "model": "gpt-5.6-sol",
                 "effort": "low",
                 "timeout": 0.05,
                 "local_control": True,
@@ -672,7 +672,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                 patch.object(manager, "ensure_server", return_value=server),
                 patch.object(warm_worker, "cli_path", return_value="codex"),
                 patch.object(warm_worker, "codex_login_status", return_value={"logged_in": True}),
-                patch.object(warm_worker, "effective_model", return_value="test-model"),
+                patch.object(warm_worker, "effective_model", return_value="gpt-5.6-sol"),
             ):
                 started = time.monotonic()
                 manager.run_job("job")
@@ -692,7 +692,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             project = {
                 "name": "project",
                 "remote_path": str(root),
-                "model": "test-model",
+                "model": "gpt-5.6-sol",
                 "effort": "low",
                 "timeout": 0.01,
                 "local_control": True,
@@ -745,7 +745,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                 patch.object(manager, "ensure_server", return_value=server),
                 patch.object(warm_worker, "cli_path", return_value="codex"),
                 patch.object(warm_worker, "codex_login_status", return_value={"logged_in": True}),
-                patch.object(warm_worker, "effective_model", return_value="test-model"),
+                patch.object(warm_worker, "effective_model", return_value="gpt-5.6-sol"),
             ):
                 manager.run_job("job")
             self.assertEqual(read_json(job / "state.json")["status"], "timed_out")

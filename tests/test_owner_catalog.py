@@ -277,7 +277,7 @@ class OwnerTests(unittest.TestCase):
                     "u1",
                     "n1",
                     dispatched["result"]["backend_project"],
-                    "test-model",
+                    "gpt-5.6-sol",
                     "low",
                     30,
                 ),

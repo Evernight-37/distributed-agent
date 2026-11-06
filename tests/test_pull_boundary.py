@@ -24,7 +24,7 @@ class BoundaryTests(unittest.TestCase):
                     "project": {
                         "name": "local",
                         "remote_path": str(workspace),
-                        "model": "test-model",
+                        "model": "gpt-5.6-sol",
                         "effort": "low",
                         "timeout": 30,
                         "local_control": True,

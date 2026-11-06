@@ -627,7 +627,7 @@ def _rpc(request, managed_runtime=None):
             # The agent's model decides which local CLI runs this turn. A model the
             # table does not list falls back to the machine's own executor, so an
             # existing agent keeps working before its model is added to the table.
-            kind = executors.kind_or_selected(ROOT, project.get("model"))
+            kind = executors.kind_for(ROOT, project.get("model"))
             channel = request.get("session_channel")
             session_file = "session-" + kind + ".json"
             if channel:
@@ -857,7 +857,7 @@ def run(job):
     try:
         config = read_json(path / "request.json")
         directory = project_dir(config["project"]["name"])
-        kind = executors.kind_or_selected(ROOT, config["project"].get("model"))
+        kind = executors.kind_for(ROOT, config["project"].get("model"))
         exe = cli_path(ROOT, kind)
         login = codex_login_status(exe, ROOT, kind=kind)
         if not login["logged_in"]:

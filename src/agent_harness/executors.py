@@ -434,24 +434,14 @@ def binary(root, kind=None, probe=None):
 def kind_for(root, model):
     """Which CLI has to run this model on this machine.
 
-    Only the model table is consulted: whether that CLI is actually installed is
-    the next question (``binary``), and keeping them apart lets a caller report
-    "model not listed" separately from "CLI missing".
+    The table is the closed set: a model it does not list is refused, because
+    guessing a CLI would run the wrong one. Whether that CLI is actually installed
+    is the next question (``binary``), so the two failures stay distinguishable.
     """
     kind = model_kind(root, model)
     if kind is None:
-        raise ValueError("本机模型表里没有 " + str(model) + "；请先在本机执行器设置中添加该模型")
+        raise ValueError("本机模型表里没有 " + str(model) + "；请先在本机模型表里添加该模型")
     return kind
-
-
-def kind_or_selected(root, model):
-    """Route a dispatched turn, tolerating a model the table does not list yet.
-
-    Existing agents were configured before the table existed. Rather than failing
-    their next turn, they run on the machine's own executor, exactly as before the
-    table became the source of truth.
-    """
-    return model_kind(root, model) or selected(root)
 
 
 # DeepSeek Harness validates the reasoning effort against the model's own

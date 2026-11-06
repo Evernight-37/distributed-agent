@@ -1111,21 +1111,14 @@ class AppBridge:
             write_json(path, executor)
 
     def _executor(self):
-        """The local executor choice shared by every receiver of this desktop."""
+        """The model table shared by every receiver of this desktop."""
         saved = read_json(self.root / "executor-choice.json", {})
-        choice = {"executor": "codex"}
-        if not isinstance(saved, dict):
-            return choice
-        if saved.get("executor") in ("codex", "dsh"):
-            choice["executor"] = saved["executor"]
-        for key in ("model", "provider"):
-            value = saved.get(key)
-            if isinstance(value, str) and value.strip():
-                choice[key] = value.strip()
-        models = saved.get("models")
-        if isinstance(models, list) and models:
-            choice["models"] = models
-        else:
+        choice = {}
+        if isinstance(saved, dict):
+            models = saved.get("models")
+            if isinstance(models, list) and models:
+                choice["models"] = models
+        if "models" not in choice:
             from agent_harness import executors
 
             choice["models"] = executors.default_models()
@@ -1135,24 +1128,24 @@ class AppBridge:
         path = runtime.root / "executor.json"
         with lock(runtime.root / "executor.lock"):
             executor = read_json(path, {})
-            kind = choice.get("executor", "codex")
-            if kind == "dsh":
-                executor["executor"] = "dsh"
-            else:
-                # Absent means Codex, so files written by older versions and
-                # files written by this one stay byte-identical.
-                executor.pop("executor", None)
-            for key in ("model", "provider"):
-                value = choice.get(key)
-                if isinstance(value, str) and value.strip():
-                    executor[key] = value.strip()
+            if "executor" in choice:
+                # The headless receiver's `executor set` command still writes a
+                # machine-wide choice; the desktop decides per turn from the model
+                # table and leaves these fields alone.
+                kind = choice.get("executor")
+                if kind == "dsh":
+                    executor["executor"] = "dsh"
                 else:
-                    executor.pop(key, None)
+                    executor.pop("executor", None)
+                for key in ("model", "provider"):
+                    value = choice.get(key)
+                    if isinstance(value, str) and value.strip():
+                        executor[key] = value.strip()
+                    else:
+                        executor.pop(key, None)
             models = choice.get("models")
             if isinstance(models, list) and models:
                 executor["models"] = models
-            else:
-                executor.pop("models", None)
             if reset_path:
                 executor.pop("cli_path", None)
             write_json(path, executor)
