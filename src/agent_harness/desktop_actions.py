@@ -420,6 +420,8 @@ class DesktopTransferActions:
             "file-transfer-cancel",
             "file-transfer-receive-folder",
             "file-transfer-job-status",
+            "file-transfer-direct-send",
+            "file-transfer-direct-cancel",
         }
     )
 
@@ -498,6 +500,25 @@ class DesktopTransferActions:
                 return {"configured": False}
             folder = chosen[0] if isinstance(chosen, (list, tuple)) else chosen
             return {"configured": True, **bridge.file_transfers.set_receive_folder(folder)}
+        if action == "file-transfer-direct-send":
+            if not bridge.window:
+                raise RuntimeError("文件选择器尚未就绪")
+            import webview
+
+            from agent_harness import direct_send
+
+            server = data["server"]
+            if server not in bridge._services():
+                raise ValueError("请选择当前账户已接入的协作服务")
+            chosen = bridge.window.create_file_dialog(webview.FileDialog.OPEN)
+            if not chosen:
+                return {"selected": False}
+            source = Path(chosen[0] if isinstance(chosen, (list, tuple)) else chosen)
+            return direct_send.send(bridge, source, data["to_node"], server)
+        if action == "file-transfer-direct-cancel":
+            from agent_harness import direct_send
+
+            return direct_send.cancel(data["id"])
         if action == "file-transfer-send-select":
             if not bridge.window:
                 raise RuntimeError("文件选择器尚未就绪")
