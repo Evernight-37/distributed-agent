@@ -119,7 +119,7 @@ jobs:
           retention-days: 7
 
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
