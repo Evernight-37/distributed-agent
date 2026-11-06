@@ -258,6 +258,49 @@ class Connector:
     def encryption_public_key(self):
         return self.encryption_keypair()["public_key"]
 
+    def transfer_signing_key(self):
+        """The receiver's own signing identity for direct transfers.
+
+        The pull worker has no account identity, so it carries its own key: the
+        sender verifies requests signed with it before serving a byte.
+        """
+        stored = self.config.get("transfer_key")
+        if isinstance(stored, dict) and stored.get("private_key") and stored.get("public_key"):
+            return stored
+        import base64
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
+
+        key = Ed25519PrivateKey.generate()
+        pair = {
+            "private_key": base64.b64encode(key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())).decode(
+                "ascii"
+            ),
+            "public_key": base64.b64encode(key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode(
+                "ascii"
+            ),
+        }
+        path = self.config_path
+        with lock(path.with_suffix(".lock")):
+            current = read_json(path, {})
+            stored = current.get("transfer_key")
+            if isinstance(stored, dict) and stored.get("public_key"):
+                self.config["transfer_key"] = stored
+                return stored
+            current["transfer_key"] = pair
+            write_json(path, current)
+            if os.name != "nt":
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+        self.config["transfer_key"] = pair
+        return pair
+
+    def transfer_public_key(self):
+        return self.transfer_signing_key()["public_key"]
+
     def save_binding(self, binding):
         # This method is reachable only from the local console/CLI, never a broker job.
         binding = dict(binding)
@@ -620,6 +663,7 @@ class Connector:
                 "wait_seconds": wait_seconds,
                 "health": health,
                 "encrypt_public_key": self.encryption_public_key(),
+                "transfer_public_key": self.transfer_public_key(),
             },
         )
         ensure_hub_compatible(data)

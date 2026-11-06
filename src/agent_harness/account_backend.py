@@ -458,6 +458,7 @@ class AccountBackend:
                             "last_seen": last_seen,
                             "health": config.get("health") if isinstance(config.get("health"), dict) else None,
                             "encrypt_public_key": config.get("encrypt_public_key"),
+                            "transfer_public_key": config.get("transfer_public_key"),
                         }
                     )
                 result["devices"] = devices

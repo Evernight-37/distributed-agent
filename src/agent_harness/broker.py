@@ -148,7 +148,11 @@ class PullBackend:
                     if "bindings" in data:
                         self._advertise(db, device, data["bindings"])
                     self._record_health(device, data.get("health"))
-                    self._record_encryption_key(device, data.get("encrypt_public_key"))
+                    self._record_encryption_key(
+                        device,
+                        data.get("encrypt_public_key"),
+                        data.get("transfer_public_key"),
+                    )
                     result = self._poll_snapshot(db, device)
                 first = False
             else:
@@ -181,8 +185,16 @@ class PullBackend:
             time.sleep(min(delay, remaining))
             delay = min(delay * 2, 1.0)
 
-    def _record_encryption_key(self, device, value):
-        """Remember the device's public sealing key. Only the public half moves."""
+    def _record_encryption_key(self, device, value, transfer_value=None):
+        """Remember the device's public keys. Only the public halves move."""
+        if isinstance(transfer_value, str) and 0 < len(transfer_value) <= 128:
+            path = self.store.root / "nodes" / (device["node"] + ".json")
+            current = read_json(path, {})
+            if not isinstance(current, dict):
+                current = {}
+            if current.get("transfer_public_key") != transfer_value:
+                current["transfer_public_key"] = transfer_value
+                write_json(path, current)
         if value is None:
             return
         if not isinstance(value, str) or len(value) > 128:
