@@ -43,8 +43,10 @@ class Transfers:
                 raise PermissionError("发送设备不属于当前账户")
             recipient = self._owner_of(db, to_node)
             same = recipient == owner
-            if not same and not self._shares_project(db, owner, recipient):
-                raise PermissionError("只能向与自己共同参与项目的成员发送文件")
+            # Any account on this collaboration service may send; the recipient
+            # decides. Sharing a project is not a precondition.
+            if not same and not db.execute("SELECT 1 FROM users WHERE id=?", (recipient,)).fetchone():
+                raise PermissionError("接收账户不在这个协作服务上")
             transfer = uid("transfer")
             now = time.time()
             # Inside one account the owner already consented by starting the
@@ -56,16 +58,6 @@ class Transfers:
                 (transfer, from_node, to_node, owner, recipient, name, size, address, state, now, now),
             )
             return {"id": transfer, "state": state, "size": size, "name": name}
-
-    @staticmethod
-    def _shares_project(db, first, second):
-        return bool(
-            db.execute(
-                "SELECT 1 FROM project_users a JOIN project_users b ON b.project_id=a.project_id "
-                "WHERE a.user_id=? AND b.user_id=? LIMIT 1",
-                (first, second),
-            ).fetchone()
-        )
 
     def respond(self, owner, transfer, accept):
         with self.store.connect() as db:
