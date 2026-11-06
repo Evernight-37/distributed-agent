@@ -167,6 +167,41 @@ class OwnerTests(unittest.TestCase):
         )
         self.assertFalse(project["strict_worktree"])
 
+    def test_a_sealed_payload_never_reaches_the_hub_in_the_clear(self):
+        from agent_harness import sealing
+
+        pair = sealing.generate_keypair()
+        self.connector.config["encrypt_key"] = pair
+        self.create()
+        self.configure()
+        self.configure_workspace()
+        self.control.apply(self.envelope("dispatch", {"id": "e1", "project_id": "p1"}))
+        # A second configure carries a different model, sealed. Only the routing
+        # field stays readable, so the Hub can authorize but not read the payload.
+        command_id = "sealed-1"
+        env = self.envelope("configure", {"id": "e1"}, cid=command_id)
+        env["body"]["sealed"] = sealing.seal(
+            pair["public_key"],
+            {
+                "id": "e1",
+                "settings": {
+                    "model": "deepseek-flash",
+                    "effort": "high",
+                    "enabled": True,
+                    "strict_worktree": False,
+                },
+                "sentinel": "不能出现在服务端",
+            },
+            {"target": "n1", "id": command_id},
+        )
+        self.assertNotIn("不能出现在服务端", str(env))
+        self.assertNotIn("deepseek-flash", str(env))
+        self.assertEqual(self.control.apply(env)["state"], "applied")
+        project = read_json(
+            self.root / "device" / "projects" / self.connector.saved[0]["backend_project"] / "project.json"
+        )
+        self.assertEqual(project["model"], "deepseek-flash")
+
     def test_ownership_and_ack(self):
         env = self.envelope("create", {"id": "e1", "name": "Employee"})
         self.backend.enqueue("u1", env)

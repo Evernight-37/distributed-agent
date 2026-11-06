@@ -62,7 +62,7 @@ class OwnerControl:
                 return response
             write_json(receipt, {"fingerprint": fingerprint, "phase": "started"})
             try:
-                result = self._run(body["action"], body["data"])
+                result = self._run(body["action"], self._payload(body))
                 response = {"state": "applied", "result": result}
             except Exception as exc:
                 response = {"state": "failed", "result": {"error": str(exc)}}
@@ -71,6 +71,32 @@ class OwnerControl:
                 {"fingerprint": fingerprint, "phase": "done", "response": response},
             )
             return response
+
+    def _payload(self, body):
+        """The command payload, opening a sealed one for this machine only.
+
+        The Hub routes and stores these envelopes, so a payload it must not read
+        (a local proxy setting, for instance) arrives sealed to this device's key.
+        Routing fields stay in the clear for the Hub to authorize; the sealed part
+        holds everything else and is merged over them. Older senders still write
+        the whole payload in the clear; that path stays readable.
+        """
+        cleartext = dict(body["data"]) if isinstance(body.get("data"), dict) else {}
+        sealed = body.get("sealed")
+        if sealed is None:
+            return cleartext
+        from agent_harness import sealing
+
+        pair = self.connector.config.get("encrypt_key")
+        if not isinstance(pair, dict) or not pair.get("private_key"):
+            raise PermissionError("这台机器还没有加密密钥；请更新应用后重新配对")
+        opened = sealing.open_sealed(
+            pair["private_key"],
+            sealed,
+            {"target": body.get("target"), "id": body.get("id")},
+        )
+        cleartext.update(opened)
+        return cleartext
 
     def _employees(self):
         return read_json(self.root / "owner-employees.json", {"employees": {}})["employees"]

@@ -332,6 +332,7 @@ class DesktopOwnerActions:
                 employee["node"],
                 {"id": data["id"], "name": data["name"], "settings": settings},
                 employee["server"],
+                sealed=True,
             )
         if action in {"employee-dispatch", "employee-withdraw"}:
             employee = bridge._employee(data["id"])

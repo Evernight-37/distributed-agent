@@ -28,6 +28,10 @@ from agent_harness.desktop_actions import (
     DesktopTransferActions,
 )
 from agent_harness.runtime_paths import default_state
+
+# The Hub validates these fields to route and authorize an owner command. They
+# stay readable; everything else in the payload is sealed to the target machine.
+OWNER_ROUTING_FIELDS = ("id", "project_id", "name")
 from agent_harness.pull_worker import validate_server
 from agent_harness.broker_transport import broker_opener
 from agent_harness.account_identity import (
@@ -1183,14 +1187,24 @@ class AppBridge:
             self._sync_proxy(runtime, self._proxy_settings())
         choice = self._executor()
         self._sync_executor(runtime, choice)
-        cache = "codex-cli.json" if choice["executor"] == "codex" else "dsh-cli.json"
+        models = choice.get("models") or []
+        kind = models[0].get("executor") if models else "codex"
+        cache = "dsh-cli.json" if kind == "dsh" else "codex-cli.json"
         selected = read_json(self.root / cache)
         if selected is not None:
             self._sync_cli(runtime, selected.get("path", ""))
         self._sync_idle(runtime, self._idle_seconds())
         runtime.start()
 
-    def _owner(self, action, node, data, server=None):
+    def _device_sealing_key(self, node, server=None):
+        """The target machine's public sealing key, as published on its last poll."""
+        data = self._dashboard()
+        for device in data.get("devices", []):
+            if device.get("node") == node and (server is None or device.get("server") == server):
+                return device.get("encrypt_public_key")
+        return None
+
+    def _owner(self, action, node, data, server=None, sealed=False):
         if action == "delete":
             challenge = self._post(
                 server or self.profile["server"],
@@ -1198,17 +1212,29 @@ class AppBridge:
             )
             if "employee_delete_v1" not in challenge.get("features", []):
                 raise ValueError("协作服务版本过旧，请先更新托管电脑和员工所在设备的应用，再删除员工。")
-        envelope = sign_envelope(
-            self.identity,
-            {
-                "domain": "harness-owner-command-v1",
-                "account_id": self.identity["account_id"],
-                "target": node,
-                "id": "command-" + secrets.token_hex(16),
-                "action": action,
-                "data": data,
-            },
-        )
+        command_id = "command-" + secrets.token_hex(16)
+        body = {
+            "domain": "harness-owner-command-v1",
+            "account_id": self.identity["account_id"],
+            "target": node,
+            "id": command_id,
+            "action": action,
+            "data": data,
+        }
+        if sealed:
+            from agent_harness import sealing
+
+            public_key = self._device_sealing_key(node, server)
+            if public_key:
+                # The Hub validates the routing fields (which employee, which
+                # project) and stores the envelope, so those stay readable; the rest
+                # travels sealed and never appears in the Hub's database.
+                body["data"] = {key: value for key, value in data.items() if key in OWNER_ROUTING_FIELDS}
+                body["sealed"] = sealing.seal(public_key, data, {"target": node, "id": command_id})
+            # Without a published key the machine is still on an older build; the
+            # payload goes in the clear exactly as it used to, so an upgrade in
+            # progress never blocks an owner action.
+        envelope = sign_envelope(self.identity, body)
         return self._rpc("owner-command", {"envelope": envelope}, server=server)
 
     def _employee(self, eid):

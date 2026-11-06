@@ -457,6 +457,7 @@ class AccountBackend:
                             "online": bool(last_seen and last_seen > time.time() - 45),
                             "last_seen": last_seen,
                             "health": config.get("health") if isinstance(config.get("health"), dict) else None,
+                            "encrypt_public_key": config.get("encrypt_public_key"),
                         }
                     )
                 result["devices"] = devices

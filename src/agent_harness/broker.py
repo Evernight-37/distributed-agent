@@ -1,6 +1,7 @@
 """Durable pull-only coordination. Device credentials confer no host execution access."""
 
 import hmac
+import base64
 import hashlib
 import json
 import re
@@ -143,6 +144,7 @@ class PullBackend:
                     if "bindings" in data:
                         self._advertise(db, device, data["bindings"])
                     self._record_health(device, data.get("health"))
+                    self._record_encryption_key(device, data.get("encrypt_public_key"))
                 result = self._poll_snapshot(db, device)
             if (
                 result["jobs"]
@@ -157,6 +159,26 @@ class PullBackend:
             if remaining <= 0:
                 return result
             time.sleep(min(0.25, remaining))
+
+    def _record_encryption_key(self, device, value):
+        """Remember the device's public sealing key. Only the public half moves."""
+        if value is None:
+            return
+        if not isinstance(value, str) or len(value) > 128:
+            raise ValueError("无效的设备加密公钥")
+        try:
+            raw = base64.b64decode(value.encode("ascii"), validate=True)
+        except Exception:
+            raise ValueError("无效的设备加密公钥") from None
+        if len(raw) != 32:
+            raise ValueError("无效的设备加密公钥")
+        path = self.store.root / "nodes" / (device["node"] + ".json")
+        current = read_json(path, {})
+        if not isinstance(current, dict):
+            current = {}
+        if current.get("encrypt_public_key") != value:
+            current["encrypt_public_key"] = value
+            write_json(path, current)
 
     def _record_health(self, device, value):
         """Persist only the bounded health-v1 allowlist, never raw diagnostics."""
@@ -204,6 +226,7 @@ class PullBackend:
                 )
                 db.execute("DELETE FROM pull_pairs WHERE node=?", (node,))
                 self.store.log(db, pair["owner_id"], "device_enrolled", {"node": node})
+                self._record_encryption_key({"node": node}, data.get("encrypt_public_key"))
                 return {"node": node, "owner_id": pair["owner_id"]}
         if path == "/api/device/poll":
             return self._poll(data, bearer)

@@ -115,13 +115,20 @@ def enroll(server, pair_code, root, config_path=None, broker_proxy=None):
         "root": str(root),
         "device_token": secrets.token_urlsafe(48),
     }
+    from agent_harness import sealing
+
+    config["encrypt_key"] = sealing.generate_keypair()
     if broker_proxy:
         broker_opener(broker_proxy)
         config["broker_proxy"] = broker_proxy
     result = api(
         config,
         "enroll",
-        {"pair_code": pair_code, "device_token": config["device_token"]},
+        {
+            "pair_code": pair_code,
+            "device_token": config["device_token"],
+            "encrypt_public_key": config["encrypt_key"]["public_key"],
+        },
     )
     config["node"] = result.get("node", result.get("name"))
     write_json(config_path, config)
@@ -218,6 +225,38 @@ class Connector:
 
     def bindings(self):
         return read_json(self.root / "local-policy.json", {"bindings": []})["bindings"]
+
+    def encryption_keypair(self):
+        """The device's sealing key, created on demand and kept beside the token.
+
+        Only the public half ever leaves this machine; the desktop seals owner
+        payloads to it so the collaboration service cannot read them.
+        """
+        stored = self.config.get("encrypt_key")
+        if isinstance(stored, dict) and stored.get("private_key") and stored.get("public_key"):
+            return stored
+        from agent_harness import sealing
+
+        pair = sealing.generate_keypair()
+        path = self.config_path
+        with lock(path.with_suffix(".lock")):
+            current = read_json(path, {})
+            stored = current.get("encrypt_key")
+            if isinstance(stored, dict) and stored.get("private_key") and stored.get("public_key"):
+                self.config["encrypt_key"] = stored
+                return stored
+            current["encrypt_key"] = pair
+            write_json(path, current)
+            if os.name != "nt":
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+        self.config["encrypt_key"] = pair
+        return pair
+
+    def encryption_public_key(self):
+        return self.encryption_keypair()["public_key"]
 
     def save_binding(self, binding):
         # This method is reachable only from the local console/CLI, never a broker job.
@@ -576,7 +615,12 @@ class Connector:
         data = self.transport(
             self.config,
             "poll",
-            {"bindings": self.advertisements(), "wait_seconds": wait_seconds, "health": health},
+            {
+                "bindings": self.advertisements(),
+                "wait_seconds": wait_seconds,
+                "health": health,
+                "encrypt_public_key": self.encryption_public_key(),
+            },
         )
         ensure_hub_compatible(data)
         write_json(self.root / "broker-projects.json", data.get("projects", []))
