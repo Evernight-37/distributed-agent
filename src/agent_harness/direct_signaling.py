@@ -62,17 +62,21 @@ class Transfers:
     def respond(self, owner, transfer, accept):
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM direct_transfers WHERE id=?", (transfer,)).fetchone()
-            if not row or row["recipient_id"] != owner:
-                raise PermissionError("只有接收方可以接受或拒绝")
-            if row["state"] != "queued":
-                raise ValueError("传输已被处理")
-            state = "accepted" if accept else "rejected"
-            db.execute(
-                "UPDATE direct_transfers SET state=?,updated_at=? WHERE id=?",
-                (state, time.time(), transfer),
-            )
-            return {"id": transfer, "state": state}
+            return self.respond_db(db, owner, transfer, accept)
+
+    def respond_db(self, db, owner, transfer, accept):
+        """Same as respond, for a caller that already holds the write transaction."""
+        row = db.execute("SELECT * FROM direct_transfers WHERE id=?", (transfer,)).fetchone()
+        if not row or row["recipient_id"] != owner:
+            raise PermissionError("只有接收方可以接受或拒绝")
+        if row["state"] != "queued":
+            raise ValueError("传输已被处理")
+        state = "accepted" if accept else "rejected"
+        db.execute(
+            "UPDATE direct_transfers SET state=?,updated_at=? WHERE id=?",
+            (state, time.time(), transfer),
+        )
+        return {"id": transfer, "state": state}
 
     def progress(self, owner, transfer, transferred, state=None, error=None):
         with self.store.connect() as db:

@@ -272,6 +272,23 @@ class PullBackend:
             )
             if path == "/api/device/projects":
                 return {"projects": self._projects(db, device), "node": device["node"]}
+            if path == "/api/device/transfer-respond":
+                from agent_harness.direct_signaling import Transfers
+
+                return Transfers(self.store).respond_db(
+                    db, device["owner_id"], data.get("transfer_id"), bool(data.get("accept"))
+                )
+            if path == "/api/device/transfer-progress":
+                from agent_harness.direct_signaling import Transfers
+
+                return Transfers(self.store).progress_db(
+                    db,
+                    device["owner_id"],
+                    data.get("transfer_id"),
+                    data.get("transferred"),
+                    data.get("state"),
+                    data.get("error"),
+                )
             if path == "/api/device/task-attachment-request":
                 job = db.execute("SELECT * FROM pull_jobs WHERE id=?", (data.get("job_id"),)).fetchone()
                 if (

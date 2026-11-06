@@ -226,6 +226,85 @@ class Connector:
     def bindings(self):
         return read_json(self.root / "local-policy.json", {"bindings": []})["bindings"]
 
+    def _consume_transfers(self, transfers):
+        """Receive files a teammate offers; the service never holds the bytes."""
+        from agent_harness import direct_transfer, transfer_trust
+
+        node = self.config.get("node")
+        settings = read_json(self.root / "file-transfer-settings.json", {})
+        folder = settings.get("receive_folder") if isinstance(settings, dict) else None
+        for row in transfers:
+            if not isinstance(row, dict) or row.get("to_node") != node:
+                continue
+            transfer_id = row.get("id")
+            state = row.get("state")
+            if state == "queued":
+                # A default folder plus a sender the owner already accepted is the
+                # only case that runs without asking; anything else stays pending.
+                if not (folder and transfer_trust.is_trusted(self.root, row.get("owner_id"))):
+                    self._remember_pending_transfer(row)
+                    continue
+                self.transport(self.config, "transfer-respond", {"transfer_id": transfer_id, "accept": True})
+                state = "accepted"
+            if state != "accepted":
+                continue
+            from agent_harness.attachments import safe_name
+
+            target = Path(folder) / safe_name(row.get("name") or "file")
+            keys = self.transfer_signing_key()
+            try:
+                self.transport(
+                    self.config,
+                    "transfer-progress",
+                    {"transfer_id": transfer_id, "transferred": 0, "state": "running"},
+                )
+                direct_transfer.fetch(
+                    "http://" + str(row.get("address")) + "/transfer/" + str(transfer_id),
+                    keys["private_key"],
+                    keys["public_key"],
+                    transfer_id,
+                    target,
+                    expect_size=row.get("size"),
+                )
+            except Exception as exc:  # one transfer must not break the poll loop
+                self.transport(
+                    self.config,
+                    "transfer-progress",
+                    {"transfer_id": transfer_id, "transferred": 0, "state": "failed", "error": str(exc)[:500]},
+                )
+                continue
+            self.transport(
+                self.config,
+                "transfer-progress",
+                {"transfer_id": transfer_id, "transferred": row.get("size") or 0, "state": "done"},
+            )
+            self._forget_pending_transfer(transfer_id)
+
+    def _remember_pending_transfer(self, row):
+        path = self.root / "pending-transfers.json"
+        with lock(self.root / "pending-transfers.lock"):
+            document = read_json(path, {"version": 1, "transfers": []})
+            if not isinstance(document, dict) or not isinstance(document.get("transfers"), list):
+                document = {"version": 1, "transfers": []}
+            entries = [
+                entry for entry in document["transfers"] if isinstance(entry, dict) and entry.get("id") != row.get("id")
+            ]
+            entries.append({key: row.get(key) for key in ("id", "from_node", "owner_id", "name", "size", "address")})
+            write_json(path, {"version": 1, "transfers": entries[-50:]})
+
+    def _forget_pending_transfer(self, transfer_id):
+        path = self.root / "pending-transfers.json"
+        with lock(self.root / "pending-transfers.lock"):
+            document = read_json(path, {"version": 1, "transfers": []})
+            if not isinstance(document, dict) or not isinstance(document.get("transfers"), list):
+                return
+            entries = [
+                entry
+                for entry in document["transfers"]
+                if not (isinstance(entry, dict) and entry.get("id") == transfer_id)
+            ]
+            write_json(path, {"version": 1, "transfers": entries})
+
     def encryption_keypair(self):
         """The device's sealing key, created on demand and kept beside the token.
 
@@ -668,6 +747,7 @@ class Connector:
         )
         ensure_hub_compatible(data)
         write_json(self.root / "broker-projects.json", data.get("projects", []))
+        self._consume_transfers(data.get("transfers") or [])
         if data.get("owner_commands"):
             from agent_harness.owner_worker import OwnerControl
 
