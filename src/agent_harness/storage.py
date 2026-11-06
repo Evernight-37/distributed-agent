@@ -14,7 +14,7 @@ from pathlib import Path
 from agent_harness.common import lock
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 BACKUP_RETENTION = 5
 
 
@@ -131,6 +131,24 @@ CREATE TABLE IF NOT EXISTS project_workspaces(
     updated_at REAL NOT NULL,
     PRIMARY KEY(project_id,node)
 );
+"""
+
+SCHEMA_V6 = """
+CREATE TABLE IF NOT EXISTS direct_transfers(
+    id TEXT PRIMARY KEY,
+    from_node TEXT NOT NULL,
+    to_node TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    address TEXT NOT NULL,
+    state TEXT NOT NULL,
+    transferred INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS direct_transfers_to ON direct_transfers(to_node,state);
 """
 
 SCHEMA_V5 = """
@@ -425,6 +443,18 @@ def migrate_database(database, backup_root=None):
                         (5, time.time()),
                     )
                     connection.execute("PRAGMA user_version=5")
+                if (
+                    current < 6
+                    or not connection.execute("SELECT 1 FROM sqlite_master WHERE name='direct_transfers'").fetchone()
+                ):
+                    for statement in SCHEMA_V6.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+                        (6, time.time()),
+                    )
+                    connection.execute("PRAGMA user_version=6")
                 connection.commit()
                 _integrity(connection)
                 connection.execute("PRAGMA journal_mode=WAL")

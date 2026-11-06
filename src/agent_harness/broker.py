@@ -97,6 +97,7 @@ class PullBackend:
                 }
             )
         from agent_harness.owner_backend import OwnerBackend
+        from agent_harness.direct_signaling import Transfers
 
         controls = OwnerBackend.__new__(OwnerBackend)
         controls.store = self.store
@@ -124,6 +125,7 @@ class PullBackend:
             "jobs": jobs,
             "cancellations": [row["id"] for row in rows if row["cancel_requested"]],
             "attachment_decisions": decisions,
+            "transfers": Transfers(self.store).visible(db, device["node"]),
         }
 
     def _poll(self, data, bearer):

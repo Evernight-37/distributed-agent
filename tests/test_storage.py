@@ -21,6 +21,19 @@ from tests.helpers import provision_account
 
 
 class StorageMigrationTests(unittest.TestCase):
+    def test_v6_adds_the_direct_transfer_table_to_an_older_database(self):
+        with tempfile.TemporaryDirectory() as folder:
+            database = Path(folder) / "hub.sqlite3"
+            migrate_database(database)
+            with closing(sqlite3.connect(database)) as db:
+                db.execute("DROP TABLE direct_transfers")
+                db.execute("PRAGMA user_version=5")
+                db.commit()
+            migrate_database(database)
+            with closing(sqlite3.connect(database)) as db:
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 6)
+                self.assertTrue(db.execute("SELECT 1 FROM sqlite_master WHERE name='direct_transfers'").fetchone())
+
     def test_online_backup_and_offline_restore_preserve_service_data(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
