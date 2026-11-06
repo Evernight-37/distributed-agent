@@ -637,6 +637,22 @@ class AccountBackend:
                 return files.complete(user, node, p["id"])
             if op == "transfer-cancel":
                 return files.cancel(user, p["id"])
+        if op in {"transfer-direct-offer", "transfer-direct-respond", "transfer-direct-list"}:
+            from agent_harness.direct_signaling import Transfers
+
+            direct = Transfers(self.store)
+            if op == "transfer-direct-list":
+                return {"transfers": direct.view(user)}
+            if op == "transfer-direct-offer":
+                return direct.offer(
+                    user,
+                    device_node(public),
+                    p["to_node"],
+                    p["name"],
+                    p["size"],
+                    p["address"],
+                )
+            return direct.respond(user, p["id"], bool(p["accept"]))
             raise ValueError("Unknown file-transfer operation")
         if op == "conversation-read":
             return self.store.mark_conversation_read(user, p["project"], p["conversation_id"])

@@ -15,6 +15,9 @@ to verify. That matches the project's stated trust model.
 import base64
 import hashlib
 import http.server
+import os
+import shutil
+import subprocess
 import threading
 import time
 import urllib.error
@@ -40,6 +43,37 @@ def _unb64(value, length=None):
     if length is not None and len(raw) != length:
         raise ValueError("Invalid signature material")
     return raw
+
+
+def local_tailnet_address():
+    """The address peers reach this machine on, or None when Tailscale is absent.
+
+    A transfer must not silently fall back to staging bytes at the service, so a
+    caller that cannot find one has to fail instead of degrading.
+    """
+    explicit = os.environ.get("TAILSCALE_IP", "").strip()
+    if explicit:
+        return explicit
+    executable = shutil.which("tailscale.exe" if os.name == "nt" else "tailscale")
+    if not executable:
+        return None
+    try:
+        result = subprocess.run(
+            [executable, "ip", "-4"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.split():
+        candidate = line.strip()
+        if candidate and candidate.count(".") == 3:
+            return candidate
+    return None
 
 
 def canonical_request(transfer_id, stamp, resource):
