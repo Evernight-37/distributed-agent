@@ -100,10 +100,10 @@ def set_root(root):
     return ROOT
 
 
-def executor_environment(root=None, stage=None, full_access=False):
+def executor_environment(root=None, stage=None, full_access=False, network=None):
     """Build the exact environment used by the local executor and its login preflight."""
     root = ROOT if root is None else Path(root)
-    return executors.child_environment(root, stage, full_access)
+    return executors.child_environment(root, stage, full_access, network)
 
 
 def codex_login_status(exe, root=None, kind=None):
@@ -897,6 +897,7 @@ def run(job):
             ROOT,
             command_project.get("_stage"),
             full_access=not command_project.get("local_control"),
+            network=command_project.get("network"),
         )
         with (path / "stderr.log").open("wb") as error:
             proc = subprocess.Popen(

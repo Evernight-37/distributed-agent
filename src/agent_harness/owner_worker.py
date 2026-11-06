@@ -263,6 +263,22 @@ class OwnerControl:
             pass
         return {"configured": True}
 
+    def _remember_network(self, backend, network):
+        """Persist the agent's network policy next to the local project record.
+
+        The worker reads ``project.json`` for every turn, so the policy travels
+        with the local registration instead of being re-sent per job.
+        """
+        if not isinstance(network, dict):
+            return
+        path = self.root / "projects" / backend / "project.json"
+        record = read_json(path, {})
+        if not isinstance(record, dict) or not record:
+            return
+        if record.get("network") != network:
+            record["network"] = network
+            write_json(path, record)
+
     def _bindings(self, employee):
         return [b for b in self.connector.bindings() if b.get("employee_id") == employee]
 
@@ -288,6 +304,7 @@ class OwnerControl:
             "enabled",
             "strict_worktree",
             "attachment_policy",
+            "network",
         }
         if not isinstance(settings, dict) or set(settings) - allowed:
             raise ValueError("Unsupported employee setting")
@@ -310,12 +327,28 @@ class OwnerControl:
         attachment_policy = settings.get("attachment_policy", "ask")
         if not isinstance(attachment_policy, str) or attachment_policy not in {"ask", "auto", "full"}:
             raise ValueError("Invalid attachment policy")
-        return {"model": model, "effort": effort} | {
+        network = settings.get("network", {"mode": "machine"})
+        if not isinstance(network, dict) or set(network) - {"mode", "port"}:
+            raise ValueError("Invalid network policy")
+        mode = network.get("mode", "machine")
+        if mode not in {"machine", "direct", "custom"}:
+            raise ValueError("Invalid network mode")
+        if mode == "custom":
+            port = network.get("port")
+            if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+                raise ValueError("Proxy port must be between 1 and 65535")
+            network = {"mode": "custom", "port": port}
+        else:
+            network = {"mode": mode}
+        return {
+            "model": model,
+            "effort": effort,
             "timeout": timeout,
             "stages": stages,
             "enabled": settings.get("enabled", False),
             "strict_worktree": settings.get("strict_worktree", False),
             "attachment_policy": attachment_policy,
+            "network": network,
         }
 
     def _run(self, action, data):
@@ -379,11 +412,20 @@ class OwnerControl:
                         **{k: settings[k] for k in ("model", "effort", "timeout", "strict_worktree")},
                     }
                 )
+                self._remember_network(binding["backend_project"], settings["network"])
                 updated = dict(
                     binding,
                     **{
                         k: settings[k]
-                        for k in ("model", "effort", "timeout", "stages", "strict_worktree", "attachment_policy")
+                        for k in (
+                            "model",
+                            "effort",
+                            "timeout",
+                            "stages",
+                            "strict_worktree",
+                            "attachment_policy",
+                            "network",
+                        )
                     },
                     name=data.get("name", current["name"]),
                 )
@@ -430,6 +472,7 @@ class OwnerControl:
                     },
                 }
             )
+            self._remember_network(backend, settings["network"])
         else:
             registered = read_json(self.root / "projects" / backend / "project.json")
             if Path(registered["remote_path"]).resolve() != Path(workspace).resolve():
@@ -441,6 +484,7 @@ class OwnerControl:
                     **{k: settings[k] for k in ("model", "effort", "timeout", "strict_worktree")},
                 }
             )
+            self._remember_network(backend, settings["network"])
         binding = {
             "assigned": True,
             "employee_id": employee,
@@ -449,7 +493,16 @@ class OwnerControl:
             "name": current["name"],
             **{
                 k: settings[k]
-                for k in ("model", "effort", "timeout", "stages", "enabled", "strict_worktree", "attachment_policy")
+                for k in (
+                    "model",
+                    "effort",
+                    "timeout",
+                    "stages",
+                    "enabled",
+                    "strict_worktree",
+                    "attachment_policy",
+                    "network",
+                )
             },
         }
         self.connector.save_binding(binding)

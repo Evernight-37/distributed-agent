@@ -351,7 +351,8 @@ function executorCard(current) {
           notify("模型表已保存 · " + (status.version || "已检测到程序"));
         } else {
           notify(
-            "模型表已保存，但没有检测到可运行的 CLI：" + (status?.error || "请检查安装"),
+            "模型表已保存，但没有检测到可运行的 CLI：" +
+              (status?.error || "请检查安装"),
             true,
           );
         }
@@ -365,10 +366,10 @@ function executorCard(current) {
 
 function proxySettingsCard(current) {
   const card = el("section", "panel");
-  card.append(el("h2", "", "模型请求代理"));
+  card.append(el("h2", "", "本机代理端口"));
   note(
     card,
-    "仅影响这台电脑上 agent 的模型请求；团队服务和 Tailscale 不受影响。代理地址固定为 127.0.0.1。",
+    "这台电脑上的代理地址（固定 127.0.0.1）。它只是本机的一个端点：员工在“模型请求代理”里选择“跟随本机设置”时才使用，选“直连”的员工不受影响。团队服务和 Tailscale 不走它。",
   );
   const row = el("label", "setting-row");
   const enabled = el("input", "check");

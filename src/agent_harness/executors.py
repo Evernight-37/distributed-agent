@@ -358,11 +358,47 @@ def login(root, exe, kind=None):
     }
 
 
-def child_environment(root, stage=None, full_access=False):
+def resolve_network(root, network=None):
+    """Which proxy, if any, this turn may use.
+
+    Two facts, deliberately kept apart: the machine owns the endpoint (a loopback
+    address only means something there), the agent owns the policy. A policy of
+    "machine" defers to the machine's saved endpoint, "direct" bypasses it even
+    when one exists, and "custom" carries its own port.
+    """
+    if network is None:
+        policy = {"mode": "machine"}
+    else:
+        if not isinstance(network, dict) or set(network) - {"mode", "port"}:
+            raise ValueError("Invalid agent network setting")
+        policy = network
+    mode = policy.get("mode", "machine")
+    if mode == "direct":
+        return None
+    if mode == "custom":
+        port = policy.get("port")
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError("Proxy port must be between 1 and 65535")
+        return {"enabled": True, "port": port}
+    if mode != "machine":
+        raise ValueError("Unknown agent network mode")
+    setting = read_json(Path(root) / "executor.json", {})
+    if not isinstance(setting, dict):
+        return None
+    proxy = setting.get("proxy")
+    if not isinstance(proxy, dict):
+        return None
+    if not proxy.get("enabled"):
+        return None
+    return proxy
+
+
+def child_environment(root, stage=None, full_access=False, network=None):
     """The exact environment one executor child process inherits.
 
-    The receiver's saved proxy and network environment apply to every executor,
-    and DSH additionally learns its sandbox mode from the environment.
+    The proxy is resolved per turn from the agent's policy and the machine's
+    endpoint, so a machine that has a proxy does not force every agent through it.
+    DSH additionally learns its sandbox mode from the environment.
     """
     from agent_harness.common import apply_local_proxy
 
@@ -371,8 +407,8 @@ def child_environment(root, stage=None, full_access=False):
     setting = read_json(root / "executor.json", {})
     if setting is None:
         setting = {}
-    network = setting.get("network_env", {})
-    if not isinstance(network, dict) or set(network) - {
+    network_env = setting.get("network_env", {})
+    if not isinstance(network_env, dict) or set(network_env) - {
         "HTTP_PROXY",
         "HTTPS_PROXY",
         "ALL_PROXY",
@@ -381,12 +417,13 @@ def child_environment(root, stage=None, full_access=False):
         "WSS_PROXY",
     }:
         raise ValueError("Unsupported worker network environment")
-    for key, value in network.items():
+    for key, value in network_env.items():
         if not isinstance(value, str) or "\n" in value or "\r" in value:
             raise ValueError("Invalid network environment")
         env[key] = value
-    if "proxy" in setting:
-        env = apply_local_proxy(env, setting["proxy"])
+    proxy = resolve_network(root, network)
+    if proxy is not None:
+        env = apply_local_proxy(env, proxy)
     env.update(environment(root, stage, full_access))
     return env
 

@@ -463,6 +463,27 @@ function openEmployeeSettings(e, models) {
       b,
       "模型与执行权限由目标机器应用。工作目录改为在项目派遣页面按机器设置，不再属于某个员工。",
     );
+    const network = field(
+      b,
+      "模型请求代理",
+      (e.network && e.network.mode) || "machine",
+      [
+        ["machine", "跟随本机设置"],
+        ["direct", "直连（不走代理）"],
+        ["custom", "自定义端口"],
+      ],
+    );
+    const networkPort = field(
+      b,
+      "代理端口",
+      (e.network && e.network.port) || "",
+    );
+    networkPort.placeholder = "例如 7897";
+    const syncNetwork = () => {
+      networkPort.disabled = network.value !== "custom";
+    };
+    network.onchange = syncNetwork;
+    syncNetwork();
     a.append(
       button("取消", closeModal),
       button(
@@ -478,6 +499,10 @@ function openEmployeeSettings(e, models) {
             timeout: Number(timeout.value),
             strict_worktree: strict.value === "true",
             attachment_policy: attachmentPolicy.value,
+            network:
+              network.value === "custom"
+                ? { mode: "custom", port: Number(networkPort.value) || 0 }
+                : { mode: network.value },
           });
           closeModal();
           notify("设置请求已提交，等待目标设备应用。");

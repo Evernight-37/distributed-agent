@@ -318,6 +318,18 @@ class DesktopOwnerActions:
             settings = {k: data[k] for k in ("model", "effort", "enabled", "stages", "timeout")}
             settings["strict_worktree"] = bool(data.get("strict_worktree", False))
             settings["attachment_policy"] = data.get("attachment_policy", "ask")
+            # Where the proxy lives belongs to the machine; whether this agent uses
+            # it belongs here. The port is only carried for an explicit override.
+            network = data.get("network") or {"mode": "machine"}
+            if not isinstance(network, dict) or network.get("mode") not in {"machine", "direct", "custom"}:
+                raise ValueError("无效的网络设置")
+            if network.get("mode") == "custom":
+                port = network.get("port")
+                if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+                    raise ValueError("代理端口必须在 1 到 65535 之间")
+                settings["network"] = {"mode": "custom", "port": port}
+            else:
+                settings["network"] = {"mode": network["mode"]}
             # The model decides which local CLI runs the turn, so it has to be one
             # this machine's table lists; otherwise dispatch would fail later with
             # a far less useful error.
