@@ -12,6 +12,10 @@ from agent_harness.project_memory import ProjectMemory
 
 TERMINAL = {"needs_review", "failed", "cancelled", "timed_out", "interrupted"}
 
+# How many agent-initiated wakes one conversation may chain before automatic
+# scheduling stops and a human has to take over.
+AGENT_WAKE_LIMIT = 12
+
 
 def channel_for(contract):
     partner = contract.get("reply_to") if contract.get("private_turn") else None
@@ -24,6 +28,23 @@ class Coordinator:
         self.memory = ProjectMemory(store)
         self.backend = backend or PullBackend(store)
         self.stop_event = threading.Event()
+        # Consecutive agent-originated wakes per (project, channel). A chain of
+        # agents answering each other can otherwise spend a team's model budget
+        # without any human involved; the counter resets on a human message.
+        self._agent_wakes = {}
+
+    def _agent_wake_allowed(self, project_id, channel, source_id, sender_type):
+        """Whether one more automatic wake still fits this conversation's budget."""
+        key = (project_id, channel)
+        if sender_type == "human":
+            self._agent_wakes.pop(key, None)
+            return True
+        count, last = self._agent_wakes.get(key, (0, None))
+        if source_id == last:
+            return count <= AGENT_WAKE_LIMIT
+        count += 1
+        self._agent_wakes[key] = (count, source_id)
+        return count <= AGENT_WAKE_LIMIT
 
     def recover(self):
         completed = []
@@ -137,6 +158,17 @@ Use only authorized conversation context and local project evidence; you cannot 
             ensure_ascii=False,
         )
 
+    def _wake_budget_notice(self, db, project_id, channel):
+        """Record the budget stop once per conversation, for the humans to see."""
+        # Audit rows are cheap and already reviewed by the project owner; a group
+        # message would wake the very agents the budget just stopped.
+        self.store.log(
+            db,
+            "scheduler",
+            "agent_wake_budget",
+            {"project": project_id, "channel": channel, "limit": AGENT_WAKE_LIMIT},
+        )
+
     def wake_messages(self):
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -178,6 +210,13 @@ Use only authorized conversation context and local project evidence; you cannot 
                         other = execution["reply_to"] if execution else None
                     channel = channel_for({"private_turn": bool(other), "reply_to": other})
                     if candidate["id"] > cursors.get(channel, 0):
+                        if not self._agent_wake_allowed(
+                            r["project_id"], channel, candidate["id"], candidate["sender_type"]
+                        ):
+                            # The budget is spent: stop scheduling this chain and
+                            # tell the humans once, instead of silently stalling.
+                            self._wake_budget_notice(db, r["project_id"], channel)
+                            break
                         source, partner = candidate, other
                         break
                 if not source:
