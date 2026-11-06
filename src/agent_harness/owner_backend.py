@@ -135,18 +135,19 @@ class OwnerBackend:
             == "e-" + hashlib.sha256((employee + "\0" + a["project_id"]).encode()).hexdigest()[:56]
         ]
 
-    def poll(self, db, device):
+    def poll(self, db, device, claim=True):
         # Revalidate ownership on every poll; no trust in a caller-supplied node alone.
         self._device(db, device)
         rows = db.execute(
             "SELECT * FROM owner_commands WHERE node=? AND owner_id=? AND state IN ('queued','claimed') ORDER BY created_at,id LIMIT 20",
             (device["node"], device["owner_id"]),
         ).fetchall()
-        for row in rows:
-            db.execute(
-                "UPDATE owner_commands SET state='claimed' WHERE id=? AND state='queued'",
-                (row["id"],),
-            )
+        if claim:
+            for row in rows:
+                db.execute(
+                    "UPDATE owner_commands SET state='claimed' WHERE id=? AND state='queued'",
+                    (row["id"],),
+                )
         return [json.loads(row["envelope"]) for row in rows]
 
     def _device(self, db, device):

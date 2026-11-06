@@ -71,7 +71,7 @@ class PullBackend:
             )
         ]
 
-    def _poll_snapshot(self, db, device):
+    def _poll_snapshot(self, db, device, claim=True):
         rows = db.execute(
             "SELECT * FROM pull_jobs WHERE node=? AND state NOT IN "
             "('needs_review','completed','failed','cancelled','timed_out','interrupted') "
@@ -80,7 +80,7 @@ class PullBackend:
         ).fetchall()
         jobs = []
         for row in rows:
-            if row["state"] == "queued":
+            if claim and row["state"] == "queued":
                 db.execute(
                     "UPDATE pull_jobs SET state='claimed' WHERE id=? AND state='queued'",
                     (row["id"],),
@@ -101,7 +101,7 @@ class PullBackend:
         controls = OwnerBackend.__new__(OwnerBackend)
         controls.store = self.store
         commands = (
-            controls.poll(db, device)
+            controls.poll(db, device, claim=claim)
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='owner_commands'").fetchone()
             else []
         )
@@ -132,11 +132,13 @@ class PullBackend:
             raise ValueError("wait_seconds must be between 0 and 10")
         deadline = time.monotonic() + wait_seconds
         first = True
+        delay = 0.25
         while True:
-            with self.store.connect() as db:
-                db.execute("BEGIN IMMEDIATE")
-                device = self._device(db, bearer)
-                if first:
+            if first:
+                # Only the first iteration has bookkeeping to write.
+                with self.store.connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    device = self._device(db, bearer)
                     db.execute(
                         "UPDATE pull_devices SET last_seen=? WHERE node=?",
                         (time.time(), device["node"]),
@@ -145,7 +147,24 @@ class PullBackend:
                         self._advertise(db, device, data["bindings"])
                     self._record_health(device, data.get("health"))
                     self._record_encryption_key(device, data.get("encrypt_public_key"))
-                result = self._poll_snapshot(db, device)
+                    result = self._poll_snapshot(db, device)
+                first = False
+            else:
+                # Idle waits are read-only: taking the write lock every 250ms made
+                # every idle device contend with real writers for nothing.
+                with self.store.connect() as db:
+                    device = self._device(db, bearer)
+                    result = self._poll_snapshot(db, device, claim=False)
+                if (
+                    result["jobs"]
+                    or result["owner_commands"]
+                    or result["cancellations"]
+                    or result["attachment_decisions"]
+                ):
+                    with self.store.connect() as db:
+                        db.execute("BEGIN IMMEDIATE")
+                        device = self._device(db, bearer)
+                        result = self._poll_snapshot(db, device)
             if (
                 result["jobs"]
                 or result["owner_commands"]
@@ -154,11 +173,11 @@ class PullBackend:
                 or time.monotonic() >= deadline
             ):
                 return result
-            first = False
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return result
-            time.sleep(min(0.25, remaining))
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 1.0)
 
     def _record_encryption_key(self, device, value):
         """Remember the device's public sealing key. Only the public half moves."""
