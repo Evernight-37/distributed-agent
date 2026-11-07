@@ -15,24 +15,33 @@ def _device(bridge, node, server):
     return None
 
 
-def send(bridge, source, to_node, server):
+def send(bridge, source, to_node=None, recipient=None, server=None):
     source = Path(source)
     if not source.is_file() or source.is_symlink():
         raise ValueError("仅支持普通文件")
-    device = _device(bridge, to_node, server)
-    if not device or not device.get("transfer_public_key"):
-        raise ValueError("目标设备还不支持直连速传；请先把它更新到当前版本并保持在线")
+    if to_node:
+        device = _device(bridge, to_node, server)
+        if not device or not device.get("transfer_public_key"):
+            raise ValueError("目标设备还不支持直连速传；请先把它更新到当前版本并保持在线")
+        public_key = device["transfer_public_key"]
+    elif recipient:
+        # The teammate's device is unknown until one of them claims the offer;
+        # observe() installs its key as soon as that happens.
+        public_key = ""
+    else:
+        raise ValueError("请选择接收设备或接收账户")
     address = direct_transfer.local_tailnet_address()
     if not address:
         raise ValueError("本机没有可用的 Tailscale 地址，无法建立直连")
     transfer_id = "transfer-" + secrets.token_hex(16)
-    sender = direct_transfer.Sender(source, transfer_id, device["transfer_public_key"], host=address)
+    sender = direct_transfer.Sender(source, transfer_id, public_key, host=address)
     port = sender.start()
     try:
         offer = bridge._rpc(
             "transfer-direct-offer",
             {
                 "to_node": to_node,
+                "recipient": recipient,
                 "name": source.name,
                 "size": sender.size,
                 "address": "%s:%d" % (address, port),

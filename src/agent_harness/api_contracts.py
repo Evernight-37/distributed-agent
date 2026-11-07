@@ -162,7 +162,7 @@ DESKTOP_FIELDS = {
     "attachment-upload": {"project": _ID, "name": _TEXT(120), "base64": _TEXT(16_000_000)},
     "attachment-get": {"project": _ID, "id": _ID},
     "attachment-save": {"project": _ID, "id": _ID},
-    "file-transfer-direct-send": {"server": _TEXT(2048), "to_node": _ID},
+    "file-transfer-direct-send": {"server": _TEXT(2048), "to_node": _ID, "recipient": _ID},
     "file-transfer-direct-cancel": {"id": _ID},
     "file-transfer-send-select": {
         "server": _TEXT(2048),
@@ -332,7 +332,7 @@ DESKTOP_CONTROL = BoundaryContract(
         "attachment-get": frozenset({"project", "id"}),
         "attachment-save": frozenset({"project", "id"}),
         "attachment-upload": frozenset({"project", "name", "base64"}),
-        "file-transfer-direct-send": frozenset({"server", "to_node"}),
+        "file-transfer-direct-send": frozenset({"server"}),
         "file-transfer-direct-cancel": frozenset({"id"}),
         "file-transfer-send-select": frozenset({"server", "recipient_id"}),
         "file-transfer-accept": frozenset({"server", "id"}),

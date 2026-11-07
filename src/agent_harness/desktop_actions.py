@@ -518,7 +518,13 @@ class DesktopTransferActions:
             if not chosen:
                 return {"selected": False}
             source = Path(chosen[0] if isinstance(chosen, (list, tuple)) else chosen)
-            return direct_send.send(bridge, source, data["to_node"], server)
+            return direct_send.send(
+                bridge,
+                source,
+                to_node=data.get("to_node"),
+                recipient=data.get("recipient"),
+                server=server,
+            )
         if action == "file-transfer-direct-cancel":
             from agent_harness import direct_send
 
