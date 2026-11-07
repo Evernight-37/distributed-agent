@@ -307,6 +307,45 @@ def probe(url, private_key, public_key, transfer_id, timeout=10):
         raise TransferError("对方不可达：%s" % exc) from None
 
 
+def pull(
+    url,
+    private_key,
+    public_key,
+    transfer_id,
+    destination,
+    size=None,
+    attempts=12,
+    pause=1.0,
+    progress=None,
+):
+    """Download, waiting while the sender has not learned this device's key.
+
+    Until the claiming device's key reaches the sender it answers 409 to
+    everybody; that is a wait, not a refusal, so keep trying instead of failing
+    the whole transfer. Every other error propagates at once.
+    """
+    last = None
+    for _attempt in range(attempts):
+        try:
+            meta = probe(url, private_key, public_key, transfer_id)
+            fetch(
+                url,
+                private_key,
+                public_key,
+                transfer_id,
+                destination,
+                expect_size=meta.get("size") or size,
+                expect_digest=meta.get("sha256"),
+                expect_mtime=meta.get("mtime"),
+                progress=progress,
+            )
+            return meta
+        except TransferPending as exc:
+            last = exc
+            time.sleep(pause)
+    raise last
+
+
 def fetch(
     url,
     private_key,

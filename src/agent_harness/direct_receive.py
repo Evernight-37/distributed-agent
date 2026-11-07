@@ -1,4 +1,4 @@
-"""Receiving direct transfers in the desktop app.
+﻿"""Receiving direct transfers in the desktop app.
 
 The bytes never touch the service: this module learns where a sender is listening,
 proves it is the addressed device with a signature, and pulls the file straight
@@ -14,7 +14,7 @@ from agent_harness import direct_transfer, transfer_trust
 from agent_harness.attachments import safe_name
 from agent_harness.common import read_json, write_json
 
-INCOMING_STATES = {"queued", "accepted", "running", "done", "failed", "rejected"}
+VISIBLE_STATES = {"queued", "accepted", "running", "done", "failed", "rejected"}
 
 _LOCK = threading.RLock()
 _KEYS = {}
@@ -61,13 +61,9 @@ def _keypair(root):
         return value
 
 
-def public_key(bridge):
-    return _keypair(bridge.root)["public_key"]
-
-
 def publish(bridge, server):
     """Tell the service which key this desktop would sign a download with."""
-    key = public_key(bridge)
+    key = _keypair(bridge.root)["public_key"]
     marker = (server, bridge.profile.get("node"), key)
     if marker in _PUBLISHED:
         return
@@ -86,6 +82,14 @@ def receive_folder(bridge):
     return path
 
 
+def set_receive_folder(bridge, folder):
+    path = Path(folder).resolve()
+    if not path.is_dir() or path == Path(path.anchor):
+        raise ValueError("请选择现有文件夹，不能使用磁盘根目录")
+    write_json(Path(bridge.root) / "file-transfer-settings.json", {"receive_folder": str(path)})
+    return receive_folder(bridge)
+
+
 def _rows(bridge, server):
     value = bridge._rpc("transfer-direct-list", {}, server=server)
     rows = value.get("transfers") if isinstance(value, dict) else None
@@ -101,7 +105,7 @@ def incoming(bridge, server):
         if row.get("from_node") == node:
             continue
         addressed = row.get("to_node") == node or (row.get("to_node") is None and row.get("recipient_id") == account)
-        if not addressed or row.get("state") not in INCOMING_STATES:
+        if not addressed or row.get("state") not in VISIBLE_STATES:
             continue
         result.append(row)
     return result
@@ -111,7 +115,7 @@ def outgoing(bridge, server):
     """What this machine is sending, so the page can show its state."""
     node = bridge.profile["node"]
     return [
-        row for row in _rows(bridge, server) if row.get("from_node") == node and row.get("state") in INCOMING_STATES
+        row for row in _rows(bridge, server) if row.get("from_node") == node and row.get("state") in VISIBLE_STATES
     ]
 
 
@@ -200,7 +204,7 @@ def _report(bridge, server, transfer_id, transferred, state, error=None):
         pass
 
 
-def _throttled(bridge, server, transfer_id, transferred, size):
+def _throttled(bridge, server, transfer_id, transferred):
     now = time.time()
     with _LOCK:
         last = _PROGRESS_AT.get(transfer_id, 0.0)
@@ -218,25 +222,15 @@ def _pull(bridge, server, row, folder):
     keys = _keypair(bridge.root)
     try:
         _report(bridge, server, transfer_id, 0, "running")
-        for _attempt in range(12):
-            try:
-                meta = direct_transfer.probe(url, keys["private_key"], keys["public_key"], transfer_id, timeout=10)
-                direct_transfer.fetch(
-                    url,
-                    keys["private_key"],
-                    keys["public_key"],
-                    transfer_id,
-                    destination,
-                    expect_size=meta.get("size") or size,
-                    expect_digest=meta.get("sha256"),
-                    expect_mtime=meta.get("mtime"),
-                    progress=lambda done: _throttled(bridge, server, transfer_id, done, size),
-                )
-                break
-            except direct_transfer.TransferPending:
-                time.sleep(1.0)
-        else:
-            raise direct_transfer.TransferError("发送方仍未确认接收设备")
+        direct_transfer.pull(
+            url,
+            keys["private_key"],
+            keys["public_key"],
+            transfer_id,
+            destination,
+            size=size,
+            progress=lambda done: _throttled(bridge, server, transfer_id, done),
+        )
         _report(bridge, server, transfer_id, size, "done")
     except Exception as exc:  # one failed transfer must not break the poll loop
         _report(bridge, server, transfer_id, 0, "failed", exc)

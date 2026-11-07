@@ -429,59 +429,64 @@ class DesktopTransferActions:
     def __init__(self, bridge):
         self.bridge = bridge
 
-    def _dashboard(self):
+    def _collect(self):
+        """Staged history and direct transfers from every linked service."""
         bridge = self.bridge
-        transfers, contacts, devices, unavailable, direct = [], [], [], [], []
-        services = [item["server"] for item in bridge._dashboard().get("services", [])]
-        for server in services:
+        staged, direct, contacts, devices, unavailable = [], [], [], [], []
+        for server in (item["server"] for item in bridge._dashboard().get("services", [])):
             try:
                 peers = bridge._rpc("transfer-peers", server=server, timeout=10)
                 listing = bridge._rpc("transfer-list", server=server, timeout=10)
             except (OSError, RuntimeError, ValueError, PermissionError):
                 unavailable.append(server)
                 continue
-            for item in listing.get("transfers", []):
-                transfers.append(dict(item, server=server, transport=item.get("transport") or "staged"))
-            for item in peers.get("contacts", []):
-                contacts.append(dict(item, server=server))
-            for item in peers.get("devices", []):
-                devices.append(dict(item, server=server))
-            try:
-                from agent_harness import direct_receive
+            staged.extend(dict(item, server=server, transport="staged") for item in listing.get("transfers", []))
+            contacts.extend(dict(item, server=server) for item in peers.get("contacts", []))
+            devices.extend(dict(item, server=server) for item in peers.get("devices", []))
+            direct.extend(self._direct_rows(server))
+        return staged, direct, contacts, devices, unavailable
 
-                offered = direct_receive.incoming(bridge, server)
-                sent = direct_receive.outgoing(bridge, server)
-            except (OSError, RuntimeError, ValueError, PermissionError):
-                offered = []
-                sent = []
-            for item in offered:
-                direct.append(dict(item, server=server, transport="direct", incoming=True))
-            for item in sent:
-                direct.append(dict(item, server=server, transport="direct", incoming=False))
-        contact_names = {(item["server"], item["id"]): item["username"] for item in contacts}
-        device_names = {(item["server"], item["node"]): item["name"] for item in devices}
-        account_id = bridge.identity["account_id"]
-        for item in transfers:
-            if item["sender_id"] == item["recipient_id"] == account_id:
-                peer_node = (
-                    item.get("recipient_node")
-                    if item.get("sender_node") == bridge.profile["node"]
-                    else item.get("sender_node")
-                )
-                item["peer_name"] = device_names.get((item["server"], peer_node), "我的另一台机器")
+    def _direct_rows(self, server):
+        from agent_harness import direct_receive
+
+        try:
+            offered = direct_receive.incoming(self.bridge, server)
+            sent = direct_receive.outgoing(self.bridge, server)
+        except (OSError, RuntimeError, ValueError, PermissionError):
+            return []
+        return [dict(row, server=server, transport="direct", incoming=True) for row in offered] + [
+            dict(row, server=server, transport="direct", incoming=False) for row in sent
+        ]
+
+    def _name(self, staged, direct, contacts, devices):
+        """Attach the peer's name, which is the only thing the page shows."""
+        people = {(item["server"], item["id"]): item["username"] for item in contacts}
+        machines = {(item["server"], item["node"]): item["name"] for item in devices}
+        me = self.bridge.identity["account_id"]
+        mine = self.bridge.profile["node"]
+        for item in staged:
+            sender, recipient = item.get("sender_id"), item.get("recipient_id")
+            if sender == recipient == me:
+                node = item.get("recipient_node") if item.get("sender_node") == mine else item.get("sender_node")
+                item["peer_name"] = machines.get((item["server"], node), "我的另一台机器")
             else:
-                peer_id = item["recipient_id"] if item["sender_id"] == account_id else item["sender_id"]
-                item["peer_name"] = contact_names.get((item["server"], peer_id), "协作成员")
+                peer = recipient if sender == me else sender
+                item["peer_name"] = people.get((item["server"], peer), "协作成员")
         for item in direct:
-            if item.get("owner_id") == account_id:
-                peer_node = item.get("from_node") if item.get("incoming") else item.get("to_node")
-                item["peer_name"] = device_names.get((item["server"], peer_node), "我的另一台机器")
+            if item.get("owner_id") == me:
+                node = item.get("from_node") if item.get("incoming") else item.get("to_node")
+                item["peer_name"] = machines.get((item["server"], node), "我的另一台机器")
             else:
-                peer_id = item.get("owner_id") if item.get("incoming") else item.get("recipient_id")
-                item["peer_name"] = contact_names.get((item["server"], peer_id), "协作成员")
-        bridge.file_transfers.reconcile(transfers)
+                peer = item.get("owner_id") if item.get("incoming") else item.get("recipient_id")
+                item["peer_name"] = people.get((item["server"], peer), "协作成员")
+
+    def _dashboard(self):
+        bridge = self.bridge
+        staged, direct, contacts, devices, unavailable = self._collect()
+        self._name(staged, direct, contacts, devices)
+        bridge.file_transfers.reconcile(staged)
         return {
-            "transfers": transfers,
+            "transfers": staged,
             "direct": direct,
             "contacts": contacts,
             "devices": devices,

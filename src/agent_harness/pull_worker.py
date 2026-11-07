@@ -286,33 +286,17 @@ class Connector:
             self._forget_pending_transfer(transfer_id)
 
     def _pull_direct(self, url, keys, transfer_id, target, size):
-        """Download, waiting for the sender to learn this device's key.
-
-        The sender accepts a signed request only after the service told it which
-        device claimed the transfer, which takes a moment after we respond. A
-        409 there is not a refusal, so keep trying instead of failing the job.
-        """
+        """Download, waiting for the sender to learn this device's key."""
         from agent_harness import direct_transfer
 
-        last = None
-        for _attempt in range(12):
-            try:
-                meta = direct_transfer.probe(url, keys["private_key"], keys["public_key"], transfer_id, timeout=10)
-                direct_transfer.fetch(
-                    url,
-                    keys["private_key"],
-                    keys["public_key"],
-                    transfer_id,
-                    target,
-                    expect_size=meta.get("size") or size,
-                    expect_digest=meta.get("sha256"),
-                    expect_mtime=meta.get("mtime"),
-                )
-                return
-            except direct_transfer.TransferPending as exc:
-                last = exc
-                time.sleep(1.0)
-        raise last
+        direct_transfer.pull(
+            url,
+            keys["private_key"],
+            keys["public_key"],
+            transfer_id,
+            target,
+            size=size,
+        )
 
     def _remember_pending_transfer(self, row):
         path = self.root / "pending-transfers.json"

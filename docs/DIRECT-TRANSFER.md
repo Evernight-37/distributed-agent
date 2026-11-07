@@ -26,7 +26,7 @@
 
 | 文件 | 内容 |
 |---|---|
-| `src/agent_harness/direct_transfer.py` | `Sender`（Range 服务、签名校验、`set_recipient`、未认领 409、`X-Harness-Mtime`）、`fetch`（`.part` + 出处标记续传、大小与 sha256 校验、409 → `TransferPending`）、`probe`、`local_tailnet_address` |
+| `src/agent_harness/direct_transfer.py` | `Sender`（Range 服务、签名校验、`set_recipient`、未认领 409、`X-Harness-Mtime`）、`pull`（probe + 续传 + 等待认领，两端共用一个循环）、`fetch`（`.part` + 出处标记续传、大小与 sha256 校验）、`probe`、`local_tailnet_address` |
 | `src/agent_harness/direct_signaling.py` | schema v6 `direct_transfers`；`offer` 接受发送方编号（格式校验 + 唯一性）；respond/progress/visible/view |
 | `src/agent_harness/transfer_trust.py` | 接收方本机信任的发送账户（`transfer-trust.json`，上限 200） |
 | `src/agent_harness/direct_send.py` | 桌面侧 `send`/`cancel`/`observe`；发送时把编号交给中心；独立后台 watcher 学习认领公钥，不再依赖速传页渲染 |
@@ -39,11 +39,14 @@
 
 ## 剩余工作（按顺序）
 
-1. **删除死代码**：`file_transfers.py`、`headless_transfers.py` 及其调用点、
-   `account_backend` 里 6 个 `transfer-*` op、`broker` 的设备上传/下载端点、对应测试；
-   保留 `file-transfer-receive-folder`
-   （`transfer-peers` 目前仍复用 `FileTransfers.recipients()` 的名单，删除时要把这段名单查询
-   挪进 `direct_signaling`）
+1. **删除旧暂存通道**（有意暂缓）
+   - 范围：`file_transfers.py`、`headless_transfers.py`、`file_transfer_client.py` 里的暂存发送/接受、
+     `account_backend` 里 6 个 `transfer-*` op、`broker` 的设备上传/下载端点、`panel` 的分片上传/下载、
+     对应测试；保留 `file-transfer-receive-folder`（已由 `direct_receive` 拥有设置文件的读写）
+   - 暂缓原因：2.5.0 只是把入口从界面移走，**≤2.4 的客户端仍在调用这些 op**。今天删掉服务端，
+     那些客户端会直接报"未知操作"，而且它们的文件本来就只能走暂存通道。等它们升级完再删。
+   - 删除时要一起处理：`transfer-peers` 仍复用 `FileTransfers.recipients()` 的名单，需要把这段
+     查询挪进 `direct_signaling`；`file_transfers` 表里的历史行会随之消失，若仍要展示需另写只读查询。
 2. **双机端到端验证**：本机测试覆盖不到 tailnet 连通性、真实中心与两台机器的时间窗；
    桌面接收路径目前只有本机 socket + 假中心的测试
 

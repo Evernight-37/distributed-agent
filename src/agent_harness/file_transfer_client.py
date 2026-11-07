@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from agent_harness import direct_receive
 from agent_harness.attachments import safe_name
 from agent_harness.broker_transport import broker_opener
 from agent_harness.common import lock, read_json, write_json
@@ -204,20 +205,16 @@ class FileTransferManager:
         return self._document()["jobs"].get(job_id)
 
     def settings(self):
-        value = read_json(self.settings_path, {})
-        folder = value.get("receive_folder") if isinstance(value, dict) else None
-        return {"receive_folder_configured": bool(folder and Path(folder).is_dir())}
+        # The receive folder belongs to direct transfers now; this legacy channel
+        # only reads it so both agree on one file and one format.
+        return {"receive_folder_configured": direct_receive.receive_folder(self.bridge) is not None}
 
     def set_receive_folder(self, folder):
-        folder = Path(folder).resolve()
-        if not folder.is_dir() or folder == Path(folder.anchor):
-            raise ValueError("请选择现有文件夹，不能使用磁盘根目录")
-        write_json(self.settings_path, {"receive_folder": str(folder)})
+        direct_receive.set_receive_folder(self.bridge, folder)
         return self.settings()
 
     def _receive_folder(self):
-        folder = read_json(self.settings_path, {}).get("receive_folder")
-        return Path(folder).resolve() if folder and Path(folder).is_dir() else None
+        return direct_receive.receive_folder(self.bridge)
 
     @staticmethod
     def _public(job):
