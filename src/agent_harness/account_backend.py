@@ -1,5 +1,6 @@
 """Proof-of-possession account API; the service never receives local passwords."""
 
+import base64
 import hashlib
 import json
 import secrets
@@ -16,7 +17,7 @@ from agent_harness.owner_worker import execution_project
 from agent_harness.protocol import hub_advertisement
 from agent_harness.hub_api import HubAccountAPI
 from agent_harness.health import HealthCode, safe_message
-from agent_harness.common import read_json
+from agent_harness.common import read_json, write_json
 
 
 MAX_ACTIVE_CHALLENGES = 4096
@@ -39,6 +40,43 @@ class AccountBackend:
         now = time.time() if now is None else now
         db.execute("DELETE FROM account_challenges WHERE expires<?", (now,))
         db.execute("DELETE FROM account_requests WHERE expires<?", (now,))
+
+    def _transfer_key(self, node):
+        """The public key a device published for signing direct downloads."""
+        if not isinstance(node, str) or not node:
+            return {}
+        value = read_json(self.store.root / "nodes" / (node + ".json"), {})
+        key = value.get("transfer_public_key") if isinstance(value, dict) else None
+        return {"transfer_public_key": key} if isinstance(key, str) and key else {}
+
+    def _with_transfer_keys(self, value):
+        """A sender needs the target device's key before it can serve anything."""
+        for device in value.get("devices", []):
+            device.update(self._transfer_key(device.get("node")))
+        for contact in value.get("contacts", []):
+            for device in contact.get("devices", []):
+                device.update(self._transfer_key(device.get("node")))
+        return value
+
+    def _publish_transfer_key(self, user, node, key):
+        if not isinstance(key, str) or not 1 <= len(key) <= 128:
+            raise ValueError("无效的传输公钥")
+        try:
+            raw = base64.b64decode(key.encode("ascii"), validate=True)
+        except Exception:
+            raise ValueError("无效的传输公钥") from None
+        if len(raw) != 32:
+            raise ValueError("无效的传输公钥")
+        with self.store.connect() as db:
+            if not db.execute("SELECT 1 FROM nodes WHERE name=? AND owner_id=?", (node, user)).fetchone():
+                raise PermissionError("当前设备尚未接入此协作服务")
+        path = self.store.root / "nodes" / (node + ".json")
+        current = read_json(path, {})
+        if not isinstance(current, dict):
+            current = {}
+        current["transfer_public_key"] = key
+        write_json(path, current)
+        return {"published": True, "node": node, "transfer_public_key": key}
 
     def api(self, data):
         return self.account_api.dispatch(data)
@@ -604,7 +642,7 @@ class AccountBackend:
             files = FileTransfers(self.store)
             node = device_node(public)
             if op == "transfer-peers":
-                return files.recipients(user)
+                return self._with_transfer_keys(files.recipients(user))
             if op == "transfer-list":
                 return {"transfers": files.list(user)}
             if op == "transfer-request":
@@ -637,12 +675,28 @@ class AccountBackend:
                 return files.complete(user, node, p["id"])
             if op == "transfer-cancel":
                 return files.cancel(user, p["id"])
-        if op in {"transfer-direct-offer", "transfer-direct-respond", "transfer-direct-list"}:
+        if op in {
+            "transfer-direct-offer",
+            "transfer-direct-respond",
+            "transfer-direct-list",
+            "transfer-direct-progress",
+            "transfer-key-publish",
+        }:
             from agent_harness.direct_signaling import Transfers
 
             direct = Transfers(self.store)
             if op == "transfer-direct-list":
                 return {"transfers": direct.view(user)}
+            if op == "transfer-key-publish":
+                return self._publish_transfer_key(user, device_node(public), p.get("transfer_public_key"))
+            if op == "transfer-direct-progress":
+                return direct.progress(
+                    user,
+                    p["id"],
+                    p["transferred"],
+                    p.get("state"),
+                    p.get("error"),
+                )
             if op == "transfer-direct-offer":
                 return direct.offer(
                     user,
@@ -663,7 +717,6 @@ class AccountBackend:
                 node=p.get("node"),
                 claim_key=p.get("claim_key"),
             )
-            raise ValueError("Unknown file-transfer operation")
         if op == "conversation-read":
             return self.store.mark_conversation_read(user, p["project"], p["conversation_id"])
         if op == "task":

@@ -41,6 +41,24 @@ function transferStateLabel(item, job) {
   return labels[item.state] || item.state;
 }
 
+function directStateLabel(item) {
+  const labels = {
+    queued: item.incoming ? "等待你确认" : "等待对方确认",
+    accepted: "已确认，等待对方就绪",
+    running: "传输中",
+    done: "已完成",
+    failed: "失败" + (item.error ? " · " + item.error : ""),
+    rejected: "已拒绝",
+  };
+  const percent =
+    item.state === "running" && item.size && item.transferred
+      ? " · " +
+        Math.min(100, Math.floor((item.transferred / item.size) * 100)) +
+        "%"
+      : "";
+  return (labels[item.state] || item.state) + percent;
+}
+
 async function renderTransfers(reason) {
   nav("transfers");
   if (transferPolling) {
@@ -159,6 +177,63 @@ async function renderTransfers(reason) {
     }
     content.append(settings);
 
+    const directRows = view.direct || [];
+    if (directRows.length) {
+      const direct = el("section", "panel");
+      direct.append(el("h2", "", "直连传输"));
+      note(
+        direct,
+        "文件由对方的机器直接传到这台机器，协作服务不接触内容。跨账户第一次来件需要你确认，确认后会记住该发送账户。",
+      );
+      const needsFolder = !view.settings?.receive_folder_configured;
+      directRows.forEach((item) => {
+        const row = el("div", "transfer-row"),
+          info = el("div", "transfer-info");
+        info.append(
+          el("strong", "", (item.incoming ? "收到 · " : "发出 · ") + item.name),
+          el(
+            "span",
+            "muted small",
+            (item.peer_name || "对方设备") +
+              " · " +
+              fileSize(item.size) +
+              " · " +
+              date(item.created_at),
+          ),
+          el("span", "small", directStateLabel(item)),
+        );
+        row.append(info);
+        if (item.incoming && item.state === "queued") {
+          row.append(
+            button("拒绝", async () => {
+              await api("file-transfer-direct-respond", {
+                server: item.server,
+                id: item.id,
+                accept: false,
+              });
+              await renderTransfers("action");
+            }),
+            button(
+              "确认接收",
+              async () => {
+                if (needsFolder) throw new Error("请先设置默认接收目录");
+                await api("file-transfer-direct-respond", {
+                  server: item.server,
+                  id: item.id,
+                  accept: true,
+                });
+                notify("已确认；文件会直接传到本机接收目录。");
+                await renderTransfers("action");
+              },
+              "primary",
+            ),
+          );
+        }
+        direct.append(row);
+      });
+      content.append(direct);
+    }
+
     const targets = [];
     (view.devices || []).forEach((device) => {
       if (
@@ -200,7 +275,7 @@ async function renderTransfers(reason) {
       );
       note(
         send,
-        "不同用户之间会先发送请求；对方选择保存位置并确认后才开始传输。文件通过双方共同使用的协作服务临时中转，不会加入项目；中转不是端到端加密，服务托管者可读取传输中的文件。",
+        "对方确认后，文件从你的机器直接传到对方的机器；协作服务只转交“谁发给谁、大小、地址”，不接触文件内容。",
       );
       send.append(
         button(

@@ -1,7 +1,7 @@
 # 直连速传：现状与剩余工作
 
 > 交接文档。新会话请先读 `README.md`、`docs/ARCHITECTURE.md`，再读本文。
-> 最近发布：`v2.5.1`（已修复下面这条，端到端可用）。
+> 最近发布：`v2.6.0`（桌面可以作为接收方；直连路径收发两个方向都已接通）。
 >
 > **2026-11-07 复核更正**：v2.5.0 发布时直连传输端到端不可用。发送方按自己生成的
 > 编号建 URL 与签名，中心另生成一个编号给接收方，两侧签名永远不符，每一笔传输都
@@ -33,24 +33,19 @@
 | `pull_worker._consume_transfers` | 消费 offer：接受 `to_node` 为空的账户寻址（排除自己发出的行）；信任+目录才自动，否则写 `pending-transfers.json` |
 | `pull_worker._pull_direct` | 认领后重试（409 视为等待），按 meta 的 size/mtime/sha256 校验下载结果 |
 | `pull_worker.transfer_signing_key` | 接收端自己的 Ed25519 身份（公钥随轮询上报，存 `nodes/<node>.json`） |
-| 中心 | 桌面 op `transfer-direct-offer/respond/list`；respond 透传 `node` 与 `claim_key`；设备端点 `transfer-respond/progress` |
-| 界面 | 发送按钮只调用 `file-transfer-direct-send`；同账户带 `to_node`，跨账户带 `recipient`；旧通道入口已移除，历史行带 `transport: "staged"` |
+| `src/agent_harness/direct_receive.py` | 桌面接收方：自己的 Ed25519 身份（`transfer-key.json`，公钥经 `transfer-key-publish` 上报）、`incoming`/`outgoing`、自动与手动接受、后台拉取与进度上报、应用打开期间每 4 秒消费一次 |
+| 中心 | op `transfer-direct-offer/respond/list/progress/key-publish`；respond 透传 `node` 与 `claim_key`；`transfer-peers` 带上各设备的 `transfer_public_key`；设备端点 `transfer-respond/progress` |
+| 界面 | `file-transfer-dashboard` 返回 `direct` 列表（收/发两个方向），速传页新增"直连传输"区块；确认/拒绝走 `file-transfer-direct-respond`；旧 `staged` 行只读展示 |
 
 ## 剩余工作（按顺序）
 
-1. **速传页改数据源 + 桌面接收端**（`assets/web/app/transfers.js`、`desktop_actions.py`）
-   - `file-transfer-dashboard` → 读 `transfer-direct-list`，旧 `staged` 行只读展示
-   - `file-transfer-accept/reject` → `transfer-direct-respond`
-   - 待确认列表来自 `transfer-direct-list` 中指向本机（`to_node` 为空或等于本机）的行；
-     注意 `pending-transfers.json` 只由 headless 接收端写，桌面不读它
-   - 桌面目前没有任何消费 direct offer 的循环，接收侧在桌面上仍是旧通道
-2. **桌面接受时带上认领设备的公钥**：服务端已透传 `node`/`claim_key`，客户端与页面还缺；
-   headless 设备自动接受时已带
-3. **删除死代码**：`file_transfers.py`、`headless_transfers.py` 及其调用点、
+1. **删除死代码**：`file_transfers.py`、`headless_transfers.py` 及其调用点、
    `account_backend` 里 6 个 `transfer-*` op、`broker` 的设备上传/下载端点、对应测试；
    保留 `file-transfer-receive-folder`
-   （原先单列的"Linux 接收端换下载器"已由 `_pull_direct` 完成，本条只剩删除）
-4. **双机端到端验证**：本机测试覆盖不到 tailnet 连通性、真实中心与两台机器的时间窗
+   （`transfer-peers` 目前仍复用 `FileTransfers.recipients()` 的名单，删除时要把这段名单查询
+   挪进 `direct_signaling`）
+2. **双机端到端验证**：本机测试覆盖不到 tailnet 连通性、真实中心与两台机器的时间窗；
+   桌面接收路径目前只有本机 socket + 假中心的测试
 
 ## 已知风险
 
@@ -61,5 +56,6 @@
 - **发送方休眠**：GB 级传输可能跨休眠。认领阶段现在会重试（约 12 秒），传输中断仍不重连，
   需要外部循环
 - **并发**：每笔发送一个端口，`SENDERS` 无上限，也没有兜底回收（只在 watcher 看到终态时关闭）；
-  建议上限 4
+  接收端同理，`_INFLIGHT` 只在传输结束时清理。建议上限 4
+- **接收方只在应用打开时工作**：桌面 watcher 随进程存活；退出应用期间来的传输停在 `queued`
 - **测试波动**：`tests/test_file_transfer_client.py` 在全量运行中偶发失败、单跑通过，原因未定位（本次未复现）

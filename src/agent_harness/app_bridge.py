@@ -1241,8 +1241,18 @@ class AppBridge:
         data = self._dashboard()
         return next((e for e in data["employees"] if e["id"] == eid), None) or self._missing()
 
+    def _start_direct_receive(self):
+        """Receiving lasts for the session, not only while the transfers page renders."""
+        try:
+            from agent_harness import direct_receive
+
+            direct_receive.start(self)
+        except Exception:  # file transfer must never break the dashboard
+            pass
+
     def _dashboard(self):
         self._sync_service_links()
+        self._start_direct_receive()
         self.project_servers = {}
         self.employee_servers = {}
         result = None
