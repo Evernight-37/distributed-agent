@@ -185,7 +185,6 @@ class Connector:
         self.root = self._resolve_root()
         self.transport = transport
         self.executor = executor or self.rpc
-        self.headless_transfers = None
 
     def _resolve_root(self):
         """Where this receiver's mutable state lives.
@@ -774,19 +773,6 @@ class Connector:
             for envelope in data["owner_commands"]:
                 result = OwnerControl(self).apply(envelope)
                 self.transport(self.config, "owner-report", dict(result, id=envelope["body"]["id"]))
-        if sys.platform.startswith("linux") and "device_file_transfers_v1" in data.get("features", []):
-            if self.headless_transfers is None:
-                from agent_harness.headless_transfers import HeadlessTransferReceiver
-
-                self.headless_transfers = HeadlessTransferReceiver(self)
-            # Downloads run on independent background threads and never hold
-            # task, message, or owner-command polling open.
-            try:
-                self.headless_transfers.reconcile()
-            except (OSError, RuntimeError, ValueError):
-                # File delivery is independent from Agent work. A transient
-                # relay problem must not prevent jobs or commands being polled.
-                pass
         cancellations = set(data.get("cancellations", []))
         attachment_decisions = {
             item.get("job_id"): item for item in data.get("attachment_decisions", []) if isinstance(item, dict)

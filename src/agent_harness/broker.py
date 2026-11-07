@@ -396,26 +396,6 @@ class PullBackend:
                     data.get("base64"),
                     allow_new=job["state"] not in TERMINAL and not job["cancel_requested"],
                 )
-            if path in {
-                "/api/device/transfers",
-                "/api/device/transfer-download-ticket",
-                "/api/device/transfer-complete",
-            }:
-                # FileTransfers owns its own short transactions and filesystem
-                # locks. Release the heartbeat write lock before entering it.
-                db.commit()
-                from agent_harness.file_transfers import FileTransfers
-
-                transfers = FileTransfers(self.store)
-                if path == "/api/device/transfers":
-                    return {
-                        "transfers": transfers.list_for_recipient_node(device["owner_id"], device["node"]),
-                        "node": device["node"],
-                    }
-                transfer_id = data["id"]
-                if path == "/api/device/transfer-download-ticket":
-                    return transfers.download_ticket(device["owner_id"], device["node"], transfer_id)
-                return transfers.complete(device["owner_id"], device["node"], transfer_id)
             if path == "/api/device/owner-report":
                 from agent_harness.owner_backend import OwnerBackend
 

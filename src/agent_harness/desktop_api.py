@@ -152,13 +152,6 @@ class DesktopSettingsActions:
     def _active_work(self):
         """Work that replacing the application now would interrupt."""
         busy = []
-        try:
-            for job in self.bridge.file_transfers.jobs():
-                if job.get("state") in {"running", "hashing", "uploading", "downloading", "verifying"}:
-                    busy.append("文件传输")
-                    break
-        except (OSError, RuntimeError, ValueError):
-            pass
         for receiver in self._receiver_paths():
             active = read_json(receiver / "active.json", None)
             if isinstance(active, dict) and active.get("job"):

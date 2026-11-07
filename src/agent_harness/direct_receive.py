@@ -1,4 +1,4 @@
-﻿"""Receiving direct transfers in the desktop app.
+"""Receiving direct transfers in the desktop app.
 
 The bytes never touch the service: this module learns where a sender is listening,
 proves it is the addressed device with a signature, and pulls the file straight
@@ -114,9 +114,7 @@ def incoming(bridge, server):
 def outgoing(bridge, server):
     """What this machine is sending, so the page can show its state."""
     node = bridge.profile["node"]
-    return [
-        row for row in _rows(bridge, server) if row.get("from_node") == node and row.get("state") in VISIBLE_STATES
-    ]
+    return [row for row in _rows(bridge, server) if row.get("from_node") == node and row.get("state") in VISIBLE_STATES]
 
 
 def respond(bridge, server, transfer_id, accept):

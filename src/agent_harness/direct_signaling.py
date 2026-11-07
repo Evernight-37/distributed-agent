@@ -2,6 +2,7 @@
 never the bytes. Content goes from device to device over the tailnet.
 """
 
+import hashlib
 import re
 import sqlite3
 import time
@@ -12,6 +13,49 @@ STATES = {"queued", "accepted", "rejected", "running", "done", "failed"}
 ADDRESS = re.compile(r"^[A-Za-z0-9.:\[\]_\-]{1,255}$")
 TRANSFER_ID = re.compile(r"^transfer-[0-9a-f]{32}$")
 NAME_LIMIT = 255
+ONLINE_WINDOW = 45
+
+
+def _online(db, node, now):
+    if not node:
+        return False
+    row = db.execute("SELECT last_seen FROM pull_devices WHERE node=?", (node,)).fetchone()
+    return bool(row and row["last_seen"] > now - ONLINE_WINDOW)
+
+
+def peers(store, account):
+    """Own devices and the devices of everyone sharing a project with us."""
+    now = time.time()
+    with store.connect() as db:
+        contacts = []
+        for contact in db.execute(
+            "SELECT DISTINCT u.id,u.username FROM users u JOIN project_users theirs ON theirs.user_id=u.id "
+            "JOIN project_users mine ON mine.project_id=theirs.project_id "
+            "WHERE mine.user_id=? AND u.id<>? ORDER BY u.username,u.id",
+            (account, account),
+        ):
+            devices = []
+            for device in db.execute(
+                "SELECT public_key,name FROM account_devices WHERE account_id=? AND revoked=0 ORDER BY name,public_key",
+                (contact["id"],),
+            ):
+                node = "device-" + hashlib.sha256(device["public_key"].encode()).hexdigest()[:24]
+                owned = db.execute("SELECT owner_id FROM nodes WHERE name=?", (node,)).fetchone()
+                if owned and owned["owner_id"] == contact["id"]:
+                    devices.append({"node": node, "name": device["name"], "online": _online(db, node, now)})
+            contacts.append({"id": contact["id"], "username": contact["username"], "devices": devices})
+        named = {
+            "device-" + hashlib.sha256(row["public_key"].encode()).hexdigest()[:24]: row["name"]
+            for row in db.execute(
+                "SELECT public_key,name FROM account_devices WHERE account_id=? AND revoked=0", (account,)
+            )
+        }
+        own = [
+            {"node": row["name"], "name": named[row["name"]], "online": _online(db, row["name"], now)}
+            for row in db.execute("SELECT name FROM nodes WHERE owner_id=? ORDER BY name", (account,))
+            if row["name"] in named
+        ]
+        return {"contacts": contacts, "devices": own}
 
 
 class Transfers:

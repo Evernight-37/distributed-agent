@@ -35,20 +35,15 @@
 | `pull_worker.transfer_signing_key` | 接收端自己的 Ed25519 身份（公钥随轮询上报，存 `nodes/<node>.json`） |
 | `src/agent_harness/direct_receive.py` | 桌面接收方：自己的 Ed25519 身份（`transfer-key.json`，公钥经 `transfer-key-publish` 上报）、`incoming`/`outgoing`、自动与手动接受、后台拉取与进度上报、应用打开期间每 4 秒消费一次 |
 | 中心 | op `transfer-direct-offer/respond/list/progress/key-publish`；respond 透传 `node` 与 `claim_key`；`transfer-peers` 带上各设备的 `transfer_public_key`；设备端点 `transfer-respond/progress` |
-| 界面 | `file-transfer-dashboard` 返回 `direct` 列表（收/发两个方向），速传页新增"直连传输"区块；确认/拒绝走 `file-transfer-direct-respond`；旧 `staged` 行只读展示 |
+| 界面 | `file-transfer-dashboard` 返回 `direct` 列表（收/发两个方向），速传页新增"直连传输"区块；确认/拒绝走 `file-transfer-direct-respond` |
+| 旧暂存通道 | 已整体删除：`file_transfers.py`、`file_transfer_client.py`、`headless_transfers.py`、设备端上传/下载端点、面板分片接口，以及 5 个桌面动作。`transfer-peers` 的名单查询已挪进 `direct_signaling.peers`；接收目录设置由 `direct_receive` 独占 |
 
 ## 剩余工作（按顺序）
 
-1. **删除旧暂存通道**（有意暂缓）
-   - 范围：`file_transfers.py`、`headless_transfers.py`、`file_transfer_client.py` 里的暂存发送/接受、
-     `account_backend` 里 6 个 `transfer-*` op、`broker` 的设备上传/下载端点、`panel` 的分片上传/下载、
-     对应测试；保留 `file-transfer-receive-folder`（已由 `direct_receive` 拥有设置文件的读写）
-   - 暂缓原因：2.5.0 只是把入口从界面移走，**≤2.4 的客户端仍在调用这些 op**。今天删掉服务端，
-     那些客户端会直接报"未知操作"，而且它们的文件本来就只能走暂存通道。等它们升级完再删。
-   - 删除时要一起处理：`transfer-peers` 仍复用 `FileTransfers.recipients()` 的名单，需要把这段
-     查询挪进 `direct_signaling`；`file_transfers` 表里的历史行会随之消失，若仍要展示需另写只读查询。
-2. **双机端到端验证**：本机测试覆盖不到 tailnet 连通性、真实中心与两台机器的时间窗；
+1. **双机端到端验证**：本机测试覆盖不到 tailnet 连通性、真实中心与两台机器的时间窗；
    桌面接收路径目前只有本机 socket + 假中心的测试
+2. **数据库里的旧表**：`file_transfers` / `file_transfer_tokens` 已无代码读写，但 `SCHEMA_V4`
+   仍在建它们，`_v4_layout_current` 也仍以它们判断布局。要清理得加一次迁移，收益不大，暂时留着
 
 ## 已知风险
 

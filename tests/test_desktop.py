@@ -172,7 +172,7 @@ class DesktopRuntimeContractTests(unittest.TestCase):
             expected = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8")
             self.assertEqual((snapshot / "VERSION").read_text(encoding="utf-8"), expected)
             self.assertTrue((snapshot / "release_info.py").is_file())
-            for name in ("headless_transfers.py", "file_transfer_client.py", "file_transfers.py"):
+            for name in ("desktop_service.py", "pull_worker.py", "common.py"):
                 self.assertTrue((snapshot / name).is_file(), name)
 
     def test_start_reconciles_orphan_before_runtime_deploy(self):

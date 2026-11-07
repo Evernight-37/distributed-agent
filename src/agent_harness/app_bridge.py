@@ -107,9 +107,6 @@ class AppBridge:
         )
         self.allow_window_close = False
         self.broker_proxy = read_json(self.root / "broker-network.json", {}).get("proxy")
-        from agent_harness.file_transfer_client import FileTransferManager
-
-        self.file_transfers = FileTransferManager(self)
 
     def _profiles(self):
         return [read_json(p) for p in (self.root / "profiles").glob("*.json")]
@@ -1297,8 +1294,6 @@ class AppBridge:
                 seen_services.add(service_id)
             listed.append(server)
             hosting[server] = bool(extra.get("hosted_by_me"))
-            for transfer in extra.get("transfers", []):
-                transfer["server"] = server
             if result is None:
                 result = extra
             else:
@@ -1337,7 +1332,6 @@ class AppBridge:
             }
             for server in listed
         ]
-        self.file_transfers.reconcile(result.get("transfers", []))
         return result
 
     def _missing(self):

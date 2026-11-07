@@ -414,12 +414,7 @@ class DesktopTransferActions:
     actions = frozenset(
         {
             "file-transfer-dashboard",
-            "file-transfer-send-select",
-            "file-transfer-accept",
-            "file-transfer-reject",
-            "file-transfer-cancel",
             "file-transfer-receive-folder",
-            "file-transfer-job-status",
             "file-transfer-direct-send",
             "file-transfer-direct-cancel",
             "file-transfer-direct-respond",
@@ -430,21 +425,19 @@ class DesktopTransferActions:
         self.bridge = bridge
 
     def _collect(self):
-        """Staged history and direct transfers from every linked service."""
+        """Direct transfers and reachable machines from every linked service."""
         bridge = self.bridge
-        staged, direct, contacts, devices, unavailable = [], [], [], [], []
+        direct, contacts, devices, unavailable = [], [], [], []
         for server in (item["server"] for item in bridge._dashboard().get("services", [])):
             try:
                 peers = bridge._rpc("transfer-peers", server=server, timeout=10)
-                listing = bridge._rpc("transfer-list", server=server, timeout=10)
             except (OSError, RuntimeError, ValueError, PermissionError):
                 unavailable.append(server)
                 continue
-            staged.extend(dict(item, server=server, transport="staged") for item in listing.get("transfers", []))
             contacts.extend(dict(item, server=server) for item in peers.get("contacts", []))
             devices.extend(dict(item, server=server) for item in peers.get("devices", []))
             direct.extend(self._direct_rows(server))
-        return staged, direct, contacts, devices, unavailable
+        return direct, contacts, devices, unavailable
 
     def _direct_rows(self, server):
         from agent_harness import direct_receive
@@ -458,20 +451,11 @@ class DesktopTransferActions:
             dict(row, server=server, transport="direct", incoming=False) for row in sent
         ]
 
-    def _name(self, staged, direct, contacts, devices):
+    def _name(self, direct, contacts, devices):
         """Attach the peer's name, which is the only thing the page shows."""
         people = {(item["server"], item["id"]): item["username"] for item in contacts}
         machines = {(item["server"], item["node"]): item["name"] for item in devices}
         me = self.bridge.identity["account_id"]
-        mine = self.bridge.profile["node"]
-        for item in staged:
-            sender, recipient = item.get("sender_id"), item.get("recipient_id")
-            if sender == recipient == me:
-                node = item.get("recipient_node") if item.get("sender_node") == mine else item.get("sender_node")
-                item["peer_name"] = machines.get((item["server"], node), "我的另一台机器")
-            else:
-                peer = recipient if sender == me else sender
-                item["peer_name"] = people.get((item["server"], peer), "协作成员")
         for item in direct:
             if item.get("owner_id") == me:
                 node = item.get("from_node") if item.get("incoming") else item.get("to_node")
@@ -481,17 +465,15 @@ class DesktopTransferActions:
                 item["peer_name"] = people.get((item["server"], peer), "协作成员")
 
     def _dashboard(self):
-        bridge = self.bridge
-        staged, direct, contacts, devices, unavailable = self._collect()
-        self._name(staged, direct, contacts, devices)
-        bridge.file_transfers.reconcile(staged)
+        from agent_harness import direct_receive
+
+        direct, contacts, devices, unavailable = self._collect()
+        self._name(direct, contacts, devices)
         return {
-            "transfers": staged,
             "direct": direct,
             "contacts": contacts,
             "devices": devices,
-            "jobs": bridge.file_transfers.jobs(),
-            "settings": bridge.file_transfers.settings(),
+            "settings": {"receive_folder_configured": direct_receive.receive_folder(self.bridge) is not None},
             "unavailable_services": unavailable,
         }
 
@@ -506,8 +488,6 @@ class DesktopTransferActions:
             direct_send.observe(bridge, server)
             direct_receive.consume_all(bridge)
             return self._dashboard()
-        if action == "file-transfer-job-status":
-            return bridge.file_transfers.status(data["id"])
         if action == "file-transfer-receive-folder":
             node = data.get("node") or bridge.profile["node"]
             server = data.get("server") or bridge.profile["server"]
@@ -526,11 +506,14 @@ class DesktopTransferActions:
                 raise RuntimeError("文件夹选择器尚未就绪")
             import webview
 
+            from agent_harness import direct_receive
+
             chosen = bridge.window.create_file_dialog(webview.FileDialog.FOLDER)
             if not chosen:
                 return {"configured": False}
             folder = chosen[0] if isinstance(chosen, (list, tuple)) else chosen
-            return {"configured": True, **bridge.file_transfers.set_receive_folder(folder)}
+            direct_receive.set_receive_folder(bridge, folder)
+            return {"configured": True}
         if action == "file-transfer-direct-send":
             if not bridge.window:
                 raise RuntimeError("文件选择器尚未就绪")
@@ -563,65 +546,6 @@ class DesktopTransferActions:
             if data.get("accept"):
                 return direct_receive.accept(bridge, server, data["id"])
             return direct_receive.reject(bridge, server, data["id"])
-        if action == "file-transfer-send-select":
-            if not bridge.window:
-                raise RuntimeError("文件选择器尚未就绪")
-            import webview
-
-            server = data["server"]
-            if server not in bridge._services():
-                raise ValueError("请选择当前账户已接入的协作服务")
-            chosen = bridge.window.create_file_dialog(webview.FileDialog.OPEN)
-            if not chosen:
-                return {"selected": False}
-            source = Path(chosen[0] if isinstance(chosen, (list, tuple)) else chosen)
-            return {
-                "selected": True,
-                "job": bridge.file_transfers.send(
-                    server,
-                    data["recipient_id"],
-                    data.get("recipient_node"),
-                    source,
-                ),
-            }
-        if action == "file-transfer-accept":
-            server = data["server"]
-            transfer = bridge._rpc("transfer-status", {"id": data["id"]}, server=server, timeout=20)
-            recipient_node = data.get("recipient_node") or bridge.profile["node"]
-            peers = bridge._rpc("transfer-peers", server=server, timeout=20)
-            owned = {item["node"] for item in peers.get("devices", [])}
-            if recipient_node not in owned:
-                raise PermissionError("接收机器不属于当前账户")
-            if recipient_node != bridge.profile["node"]:
-                accepted = bridge._rpc(
-                    "transfer-decide",
-                    {"id": data["id"], "accept": True, "recipient_node": recipient_node},
-                    server=server,
-                    timeout=20,
-                )
-                return {"accepted": True, "remote": True, "transfer": accepted}
-            if not bridge.window:
-                raise RuntimeError("文件保存窗口尚未就绪")
-            import webview
-            from agent_harness.attachments import safe_name
-
-            chosen = bridge.window.create_file_dialog(
-                webview.FileDialog.SAVE,
-                save_filename=safe_name(transfer["name"]),
-            )
-            if not chosen:
-                return {"accepted": False}
-            destination = Path(chosen[0] if isinstance(chosen, (list, tuple)) else chosen)
-            return {
-                "accepted": True,
-                "job": bridge.file_transfers.accept(server, transfer, destination),
-            }
-        if action == "file-transfer-reject":
-            return bridge._rpc(
-                "transfer-decide", {"id": data["id"], "accept": False}, server=data["server"], timeout=20
-            )
-        if action == "file-transfer-cancel":
-            return bridge._rpc("transfer-cancel", {"id": data["id"]}, server=data["server"], timeout=20)
         raise ValueError("未知文件传输操作")
 
 

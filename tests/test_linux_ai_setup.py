@@ -93,7 +93,7 @@ class LinuxAISetupTests(unittest.TestCase):
             client = root / "client" / "agent_harness"
             client.mkdir(parents=True)
             (client / "desktop_service.py").write_text("service", encoding="utf-8")
-            (client / "headless_transfers.py").write_text("transfers", encoding="utf-8")
+            (client / "pull_worker.py").write_text("worker", encoding="utf-8")
 
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -108,7 +108,7 @@ class LinuxAISetupTests(unittest.TestCase):
                 self.assertIn("AgentHarness-linux/交给AI安装.md", names)
                 self.assertIn("AgentHarness-linux/runtime/bin/python3", names)
                 self.assertIn("AgentHarness-linux/client/agent_harness/desktop_service.py", names)
-                self.assertIn("AgentHarness-linux/client/agent_harness/headless_transfers.py", names)
+                self.assertIn("AgentHarness-linux/client/agent_harness/pull_worker.py", names)
                 prompt = bundle.extractfile("AgentHarness-linux/交给AI安装.md").read().decode("utf-8")
             self.assertEqual(prompt.count(PLACEHOLDER), 1)
 

@@ -458,9 +458,6 @@ class AccountBackend:
         if op == "dashboard":
             result = self.store.snapshot(user)
             result.update(self.owners.snapshot(user))
-            from agent_harness.file_transfers import FileTransfers
-
-            result["transfers"] = FileTransfers(self.store).list(user)
             host = self.store.host_owner()
             result["hosted_by_me"] = bool(host and host["owner_account_id"] == user)
             result["host_node"] = host["host_node"] if result["hosted_by_me"] else None
@@ -634,47 +631,12 @@ class AccountBackend:
             if op == "attachment-upload":
                 return files.upload(user, p["project"], p["name"], p["base64"])
             return files.download(user, p["project"], p["id"])
-        if op.startswith("transfer-"):
+        if op == "transfer-peers":
             if delegate_scopes is not None:
                 raise PermissionError("Codex 委托身份不能操作设备文件传输")
-            from agent_harness.file_transfers import FileTransfers
+            from agent_harness.direct_signaling import peers
 
-            files = FileTransfers(self.store)
-            node = device_node(public)
-            if op == "transfer-peers":
-                return self._with_transfer_keys(files.recipients(user))
-            if op == "transfer-list":
-                return {"transfers": files.list(user)}
-            if op == "transfer-request":
-                return files.request(
-                    user,
-                    node,
-                    p["recipient_id"],
-                    p.get("recipient_node"),
-                    p["name"],
-                    p["size"],
-                    p["sha256"],
-                )
-            if op == "transfer-status":
-                return files.status(user, p["id"])
-            if op == "transfer-decide":
-                return files.decide(
-                    user,
-                    node,
-                    p["id"],
-                    p["accept"],
-                    recipient_node=p.get("recipient_node"),
-                )
-            if op == "transfer-upload-start":
-                return files.upload_start(user, node, p["id"])
-            if op == "transfer-upload-finish":
-                return files.finish(user, node, p["id"])
-            if op == "transfer-download-ticket":
-                return files.download_ticket(user, node, p["id"])
-            if op == "transfer-complete":
-                return files.complete(user, node, p["id"])
-            if op == "transfer-cancel":
-                return files.cancel(user, p["id"])
+            return self._with_transfer_keys(peers(self.store, user))
         if op in {
             "transfer-direct-offer",
             "transfer-direct-respond",
