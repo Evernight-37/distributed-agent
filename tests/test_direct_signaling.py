@@ -72,6 +72,26 @@ class TransferSignalingTests(unittest.TestCase):
         self.assertNotIn("content", view)
         self.assertEqual(len(self.signals().view(self.other["id"])), 1)
 
+    def test_the_sender_chooses_the_id_and_the_service_keeps_it(self):
+        # The sender has already built its URL and its signature around this id;
+        # a second id minted here could never match what it serves.
+        fixtures.PullBackend(self.store).create_pair(self.owner["id"], "desk")
+        chosen = "transfer-" + "a" * 32
+        offer = self.signals().offer(
+            self.owner["id"], "lab", "desk", "dump.bin", 2048, "100.64.0.2:5000", transfer_id=chosen
+        )
+        self.assertEqual(offer["id"], chosen)
+        self.assertEqual(self.signals().view(self.owner["id"])[0]["id"], chosen)
+
+    def test_a_malformed_or_reused_id_is_refused(self):
+        fixtures.PullBackend(self.store).create_pair(self.owner["id"], "desk")
+        with self.assertRaises(ValueError):
+            self.signals().offer(self.owner["id"], "lab", "desk", "x", 10, "1.2.3.4:1", transfer_id="transfer-1")
+        chosen = "transfer-" + "b" * 32
+        self.signals().offer(self.owner["id"], "lab", "desk", "x", 10, "1.2.3.4:1", transfer_id=chosen)
+        with self.assertRaises(ValueError):
+            self.signals().offer(self.owner["id"], "lab", "desk", "y", 10, "1.2.3.4:1", transfer_id=chosen)
+
     def test_the_claiming_device_publishes_its_signing_key(self):
         node = self.peer_node()
         offer = self.signals().offer(

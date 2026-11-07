@@ -652,8 +652,17 @@ class AccountBackend:
                     p["size"],
                     p["address"],
                     recipient=p.get("recipient"),
+                    transfer_id=p.get("id"),
                 )
-            return direct.respond(user, p["id"], bool(p["accept"]))
+            # Accepting on behalf of a device has to say which device, and which
+            # key will sign its download; the sender can verify nothing otherwise.
+            return direct.respond(
+                user,
+                p["id"],
+                bool(p["accept"]),
+                node=p.get("node"),
+                claim_key=p.get("claim_key"),
+            )
             raise ValueError("Unknown file-transfer operation")
         if op == "conversation-read":
             return self.store.mark_conversation_read(user, p["project"], p["conversation_id"])

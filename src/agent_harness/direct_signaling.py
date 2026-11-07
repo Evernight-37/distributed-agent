@@ -3,12 +3,14 @@ never the bytes. Content goes from device to device over the tailnet.
 """
 
 import re
+import sqlite3
 import time
 
 from agent_harness.collaboration_store import uid
 
 STATES = {"queued", "accepted", "rejected", "running", "done", "failed"}
 ADDRESS = re.compile(r"^[A-Za-z0-9.:\[\]_\-]{1,255}$")
+TRANSFER_ID = re.compile(r"^transfer-[0-9a-f]{32}$")
 NAME_LIMIT = 255
 
 
@@ -28,13 +30,17 @@ class Transfers:
             raise ValueError("未知设备")
         return row["owner_id"]
 
-    def offer(self, owner, from_node, to_node, name, size, address, recipient=None):
+    def offer(self, owner, from_node, to_node, name, size, address, recipient=None, transfer_id=None):
         if not isinstance(name, str) or not 1 <= len(name) <= NAME_LIMIT or "\0" in name:
             raise ValueError("文件名无效")
         if isinstance(size, bool) or not isinstance(size, int) or not 1 <= size <= 1024**4:
             raise ValueError("文件大小无效")
         if not isinstance(address, str) or not ADDRESS.fullmatch(address):
             raise ValueError("传输地址无效")
+        # The sender picks the id because it has already built its URL and its
+        # signature around it; a second id minted here could never match.
+        if transfer_id is not None and (not isinstance(transfer_id, str) or not TRANSFER_ID.fullmatch(transfer_id)):
+            raise ValueError("传输编号无效")
         if from_node == to_node:
             raise ValueError("不能发给自己")
         if recipient is not None and to_node is not None:
@@ -53,16 +59,19 @@ class Transfers:
             # decides. Sharing a project is not a precondition.
             if not same and not db.execute("SELECT 1 FROM users WHERE id=?", (recipient,)).fetchone():
                 raise PermissionError("接收账户不在这个协作服务上")
-            transfer = uid("transfer")
+            transfer = transfer_id or uid("transfer")
             now = time.time()
             # Inside one account the owner already consented by starting the
             # transfer; across accounts the recipient has to accept it.
             state = "accepted" if same else "queued"
-            db.execute(
-                "INSERT INTO direct_transfers(id,from_node,to_node,owner_id,recipient_id,name,size,address,state,transferred,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,0,?,?)",
-                (transfer, from_node, to_node, owner, recipient, name, size, address, state, now, now),
-            )
+            try:
+                db.execute(
+                    "INSERT INTO direct_transfers(id,from_node,to_node,owner_id,recipient_id,name,size,address,state,transferred,created_at,updated_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,0,?,?)",
+                    (transfer, from_node, to_node, owner, recipient, name, size, address, state, now, now),
+                )
+            except sqlite3.IntegrityError:
+                raise ValueError("传输编号已被占用") from None
             return {"id": transfer, "state": state, "size": size, "name": name}
 
     def respond(self, owner, transfer, accept, node=None, claim_key=None):

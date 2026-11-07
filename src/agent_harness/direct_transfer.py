@@ -15,6 +15,7 @@ to verify. That matches the project's stated trust model.
 import base64
 import hashlib
 import http.server
+import json
 import os
 import shutil
 import subprocess
@@ -85,6 +86,14 @@ class TransferError(RuntimeError):
     pass
 
 
+class TransferPending(TransferError):
+    """The sender has not been told which device claimed the transfer yet.
+
+    Not a refusal: nobody may fetch until the signing key of the claiming device
+    reaches the sender, so the receiver retries shortly instead of failing.
+    """
+
+
 def _digest(path):
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -93,10 +102,38 @@ def _digest(path):
     return digest.hexdigest()
 
 
+def _read_marker(path):
+    try:
+        value = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write_marker(path, transfer_id, size, mtime, digest):
+    path.write_text(
+        json.dumps({"transfer_id": transfer_id, "size": size, "mtime": mtime, "digest": digest}),
+        "utf-8",
+    )
+
+
+def _changed(recorded, size, mtime, digest):
+    """Whether a partial file may be continued against the sender's current file."""
+    if not recorded:
+        return True
+    if size is not None and recorded.get("size") != size:
+        return True
+    if mtime is not None and recorded.get("mtime") != mtime:
+        return True
+    if digest is not None and recorded.get("digest") != digest:
+        return True
+    return False
+
+
 class Sender:
     """Serves one file to one recipient, by range, on an ephemeral port."""
 
-    def __init__(self, path, transfer_id, recipient_public_key, host="0.0.0.0"):
+    def __init__(self, path, transfer_id, recipient_public_key, host):
         self.path = Path(path).resolve()
         if not self.path.is_file() or self.path.is_symlink():
             raise ValueError("仅支持普通文件")
@@ -164,12 +201,26 @@ class Sender:
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
+            def _gate(self, resource):
+                """409 while nobody has claimed the transfer, 403 when the claim is wrong."""
+                if not sender.recipient_public_key:
+                    self._deny(409)
+                    return False
+                if not sender._authorized(resource, self.headers.get("X-Harness-Auth", "")):
+                    self._deny(403)
+                    return False
+                return True
+
             def do_HEAD(self):
-                if not sender._authorized(meta_resource, self.headers.get("X-Harness-Auth", "")):
-                    return self._deny()
+                if not self._gate(meta_resource):
+                    return
                 self.send_response(200)
                 self.send_header("X-Harness-Size", str(sender.size))
                 self.send_header("X-Harness-Name", urllib.parse.quote(sender.path.name))
+                try:
+                    self.send_header("X-Harness-Mtime", str(sender.path.stat().st_mtime_ns))
+                except OSError:
+                    pass
                 if sender.sha256:
                     self.send_header("X-Harness-Sha256", sender.sha256)
                 self.send_header("Accept-Ranges", "bytes")
@@ -177,8 +228,8 @@ class Sender:
                 self.end_headers()
 
             def do_GET(self):
-                if not sender._authorized(file_resource, self.headers.get("X-Harness-Auth", "")):
-                    return self._deny()
+                if not self._gate(file_resource):
+                    return
                 start = 0
                 header = self.headers.get("Range", "")
                 if header.startswith("bytes="):
@@ -241,23 +292,47 @@ def probe(url, private_key, public_key, transfer_id, timeout=10):
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
+            mtime = response.headers.get("X-Harness-Mtime")
             return {
                 "size": int(response.headers.get("X-Harness-Size", "0")),
                 "name": urllib.parse.unquote(response.headers.get("X-Harness-Name", "")),
                 "sha256": response.headers.get("X-Harness-Sha256"),
+                "mtime": int(mtime) if mtime and mtime.isdigit() else None,
             }
     except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            raise TransferPending("对方尚未确认接收设备") from None
         raise TransferError("对方拒绝连接：%s" % exc.code) from None
     except OSError as exc:
         raise TransferError("对方不可达：%s" % exc) from None
 
 
-def fetch(url, private_key, public_key, transfer_id, destination, expect_size=None, progress=None):
-    """Download with resumption. Returns the finished path; partial data stays put."""
+def fetch(
+    url,
+    private_key,
+    public_key,
+    transfer_id,
+    destination,
+    expect_size=None,
+    expect_digest=None,
+    expect_mtime=None,
+    progress=None,
+):
+    """Download with resumption. Returns the finished path; partial data stays put.
+
+    A partial file is only continued when the sender advertises the same size,
+    modification time and digest as when that partial file was started: splicing
+    bytes from two versions of the source produces a right-sized, wrong file.
+    """
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     part = destination.with_name(destination.name + ".part")
+    marker = part.with_name(part.name + ".json")
     offset = part.stat().st_size if part.exists() else 0
+    if offset and _changed(_read_marker(marker), expect_size, expect_mtime, expect_digest):
+        part.unlink()
+        marker.unlink(missing_ok=True)
+        offset = 0
     resource = "/transfer/" + transfer_id
     headers = {"X-Harness-Auth": authorization(private_key, public_key, transfer_id, resource)}
     if offset:
@@ -265,15 +340,31 @@ def fetch(url, private_key, public_key, transfer_id, destination, expect_size=No
     try:
         response = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60)
     except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            raise TransferPending("对方尚未确认接收设备") from None
         raise TransferError("传输被拒绝：%s" % exc.code) from None
     except OSError as exc:
         raise TransferError("传输中断：%s" % exc) from None
-    with part.open("ab" if offset else "wb") as sink:
-        for block in iter(lambda: response.read(CHUNK), b""):
-            sink.write(block)
-            if progress:
-                progress(sink.tell())
-    if expect_size is not None and part.stat().st_size != expect_size:
-        raise TransferError("传输不完整：%d/%d" % (part.stat().st_size, expect_size))
+    if offset and getattr(response, "status", None) != 206:
+        # The sender ignored the range; appending a whole body would duplicate it.
+        offset = 0
+    try:
+        if not offset:
+            _write_marker(marker, transfer_id, expect_size, expect_mtime, expect_digest)
+        with part.open("ab" if offset else "wb") as sink:
+            for block in iter(lambda: response.read(CHUNK), b""):
+                sink.write(block)
+                if progress:
+                    progress(sink.tell())
+    finally:
+        response.close()
+    written = part.stat().st_size
+    if expect_size is not None and written != expect_size:
+        raise TransferError("传输不完整：%d/%d" % (written, expect_size))
+    if expect_digest and _digest(part) != expect_digest:
+        part.unlink()
+        marker.unlink(missing_ok=True)
+        raise TransferError("传输内容与发送方不一致（文件可能已改变），已丢弃，请重试")
     part.replace(destination)
+    marker.unlink(missing_ok=True)
     return destination

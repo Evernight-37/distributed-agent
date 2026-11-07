@@ -107,6 +107,12 @@ class DirectTransferTests(unittest.TestCase):
         part = destination.with_name(destination.name + ".part")
         half = len(self.payload) // 2
         part.write_bytes(self.payload[:half])
+        # A real interrupted transfer always leaves the provenance marker behind.
+        part.with_name(part.name + ".json").write_text(
+            '{"transfer_id": "transfer-1", "size": %d, "mtime": null, "digest": null}' % len(self.payload),
+            encoding="utf-8",
+        )
+        seen = []
         direct_transfer.fetch(
             self.url,
             b64key(self.receiver["private"]),
@@ -114,8 +120,66 @@ class DirectTransferTests(unittest.TestCase):
             "transfer-1",
             destination,
             expect_size=len(self.payload),
+            progress=seen.append,
         )
         self.assertEqual(destination.read_bytes(), self.payload)
+        self.assertGreater(seen[0], half, "the download did not resume from the partial file")
+
+    def test_a_changed_source_restarts_instead_of_splicing_two_versions(self):
+        destination = self.root / "out" / "changed.bin"
+        destination.parent.mkdir(parents=True)
+        part = destination.with_name(destination.name + ".part")
+        half = len(self.payload) // 2
+        part.write_bytes(self.payload[:half])
+        part.with_name(part.name + ".json").write_text(
+            '{"transfer_id": "transfer-1", "size": %d, "mtime": null, "digest": "%s"}'
+            % (len(self.payload), hashlib.sha256(self.payload).hexdigest()),
+            encoding="utf-8",
+        )
+        changed = b"C" * half + self.payload[half:]
+        self.source.write_bytes(changed)
+        direct_transfer.fetch(
+            self.url,
+            b64key(self.receiver["private"]),
+            b64key(self.receiver["public"]),
+            "transfer-1",
+            destination,
+            expect_size=len(changed),
+            expect_digest=hashlib.sha256(changed).hexdigest(),
+        )
+        self.assertEqual(destination.read_bytes(), changed)
+
+    def test_a_body_that_does_not_match_the_sender_digest_is_discarded(self):
+        destination = self.root / "out" / "wrong.bin"
+        with self.assertRaises(direct_transfer.TransferError):
+            direct_transfer.fetch(
+                self.url,
+                b64key(self.receiver["private"]),
+                b64key(self.receiver["public"]),
+                "transfer-1",
+                destination,
+                expect_size=len(self.payload),
+                expect_digest="0" * 64,
+            )
+        self.assertFalse(destination.exists())
+        self.assertFalse(destination.with_name(destination.name + ".part").exists())
+
+    def test_an_unclaimed_sender_asks_for_a_retry_instead_of_refusing(self):
+        sender = direct_transfer.Sender(self.source, "transfer-u", "", host="127.0.0.1")
+        port = sender.start()
+        self.addCleanup(sender.stop)
+        url = "http://127.0.0.1:%d/transfer/transfer-u" % port
+        with self.assertRaises(direct_transfer.TransferPending):
+            direct_transfer.probe(url, b64key(self.receiver["private"]), b64key(self.receiver["public"]), "transfer-u")
+        with self.assertRaises(direct_transfer.TransferPending):
+            direct_transfer.fetch(
+                url,
+                b64key(self.receiver["private"]),
+                b64key(self.receiver["public"]),
+                "transfer-u",
+                self.root / "out" / "pending.bin",
+            )
+        self.assertFalse((self.root / "out" / "pending.bin").exists())
 
     def test_a_short_transfer_is_reported_instead_of_renamed(self):
         destination = self.root / "out" / "short.bin"

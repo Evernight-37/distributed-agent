@@ -228,13 +228,16 @@ class Connector:
 
     def _consume_transfers(self, transfers):
         """Receive files a teammate offers; the service never holds the bytes."""
-        from agent_harness import direct_transfer, transfer_trust
+        from agent_harness import transfer_trust
 
         node = self.config.get("node")
         settings = read_json(self.root / "file-transfer-settings.json", {})
         folder = settings.get("receive_folder") if isinstance(settings, dict) else None
         for row in transfers:
-            if not isinstance(row, dict) or row.get("to_node") != node:
+            if not isinstance(row, dict) or row.get("to_node") not in (None, node):
+                continue
+            if row.get("from_node") == node:
+                # My own outgoing transfer, not something to receive.
                 continue
             transfer_id = row.get("id")
             state = row.get("state")
@@ -260,20 +263,14 @@ class Connector:
 
             target = Path(folder) / safe_name(row.get("name") or "file")
             keys = self.transfer_signing_key()
+            url = "http://" + str(row.get("address")) + "/transfer/" + str(transfer_id)
             try:
                 self.transport(
                     self.config,
                     "transfer-progress",
                     {"transfer_id": transfer_id, "transferred": 0, "state": "running"},
                 )
-                direct_transfer.fetch(
-                    "http://" + str(row.get("address")) + "/transfer/" + str(transfer_id),
-                    keys["private_key"],
-                    keys["public_key"],
-                    transfer_id,
-                    target,
-                    expect_size=row.get("size"),
-                )
+                self._pull_direct(url, keys, transfer_id, target, row.get("size"))
             except Exception as exc:  # one transfer must not break the poll loop
                 self.transport(
                     self.config,
@@ -287,6 +284,35 @@ class Connector:
                 {"transfer_id": transfer_id, "transferred": row.get("size") or 0, "state": "done"},
             )
             self._forget_pending_transfer(transfer_id)
+
+    def _pull_direct(self, url, keys, transfer_id, target, size):
+        """Download, waiting for the sender to learn this device's key.
+
+        The sender accepts a signed request only after the service told it which
+        device claimed the transfer, which takes a moment after we respond. A
+        409 there is not a refusal, so keep trying instead of failing the job.
+        """
+        from agent_harness import direct_transfer
+
+        last = None
+        for _attempt in range(12):
+            try:
+                meta = direct_transfer.probe(url, keys["private_key"], keys["public_key"], transfer_id, timeout=10)
+                direct_transfer.fetch(
+                    url,
+                    keys["private_key"],
+                    keys["public_key"],
+                    transfer_id,
+                    target,
+                    expect_size=meta.get("size") or size,
+                    expect_digest=meta.get("sha256"),
+                    expect_mtime=meta.get("mtime"),
+                )
+                return
+            except direct_transfer.TransferPending as exc:
+                last = exc
+                time.sleep(1.0)
+        raise last
 
     def _remember_pending_transfer(self, row):
         path = self.root / "pending-transfers.json"
