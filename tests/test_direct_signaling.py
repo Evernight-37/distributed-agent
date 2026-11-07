@@ -72,6 +72,18 @@ class TransferSignalingTests(unittest.TestCase):
         self.assertNotIn("content", view)
         self.assertEqual(len(self.signals().view(self.other["id"])), 1)
 
+    def test_the_claiming_device_publishes_its_signing_key(self):
+        node = self.peer_node()
+        offer = self.signals().offer(
+            self.owner["id"], "lab", None, "dump.bin", 2048, "100.64.0.2:5000", recipient=self.other["id"]
+        )
+        self.assertEqual(offer["state"], "queued")
+        accepted = self.signals().respond(self.other["id"], offer["id"], True, node=node, claim_key="k" * 44)
+        self.assertEqual(accepted["to_node"], node)
+        view = self.signals().view(self.owner["id"])[0]
+        self.assertEqual(view["claim_key"], "k" * 44)
+        self.assertEqual(view["to_node"], node)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

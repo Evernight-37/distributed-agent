@@ -124,6 +124,10 @@ class Sender:
         self._digest_thread = threading.Thread(target=run, daemon=True)
         self._digest_thread.start()
 
+    def set_recipient(self, public_key):
+        """Learn the key of the device that claimed this transfer."""
+        self.recipient_public_key = public_key
+
     def _authorized(self, resource, header):
         try:
             public, stamp, signature = str(header or "").split(".")

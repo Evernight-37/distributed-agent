@@ -281,6 +281,7 @@ class PullBackend:
                     data.get("transfer_id"),
                     bool(data.get("accept")),
                     device["node"],
+                    data.get("transfer_public_key"),
                 )
             if path == "/api/device/transfer-progress":
                 from agent_harness.direct_signaling import Transfers

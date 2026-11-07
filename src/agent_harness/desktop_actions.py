@@ -474,6 +474,10 @@ class DesktopTransferActions:
         if not bridge.identity:
             raise PermissionError("请先登录")
         if action == "file-transfer-dashboard":
+            from agent_harness import direct_send
+
+            server = data.get("server") or bridge.profile["server"]
+            direct_send.observe(bridge, server)
             return self._dashboard()
         if action == "file-transfer-job-status":
             return bridge.file_transfers.status(data["id"])

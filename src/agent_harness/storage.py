@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS direct_transfers(
     id TEXT PRIMARY KEY,
     from_node TEXT NOT NULL,
     to_node TEXT,
+    claim_key TEXT,
     owner_id TEXT NOT NULL,
     recipient_id TEXT NOT NULL,
     name TEXT NOT NULL,

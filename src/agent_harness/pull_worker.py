@@ -244,7 +244,15 @@ class Connector:
                 if not (folder and transfer_trust.is_trusted(self.root, row.get("owner_id"))):
                     self._remember_pending_transfer(row)
                     continue
-                self.transport(self.config, "transfer-respond", {"transfer_id": transfer_id, "accept": True})
+                self.transport(
+                    self.config,
+                    "transfer-respond",
+                    {
+                        "transfer_id": transfer_id,
+                        "accept": True,
+                        "transfer_public_key": self.transfer_public_key(),
+                    },
+                )
                 state = "accepted"
             if state != "accepted":
                 continue

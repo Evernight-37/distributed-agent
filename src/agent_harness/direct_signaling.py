@@ -65,12 +65,12 @@ class Transfers:
             )
             return {"id": transfer, "state": state, "size": size, "name": name}
 
-    def respond(self, owner, transfer, accept):
+    def respond(self, owner, transfer, accept, node=None, claim_key=None):
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            return self.respond_db(db, owner, transfer, accept)
+            return self.respond_db(db, owner, transfer, accept, node, claim_key)
 
-    def respond_db(self, db, owner, transfer, accept, node=None):
+    def respond_db(self, db, owner, transfer, accept, node=None, claim_key=None):
         """Same as respond, for a caller that already holds the write transaction."""
         row = db.execute("SELECT * FROM direct_transfers WHERE id=?", (transfer,)).fetchone()
         if not row or row["recipient_id"] != owner:
@@ -87,9 +87,13 @@ class Transfers:
                 update_node = node
             elif node and node != update_node:
                 raise ValueError("这条传输指定了另一台设备")
+        # The sender has to know which key will sign the download; a teammate's
+        # device only becomes known when it claims the offer.
+        if claim_key is not None and (not isinstance(claim_key, str) or not 1 <= len(claim_key) <= 128):
+            raise ValueError("无效的接收设备公钥")
         db.execute(
-            "UPDATE direct_transfers SET state=?,to_node=?,updated_at=? WHERE id=?",
-            (state, update_node, time.time(), transfer),
+            "UPDATE direct_transfers SET state=?,to_node=?,claim_key=?,updated_at=? WHERE id=?",
+            (state, update_node, claim_key or row["claim_key"], time.time(), transfer),
         )
         return {"id": transfer, "state": state, "to_node": update_node}
 

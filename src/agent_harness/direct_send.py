@@ -52,6 +52,27 @@ def send(bridge, source, to_node, server):
     }
 
 
+def observe(bridge, server):
+    """Learn who claimed an outgoing transfer, and retire finished senders."""
+    try:
+        listed = bridge._rpc("transfer-direct-list", {}, server=server)
+    except Exception:
+        return {"observed": False}
+    rows = (listed or {}).get("transfers") or []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sender = SENDERS.get(row.get("id"))
+        if sender is None:
+            continue
+        claim = row.get("claim_key")
+        if isinstance(claim, str) and claim and claim != sender.recipient_public_key:
+            sender.set_recipient(claim)
+        if row.get("state") in {"rejected", "done", "failed"}:
+            cancel(row["id"])
+    return {"observed": True}
+
+
 def cancel(transfer_id):
     sender = SENDERS.pop(transfer_id, None)
     if sender is None:
