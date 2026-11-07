@@ -276,7 +276,11 @@ class PullBackend:
                 from agent_harness.direct_signaling import Transfers
 
                 return Transfers(self.store).respond_db(
-                    db, device["owner_id"], data.get("transfer_id"), bool(data.get("accept"))
+                    db,
+                    device["owner_id"],
+                    data.get("transfer_id"),
+                    bool(data.get("accept")),
+                    device["node"],
                 )
             if path == "/api/device/transfer-progress":
                 from agent_harness.direct_signaling import Transfers

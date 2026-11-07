@@ -28,7 +28,7 @@ class Transfers:
             raise ValueError("未知设备")
         return row["owner_id"]
 
-    def offer(self, owner, from_node, to_node, name, size, address):
+    def offer(self, owner, from_node, to_node, name, size, address, recipient=None):
         if not isinstance(name, str) or not 1 <= len(name) <= NAME_LIMIT or "\0" in name:
             raise ValueError("文件名无效")
         if isinstance(size, bool) or not isinstance(size, int) or not 1 <= size <= 1024**4:
@@ -37,12 +37,18 @@ class Transfers:
             raise ValueError("传输地址无效")
         if from_node == to_node:
             raise ValueError("不能发给自己")
+        if recipient is not None and to_node is not None:
+            raise ValueError("请只指定接收账户或接收设备之一")
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             if self._owner_of(db, from_node) != owner:
                 raise PermissionError("发送设备不属于当前账户")
-            recipient = self._owner_of(db, to_node)
+            # A sender who knows the target device names it; a sender reaching a
+            # teammate only names the account and lets them pick the machine.
+            recipient = recipient or self._owner_of(db, to_node)
             same = recipient == owner
+            if same and to_node is None:
+                raise ValueError("同一账户下请指定接收设备")
             # Any account on this collaboration service may send; the recipient
             # decides. Sharing a project is not a precondition.
             if not same and not db.execute("SELECT 1 FROM users WHERE id=?", (recipient,)).fetchone():
@@ -64,7 +70,7 @@ class Transfers:
             db.execute("BEGIN IMMEDIATE")
             return self.respond_db(db, owner, transfer, accept)
 
-    def respond_db(self, db, owner, transfer, accept):
+    def respond_db(self, db, owner, transfer, accept, node=None):
         """Same as respond, for a caller that already holds the write transaction."""
         row = db.execute("SELECT * FROM direct_transfers WHERE id=?", (transfer,)).fetchone()
         if not row or row["recipient_id"] != owner:
@@ -72,11 +78,20 @@ class Transfers:
         if row["state"] != "queued":
             raise ValueError("传输已被处理")
         state = "accepted" if accept else "rejected"
+        update_node = row["to_node"]
+        if accept:
+            if update_node is None:
+                if not node:
+                    raise ValueError("请指定接收设备")
+                self._node(db, owner, node)
+                update_node = node
+            elif node and node != update_node:
+                raise ValueError("这条传输指定了另一台设备")
         db.execute(
-            "UPDATE direct_transfers SET state=?,updated_at=? WHERE id=?",
-            (state, time.time(), transfer),
+            "UPDATE direct_transfers SET state=?,to_node=?,updated_at=? WHERE id=?",
+            (state, update_node, time.time(), transfer),
         )
-        return {"id": transfer, "state": state}
+        return {"id": transfer, "state": state, "to_node": update_node}
 
     def progress(self, owner, transfer, transferred, state=None, error=None):
         with self.store.connect() as db:
@@ -112,6 +127,18 @@ class Transfers:
             " ORDER BY created_at LIMIT 20",
             (node,),
         ).fetchall()
+        # An account-addressed offer is visible to every device of that account
+        # until one of them claims it by accepting.
+        owner = db.execute("SELECT owner_id FROM nodes WHERE name=?", (node,)).fetchone()
+        if owner:
+            rows = (
+                rows
+                + db.execute(
+                    "SELECT * FROM direct_transfers WHERE recipient_id=? AND to_node IS NULL AND state='queued'"
+                    " ORDER BY created_at LIMIT 20",
+                    (owner["owner_id"],),
+                ).fetchall()
+            )
         outgoing = db.execute(
             "SELECT * FROM direct_transfers WHERE from_node=? AND state IN ('accepted','rejected','done','failed','running')"
             " ORDER BY updated_at DESC LIMIT 20",

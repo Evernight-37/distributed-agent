@@ -647,10 +647,11 @@ class AccountBackend:
                 return direct.offer(
                     user,
                     device_node(public),
-                    p["to_node"],
+                    p.get("to_node"),
                     p["name"],
                     p["size"],
                     p["address"],
+                    recipient=p.get("recipient"),
                 )
             return direct.respond(user, p["id"], bool(p["accept"]))
             raise ValueError("Unknown file-transfer operation")
