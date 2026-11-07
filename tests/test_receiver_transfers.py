@@ -78,10 +78,18 @@ class ReceiverTransferTests(unittest.TestCase):
         self.assertIn("transfer-progress", operations)
         self.assertEqual(connector.calls[-1][1]["state"], "failed")
 
-    def test_without_a_folder_nothing_is_accepted(self):
+    def test_a_fresh_receiver_falls_back_to_its_local_default_folder(self):
+        # Enrollment does not create a settings file; same-account delivery must
+        # still work, so the receiver keeps using its own received-files folder.
         transfer_trust.remember(self.root, "account-sender")
         connector = FakeConnector(self.root, folder=None)
         connector._consume_transfers([self.offer()])
+        self.assertEqual(connector.calls[0][0], "transfer-respond")
+        self.assertEqual(connector.calls[-1][1]["state"], "failed")  # address is a dead port
+
+    def test_an_untrusted_sender_is_not_auto_accepted_even_with_the_default(self):
+        connector = FakeConnector(self.root, folder=None)
+        connector._consume_transfers([self.offer(owner_id="account-stranger")])
         self.assertEqual(connector.calls, [])
         self.assertTrue((self.root / "pending-transfers.json").exists())
 

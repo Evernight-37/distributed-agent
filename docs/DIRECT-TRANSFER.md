@@ -30,7 +30,7 @@
 | `src/agent_harness/direct_signaling.py` | schema v6 `direct_transfers`；`offer` 接受发送方编号（格式校验 + 唯一性）；respond/progress/visible/view |
 | `src/agent_harness/transfer_trust.py` | 接收方本机信任的发送账户（`transfer-trust.json`，上限 200） |
 | `src/agent_harness/direct_send.py` | 桌面侧 `send`/`cancel`/`observe`；发送时把编号交给中心；独立后台 watcher 学习认领公钥，不再依赖速传页渲染 |
-| `pull_worker._consume_transfers` | 消费 offer：接受 `to_node` 为空的账户寻址（排除自己发出的行）；信任+目录才自动，否则写 `pending-transfers.json` |
+| `pull_worker._consume_transfers` | 消费 offer：接受 `to_node` 为空的账户寻址（排除自己发出的行）；信任+目录才自动，否则写 `pending-transfers.json`；没配置目录时落到接收端自己的 `received-files` |
 | `pull_worker._pull_direct` | 认领后重试（409 视为等待），按 meta 的 size/mtime/sha256 校验下载结果 |
 | `pull_worker.transfer_signing_key` | 接收端自己的 Ed25519 身份（公钥随轮询上报，存 `nodes/<node>.json`） |
 | `src/agent_harness/direct_receive.py` | 桌面接收方：自己的 Ed25519 身份（`transfer-key.json`，公钥经 `transfer-key-publish` 上报）、`incoming`/`outgoing`、自动与手动接受、后台拉取与进度上报、应用打开期间每 4 秒消费一次 |

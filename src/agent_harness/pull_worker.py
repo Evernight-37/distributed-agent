@@ -230,8 +230,7 @@ class Connector:
         from agent_harness import transfer_trust
 
         node = self.config.get("node")
-        settings = read_json(self.root / "file-transfer-settings.json", {})
-        folder = settings.get("receive_folder") if isinstance(settings, dict) else None
+        folder = self._transfer_folder()
         for row in transfers:
             if not isinstance(row, dict) or row.get("to_node") not in (None, node):
                 continue
@@ -283,6 +282,19 @@ class Connector:
                 {"transfer_id": transfer_id, "transferred": row.get("size") or 0, "state": "done"},
             )
             self._forget_pending_transfer(transfer_id)
+
+    def _transfer_folder(self):
+        """Where a received file lands: the configured folder, else a local default.
+
+        A receiver fresh out of enrollment has no configured folder; falling back
+        to `received-files` under its own root keeps same-account delivery working
+        without an extra setup step.
+        """
+        settings = read_json(self.root / "file-transfer-settings.json", {})
+        folder = settings.get("receive_folder") if isinstance(settings, dict) else None
+        if isinstance(folder, str) and folder.strip():
+            return Path(folder)
+        return self.root / "received-files"
 
     def _pull_direct(self, url, keys, transfer_id, target, size):
         """Download, waiting for the sender to learn this device's key."""
