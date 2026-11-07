@@ -207,13 +207,17 @@ async function renderTransfers(reason) {
           "选择文件并发送",
           async () => {
             const selected = targets[Number(target.value)];
-            const result = await api("file-transfer-send-select", {
-              server: selected.server,
-              recipient_id: selected.recipient_id,
-              ...(selected.recipient_node
-                ? { recipient_node: selected.recipient_node }
-                : {}),
-            });
+            // A known device of my own account transfers directly: the bytes go
+            // over the tailnet and the collaboration service never holds them.
+            const result = selected.recipient_node
+              ? await api("file-transfer-direct-send", {
+                  server: selected.server,
+                  to_node: selected.recipient_node,
+                })
+              : await api("file-transfer-send-select", {
+                  server: selected.server,
+                  recipient_id: selected.recipient_id,
+                });
             if (result.selected) {
               notify("文件已进入发送队列。大文件校验会在后台进行。");
               await renderTransfers("action");

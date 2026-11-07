@@ -117,7 +117,7 @@ class Transfers:
             " ORDER BY updated_at DESC LIMIT 20",
             (node,),
         ).fetchall()
-        return [dict(row) for row in rows] + [dict(row) for row in outgoing]
+        return [dict(row, transport="direct") for row in rows] + [dict(row, transport="direct") for row in outgoing]
 
     def view(self, owner):
         with self.store.connect() as db:
@@ -125,4 +125,4 @@ class Transfers:
                 "SELECT * FROM direct_transfers WHERE owner_id=? OR recipient_id=? ORDER BY created_at DESC LIMIT 50",
                 (owner, owner),
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [dict(row, transport="direct") for row in rows]

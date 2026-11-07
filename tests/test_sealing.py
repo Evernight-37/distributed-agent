@@ -34,9 +34,11 @@ class SealingTests(unittest.TestCase):
 
     def test_a_tampered_ciphertext_is_rejected(self):
         sealed = sealing.seal(self.device["public_key"], {"port": 7897})
-        raw = bytearray(sealed["ciphertext"].encode("ascii"))
-        raw[-2] = ord("A") if raw[-2] != ord("A") else ord("B")
-        sealed["ciphertext"] = raw.decode("ascii")
+        # Flip a byte of the decoded payload, not a base64 character: the last
+        # character of a group carries spare bits and can decode to the same bytes.
+        tampered = bytearray(sealing._decode(sealed["ciphertext"]))
+        tampered[len(tampered) // 2] ^= 0x01
+        sealed["ciphertext"] = sealing._encode(bytes(tampered))
         with self.assertRaises(ValueError):
             sealing.open_sealed(self.device["private_key"], sealed)
 

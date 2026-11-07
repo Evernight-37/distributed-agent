@@ -213,6 +213,9 @@ class FileTransfers:
             "expires_at": row["expires_at"],
             "sender_online": self._online(db, row["sender_node"], now),
             "recipient_online": self._online(db, row["recipient_node"], now),
+            # Everything already in this table moved through the service's disk.
+            # The UI shows it as historical rather than offering a resume.
+            "transport": "staged",
         }
 
     def recipients(self, account_id):
