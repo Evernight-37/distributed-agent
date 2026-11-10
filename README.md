@@ -1,17 +1,35 @@
-# Foolship
+﻿# Foolship
 
 Foolship 是面向小型可信团队的分布式 Agent 协作应用。每个人管理自己电脑上的 Codex 或 DeepSeek Harness、模型、目录和执行权限；项目服务负责成员、会话、共享记忆与任务路由。
 
+## 愚人船 · Foolship
+
+### 中文｜愚人船
+
+『智识以已知丈量寰宇，却唯有未知，能为其疆界赋予意义。倘若最后一道命题终获证明，试问，那将是真理的凯旋，还是求知的葬礼？』
+
+故有愚人集于一舟，血肉与机巧各执罗盘，向星图未载之境远航。
+
+『哎呀，何必说得那般庄严？咱们不过是想给那颗机器头，讲个祂还没听过的笑话罢了！』
+
+### English｜Foolship
+
+“Erudition charts the cosmos by what is known, yet only the unknown lends meaning to its horizons. Should the final proposition ever be proven, would it herald the triumph of truth—or the death of inquiry?”
+
+Thus the fools gathered aboard a single ship, some of flesh, others of clockwork, each bearing a compass of their own, bound for shores no star chart had named.
+
+“Oh, must you make it sound so grand? We’re only sailing off to tell that big metal head a joke it hasn’t heard before!”
+
 ## 使用应用
 
-当前稳定版为 **2.9.0**。从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases/latest) 下载与系统和 CPU 架构相符的完整发布包。
+当前稳定版为 **2.10.0**。从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases/latest) 下载与系统和 CPU 架构相符的完整发布包。
 
 | 使用环境 | 下载文件 | 使用方法 |
 | --- | --- | --- |
-| Windows x64（推荐安装） | `Foolship-2.9.0-windows-x64-setup.exe` | 双击并按向导安装，然后从开始菜单启动 Foolship |
-| Windows x64（便携） | `Foolship-2.9.0-windows-x64.zip` | 完整解压到独立目录，双击其中的 `Foolship.exe`；不要只复制 EXE |
-| macOS Apple Silicon | `Foolship-2.9.0-macos-arm64.zip` | 解压后把 `Foolship.app` 放入“应用程序”并打开；本项目未做 Apple 签名或公证，系统可能要求在隐私与安全性中确认打开 |
-| Linux x64 / ARM64 服务器 | `Foolship-2.9.0-linux-x64.tar.gz` 或 `Foolship-2.9.0-linux-arm64.tar.gz` | 使用无界面接收端；优先把包内的 `交给AI安装.md` 交给服务器 Codex，或阅读 [Linux 说明](docs/LINUX.md) |
+| Windows x64（推荐安装） | `Foolship-2.10.0-windows-x64-setup.exe` | 双击并按向导安装，然后从开始菜单启动 Foolship |
+| Windows x64（便携） | `Foolship-2.10.0-windows-x64.zip` | 完整解压到独立目录，双击其中的 `Foolship.exe`；不要只复制 EXE |
+| macOS Apple Silicon | `Foolship-2.10.0-macos-arm64.zip` | 解压后把 `Foolship.app` 放入“应用程序”并打开；本项目未做 Apple 签名或公证，系统可能要求在隐私与安全性中确认打开 |
+| Linux x64 / ARM64 服务器 | `Foolship-2.10.0-linux-x64.tar.gz` 或 `Foolship-2.10.0-linux-arm64.tar.gz` | 使用无界面接收端；优先把包内的 `交给AI安装.md` 交给服务器 Codex，或阅读 [Linux 说明](docs/LINUX.md) |
 
 发布包自带 Foolship 所需运行时，不要求另外安装 Python、pip 或 venv。Windows 系统需要 Edge WebView2；每台实际执行 Agent 的机器仍需安装并登录 Codex 或 DeepSeek Harness。升级程序不会自动迁移或删除项目工作目录，账户数据保存在应用目录之外；退出旧版后安装或解压新版即可继续使用原账户数据。Windows 便携版应保留完整目录，Linux 端使用并排升级和回滚机制。
 
