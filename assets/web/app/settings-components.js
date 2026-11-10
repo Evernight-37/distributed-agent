@@ -470,7 +470,7 @@ function codexCliCard(kind) {
           (r.version ? " · " + r.version : "") +
           (r.path ? " · " + r.path : "") +
           (r.logged_in
-            ? " · " + (r.credential_warning || "已登录")
+            ? " · " + (r.credential_note || "已登录")
             : " · " + (r.login_error || "尚未登录"));
         if (r.configured && !path.value.trim() && r.path) path.value = r.path;
       } else {
