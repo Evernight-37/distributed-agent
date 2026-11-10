@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.9.1 - 2026-11-10
+
+- **DeepSeek Harness 里的 MCP 服务名改为 `foolship-<哈希>`**，不再是泛化的 `harness-`。这个名称会出现在 DeepSeek Harness 的设置和带命名空间的工具名里，`harness` 太通用、容易和别的插件撞名。Codex 那边本来就是 `foolship-<profile id>`，两边现在一致。
+- 旧版本写下的条目不会被丢下：条目 id 保持不变，下次打开“设置 → 在 DeepSeek Harness 中使用协作”时，检测到内容过期会就地改写，不会留下第二条注册。
+
 ## 2.9.0 - 2026-11-10
 
 - **产品更名为 Foolship**。用户拿到的东西里不再出现旧名字：
