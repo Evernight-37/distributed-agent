@@ -69,7 +69,7 @@ function renderAccount() {
       }),
     ),
   );
-  account.append(button("添加 Linux 服务器", linuxServerSetup));
+  account.append(button("在另一台电脑上安装", aiInstallSetup));
   account.append(
     button("创建离线恢复包", () =>
       modal("创建离线恢复包", (b, a) => {
@@ -301,40 +301,46 @@ async function renderSettings() {
   else await team.refresh();
 }
 
-function linuxServerSetup() {
+function aiInstallSetup() {
   const services = (S.dash.services || []).filter((item) =>
     String(item.server || "").startsWith("https://"),
   );
-  modal("添加 Linux 服务器", (body, actions) => {
+  const platforms = [
+    ["linux", "Linux 服务器（无界面接收端）"],
+    ["windows", "Windows 电脑"],
+    ["macos", "macOS 电脑（Apple Silicon）"],
+  ];
+  modal("用 AI 在另一台电脑上安装", (body, actions) => {
     note(
       body,
-      "把生成的提示词粘贴给服务器上的 Codex。它会检查环境并完成 Harness 配置，只在 Tailscale 授权、设备批准和系统权限等节点请你确认。",
+      "把生成的提示词交给那台机器上的 AI（Codex 或 DeepSeek Harness）。它会检查环境、下载并校验官方发布包、完成安装；登录与设备批准仍由你本人在那台机器上完成。",
     );
     if (!services.length) {
       note(
         body,
-        "当前账户还没有可供服务器访问的 HTTPS 团队入口。请先在设置 → 协作服务中创建团队入口。",
+        "当前账户还没有可供另一台机器访问的 HTTPS 团队入口。请先在设置 → 协作服务中创建团队入口。",
       );
       actions.append(button("关闭", closeModal));
       return;
     }
+    const platform = field(body, "目标机器", "linux", platforms);
     const service = field(
       body,
-      "服务器要接入的协作服务",
+      "接入的协作服务",
       services[0].server,
       services.map((item) => [item.server, serviceName(item.server)]),
     );
     const output = document.createElement("textarea");
     output.readOnly = true;
     output.rows = 18;
-    output.placeholder = "正在生成安全配置提示词…";
+    output.placeholder = "正在生成提示词…";
     body.append(output);
     const copy = button(
-      "复制给服务器 Codex",
+      "复制给那台机器的 AI",
       async () => {
         if (!output.value) throw new Error("提示词尚未生成");
         await copyText(output.value, output);
-        notify("Linux 配置提示词已复制");
+        notify("安装提示词已复制");
       },
       "primary",
     );
@@ -342,12 +348,14 @@ function linuxServerSetup() {
     async function generate() {
       copy.disabled = true;
       output.value = "";
-      const result = await api("linux-setup-prompt", {
+      const result = await api("ai-setup-prompt", {
         server: service.value,
+        platform: platform.value,
       });
       output.value = result.prompt;
       copy.disabled = false;
     }
+    platform.onchange = () => run(generate);
     service.onchange = () => run(generate);
     actions.append(button("关闭", closeModal), copy);
     run(generate);
@@ -604,4 +612,4 @@ function updateCard() {
 }
 
 Object.assign(HarnessDesktop.render, { renderAccount, renderSettings });
-Object.assign(HarnessDesktop.components, { linuxServerSetup });
+Object.assign(HarnessDesktop.components, { aiInstallSetup });

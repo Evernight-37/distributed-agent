@@ -16,7 +16,7 @@ from agent_harness.account_identity import (
 )
 from agent_harness.common import read_json
 from agent_harness.account_recovery import create_recovery_package, recover_device
-from agent_harness.ai_setup import render_linux_setup_prompt
+from agent_harness.ai_setup import RUNBOOKS, render_setup_prompt
 from agent_harness.desktop_runtime import web_assets
 from agent_harness.pull_worker import validate_server
 
@@ -33,7 +33,7 @@ class DesktopIdentityActions:
             "host-local-enable",
             "recovery-export",
             "recovery-import",
-            "linux-setup-prompt",
+            "ai-setup-prompt",
         }
     )
 
@@ -42,15 +42,19 @@ class DesktopIdentityActions:
 
     def invoke(self, action, data):
         bridge = self.bridge
-        if action == "linux-setup-prompt":
+        if action == "ai-setup-prompt":
             if not bridge.identity:
                 raise PermissionError("请先登录")
+            platform = data.get("platform")
+            runbook = RUNBOOKS.get(platform)
+            if runbook is None:
+                raise ValueError("未知的目标平台")
             server = data["server"].strip().rstrip("/")
             validate_server(server)
             if server not in bridge._services():
                 raise ValueError("只能为当前账户已接入的协作服务生成提示词")
-            prompt = render_linux_setup_prompt(web_assets() / "linux-ai-setup.md", server)
-            return {"server": server, "prompt": prompt}
+            prompt = render_setup_prompt(web_assets() / runbook, server)
+            return {"server": server, "platform": platform, "prompt": prompt}
         if action == "recovery-export":
             if not bridge.identity:
                 raise PermissionError("请先登录")

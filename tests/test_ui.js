@@ -21,9 +21,11 @@ const account = fs.readFileSync(
   path.join(__dirname, "../assets/web/app/account-settings.js"),
   "utf8",
 );
-assert.match(account, /添加 Linux 服务器/);
-assert.match(account, /linux-setup-prompt/);
-assert.match(account, /复制给服务器 Codex/);
+assert.match(account, /在另一台电脑上安装/);
+assert.match(account, /ai-setup-prompt/);
+assert.match(account, /复制给那台机器的 AI/);
+for (const platform of ["linux", "windows", "macos"])
+  assert.match(account, new RegExp(`\\["${platform}",`));
 assert.match(account, /startsWith\("https:\/\/"\)/);
 
 console.log("UI retirement page checks passed");

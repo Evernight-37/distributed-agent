@@ -202,7 +202,10 @@ DESKTOP_FIELDS = {
         "recovery_password": {"type": "string", "min_length": 1, "max_length": 1024},
         "password": _TEXT(1024),
     },
-    "linux-setup-prompt": {"server": _TEXT(2048)},
+    "ai-setup-prompt": {
+        "server": _TEXT(2048),
+        "platform": {"type": "string", "enum": ["linux", "windows", "macos"]},
+    },
 }
 
 
@@ -276,7 +279,7 @@ DESKTOP_CONTROL = BoundaryContract(
             "join-project",
             "local-status",
             "login",
-            "linux-setup-prompt",
+            "ai-setup-prompt",
             "logout",
             "memory-note-add",
             "memory-note-delete",
@@ -336,7 +339,7 @@ DESKTOP_CONTROL = BoundaryContract(
         "invite": frozenset({"project"}),
         "join-project": frozenset({"invite"}),
         "login": frozenset({"profile"}),
-        "linux-setup-prompt": frozenset({"server"}),
+        "ai-setup-prompt": frozenset({"server", "platform"}),
         "memory-note-add": frozenset({"project", "body"}),
         "memory-note-delete": frozenset({"project"}),
         "message": frozenset({"project", "body"}),

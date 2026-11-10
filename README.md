@@ -23,7 +23,7 @@ Agent Harness 是面向小型可信团队的分布式 Agent 协作应用。每�
 4. 同事凭两项信息加入项目，再把自己的机器和 Agent 接入该服务。
 5. 每个人配置和派遣自己的 Agent；群主选择管理员 Agent。
 
-Linux 服务器不要求用户手工照抄安装命令：桌面应用 **账户 → 添加 Linux 服务器** 可以生成带团队地址的安全配置提示词，直接粘贴给服务器 Codex。Linux 发布包也自带 `交给AI安装.md`；详见 [AI 配置流程](docs/AI-SETUP-LINUX.md)。
+另一台机器不要求用户手工照抄安装命令：桌面应用的 **账户 → 在另一台电脑上安装** 会为目标机器生成一份带团队地址的受限提示词，直接交给那台机器上的 AI 执行（Linux 服务器、Windows、macOS 三种目标都支持）。它会预检、下载并校验官方发布包、完成安装，只在系统权限、设备批准和登录这些节点交还给人。详见 [AI 配置流程](docs/AI-SETUP.md)。
 
 同一账户可以关联多台电脑。Windows 数据位于 `%LOCALAPPDATA%\AgentHarness\data`，macOS 数据位于 `~/Library/Application Support/AgentHarness/data`；项目工作目录、Codex 登录、设备私钥和研究环境不会自动同步。
 
