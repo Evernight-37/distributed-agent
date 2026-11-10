@@ -64,8 +64,8 @@ class MacPackagingTests(unittest.TestCase):
             interpreter.parent.mkdir(parents=True)
             interpreter.write_text("#!/bin/sh\nexit 0\n")
             interpreter.chmod(0o755)
-            client = bundle / "client"
-            client.mkdir()
+            client = bundle / "client" / "agent_harness"
+            client.mkdir(parents=True)
             (client / "desktop_service.py").write_text("# test service\n")
             installed = install_bundle(bundle, root / "installed")
             self.assertTrue(os.access(runtime_python(installed), os.X_OK))
