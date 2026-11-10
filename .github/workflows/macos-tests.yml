@@ -1,4 +1,4 @@
-name: Verify macOS support
+﻿name: Verify macOS support
 
 on:
   push:
@@ -30,9 +30,9 @@ jobs:
 
       - name: Prepare standalone build Python
         run: |
-          python scripts/prepare_python_runtime.py --destination "$RUNNER_TEMP/harness-python"
-          "$RUNNER_TEMP/harness-python/bin/python3" -m venv "$RUNNER_TEMP/harness-build"
-          echo "$RUNNER_TEMP/harness-build/bin" >> "$GITHUB_PATH"
+          python scripts/prepare_python_runtime.py --destination "$RUNNER_TEMP/foolship-python"
+          "$RUNNER_TEMP/foolship-python/bin/python3" -m venv "$RUNNER_TEMP/foolship-build"
+          echo "$RUNNER_TEMP/foolship-build/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: |

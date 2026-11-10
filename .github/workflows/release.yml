@@ -1,4 +1,4 @@
-name: Release Foolship
+﻿name: Release Foolship
 
 on:
   push:
@@ -96,9 +96,9 @@ jobs:
           cache-dependency-path: requirements-linux-build.txt
       - name: Prepare standalone build Python
         run: |
-          python scripts/prepare_python_runtime.py --destination "$RUNNER_TEMP/harness-python"
-          "$RUNNER_TEMP/harness-python/bin/python3" -m venv "$RUNNER_TEMP/harness-build"
-          echo "$RUNNER_TEMP/harness-build/bin" >> "$GITHUB_PATH"
+          python scripts/prepare_python_runtime.py --destination "$RUNNER_TEMP/foolship-python"
+          "$RUNNER_TEMP/foolship-python/bin/python3" -m venv "$RUNNER_TEMP/foolship-build"
+          echo "$RUNNER_TEMP/foolship-build/bin" >> "$GITHUB_PATH"
       - name: Verify tag and install dependencies
         run: |
           test "v$(tr -d '\r\n' < VERSION)" = "$GITHUB_REF_NAME"
@@ -142,9 +142,9 @@ jobs:
           cache: npm
       - name: Prepare standalone build Python
         run: |
-          python scripts/prepare_python_runtime.py --destination "$RUNNER_TEMP/harness-python"
-          "$RUNNER_TEMP/harness-python/bin/python3" -m venv "$RUNNER_TEMP/harness-build"
-          echo "$RUNNER_TEMP/harness-build/bin" >> "$GITHUB_PATH"
+          python scripts/prepare_python_runtime.py --destination "$RUNNER_TEMP/foolship-python"
+          "$RUNNER_TEMP/foolship-python/bin/python3" -m venv "$RUNNER_TEMP/foolship-build"
+          echo "$RUNNER_TEMP/foolship-build/bin" >> "$GITHUB_PATH"
       - name: Verify and build macOS app
         run: |
           test "v$(tr -d '\r\n' < VERSION)" = "$GITHUB_REF_NAME"

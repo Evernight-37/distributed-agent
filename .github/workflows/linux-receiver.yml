@@ -1,4 +1,4 @@
-name: Verify Linux receiver
+﻿name: Verify Linux receiver
 
 on:
   push:
@@ -28,9 +28,9 @@ jobs:
           python-version: "3.12"
       - name: Prepare standalone build Python
         run: |
-          python scripts/prepare_python_runtime.py --destination "$RUNNER_TEMP/harness-python"
-          "$RUNNER_TEMP/harness-python/bin/python3" -m venv "$RUNNER_TEMP/harness-build"
-          echo "$RUNNER_TEMP/harness-build/bin" >> "$GITHUB_PATH"
+          python scripts/prepare_python_runtime.py --destination "$RUNNER_TEMP/foolship-python"
+          "$RUNNER_TEMP/foolship-python/bin/python3" -m venv "$RUNNER_TEMP/foolship-build"
+          echo "$RUNNER_TEMP/foolship-build/bin" >> "$GITHUB_PATH"
       - name: Install test and build dependencies
         run: python -m pip install -e . -r requirements-linux-build.txt ruff==0.14.1 pywebview==6.2.1
       - name: Verify headless source

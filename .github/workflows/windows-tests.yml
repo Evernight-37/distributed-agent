@@ -1,4 +1,4 @@
-name: Verify Windows support
+﻿name: Verify Windows support
 
 on:
   pull_request:

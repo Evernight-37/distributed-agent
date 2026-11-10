@@ -1,4 +1,4 @@
-# Foolship Linux 服务器 AI 配置任务
+﻿# Foolship Linux 服务器 AI 配置任务
 
 你正在帮助用户把当前 Linux 服务器配置为 Foolship 的无界面接收端。它有两个用途：接收 Agent 任务，以及作为**文件速传的接收方**（发送方从自己的机器直接拉取，协作服务不接触文件内容）。先检查，再执行；不要把"尽量自动化"理解为可以绕过用户授权。
 
@@ -13,7 +13,7 @@
 3. 确认可用且已登录的 Codex CLI 路径。
 4. 确认服务器能通过 Tailscale 访问团队服务。
 5. 确认服务器与用户的另一台机器处在同一个 tailnet（或互相共享了节点），否则文件速传拨不通，也没有中转兜底。
-6. 完成设备关联、`harness doctor`、systemd 用户服务安装与状态检查。
+6. 完成设备关联、`foolship doctor`、systemd 用户服务安装与状态检查。
 7. 最终只报告允许分享的状态，不输出身份材料、令牌、密码、消息或项目内容。
 
 ## 强制安全边界
@@ -24,7 +24,7 @@
 - 不创建或要求用户在聊天中发送 Tailscale auth key、密码、访问令牌。
 - 不自动使用 `--no-password`；只有用户明确接受“依赖该 Unix 用户目录的 0600/0700 权限保护身份”后才可使用。
 - 不自动执行 `loginctl enable-linger`。如果退出 SSH 后服务不能持续运行，只报告这一项并让用户决定。
-- 不删除、覆盖已有 Foolship 数据、旧版本目录、项目目录或 Codex 配置。发现已有账户时使用 `harness status`，不要重复关联。
+- 不删除、覆盖已有 Foolship 数据、旧版本目录、项目目录或 Codex 配置。发现已有账户时使用 `foolship status`，不要重复关联。
 - 关联命令运行后必须保留进程等待批准；不要因为短时间没有结果就杀掉它或重新发起第二个关联请求。
 - Tailscale OAuth、Foolship 关联批准、本机解锁密码、sudo 和 linger 都是人工确认点。
 
@@ -65,7 +65,7 @@ tailscale status || true
 
 ### 3. 准备 Foolship
 
-把发布包解压到当前用户拥有的独立目录。不要覆盖已有目录。进入包含 `harness` 的 `Foolship-linux` 目录并确认：
+把发布包解压到当前用户拥有的独立目录。不要覆盖已有目录。进入包含 `foolship` 可执行文件的 `Foolship-linux` 目录并确认：
 
 ```bash
 ./foolship --help
