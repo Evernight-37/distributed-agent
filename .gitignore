@@ -1,4 +1,4 @@
-__pycache__/
+﻿__pycache__/
 .venv*/
 .ruff_cache/
 node_modules/
@@ -18,7 +18,7 @@ jobs/
 memory/
 inbox/
 secrets/
-agent-harness-data/
+foolship-data/
 *.sqlite3*
 executions/
 group_import.json
