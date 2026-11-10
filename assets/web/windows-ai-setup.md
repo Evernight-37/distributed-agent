@@ -70,7 +70,11 @@ Get-Content (Join-Path $target "VERSION")
 
 ```powershell
 Start-Process (Join-Path $target "AgentHarness.exe")
+Start-Sleep -Seconds 10
+Get-Process AgentHarness | Select-Object Id, MainWindowTitle
 ```
+
+进程要在，且 `MainWindowTitle` 里能看到 Harness 的窗口标题。如果窗口里出现 `Unhandled exception`、或日志里出现 `pythonnet`/`clr` 一类的加载错误，说明这个目录不适合运行（网络盘、受管理的同步目录等）：把整个 `AgentHarness` 目录挪到 `%LOCALAPPDATA%\Programs\AgentHarness` 再试，不要改系统设置或装 .NET 组件。
 
 窗口出现后告诉用户：
 
