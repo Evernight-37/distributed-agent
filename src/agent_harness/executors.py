@@ -323,20 +323,47 @@ def status_of(root, kind, probe=None):
     }
 
 
+def _user_environment(name):
+    """A variable Windows keeps for this user; later app starts inherit it."""
+    if os.name != "nt":
+        return ""
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, name)
+    except (OSError, ImportError):
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def deepseek_credentials():
+    """Whether DeepSeek Harness has somewhere to read its key from.
+
+    Only the environment of the process that later spawns the agent counts, which
+    is why a variable exported in a terminal shell does not help: a desktop app
+    started from the start menu never sees it.  A key saved on the Models page
+    lives in DeepSeek Harness's own credential store, so its presence is enough
+    to stop warning; the value is never read.
+    """
+    if os.environ.get("DEEPSEEK_API_KEY", "").strip():
+        return True
+    if _user_environment("DEEPSEEK_API_KEY").strip():
+        return True
+    home = Path.home() / ".dsh"
+    return any((home / name).is_file() for name in (".credentials.yaml", "llm-deepseek/files-v3.json"))
+
+
 def login(root, exe, kind=None):
     """Report whether the executor that will run this turn can authenticate."""
     if (kind or selected(root)) == DSH:
-        # DSH headless resolves credentials from DEEPSEEK_API_KEY or from the
-        # credential service the desktop Models page writes to.  Presence of the
-        # environment variable is the only check that costs nothing and reads no
-        # secret; a stored key is detected by the run itself.
-        if os.environ.get("DEEPSEEK_API_KEY", "").strip():
+        if deepseek_credentials():
             return {"logged_in": True}
         return {
             "logged_in": True,
             "credential_warning": (
-                "未检测到环境变量 DEEPSEEK_API_KEY。若任务报 MISSING_CREDENTIAL，"
-                "请在 DeepSeek Harness 的 Models 页面保存密钥，或为本机设置该环境变量"
+                "没有找到 DeepSeek Harness 的凭据：在它的 Models 页面保存一次密钥即可。"
+                "在终端里设置的变量不会传给从这里启动的应用"
             ),
         }
     try:

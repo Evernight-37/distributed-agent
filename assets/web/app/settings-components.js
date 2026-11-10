@@ -127,18 +127,14 @@ function teamServiceCard(initial) {
     } else
       note(
         card,
-        "为本机工作台创建稳定的 HTTPS 团队入口，让已获网络访问权限的设备连接。不会上传或同步项目工作目录。",
+        "给同事一个固定地址，从这里连到这台机器的协作服务。只负责连接，不同步项目文件。",
       );
     if (last.state === "conflict")
       note(
         card,
-        "检测到已有配置，应用不会覆盖。请先核对原有用途，再处理连接配置。",
+        "这台机器上已有同名配置，应用没有改动它。先确认原来那个配置不再需要，再继续。",
       );
-    if (!last.can_manage)
-      note(
-        card,
-        "这里仅查看当前服务。此入口属于其他机器，本机不能修改它的 Tailscale 设置。",
-      );
+    if (!last.can_manage) note(card, "这个入口由别的机器托管，本机只能查看。");
     const controls = el("div", "row");
     controls.style.flexWrap = "wrap";
     controls.style.justifyContent = "flex-start";
@@ -172,7 +168,7 @@ function teamServiceCard(initial) {
     if (last.can_backup) {
       note(
         card,
-        "备份文件包含项目消息、成员和任务记录，请像保护账户数据一样妥善保存，不要发送到不可信位置。",
+        "备份里有项目消息、成员和任务记录。请像账户数据一样保管，不要放到不可信的位置。",
       );
       controls.append(
         button("备份项目数据", async () => {
@@ -195,7 +191,7 @@ function teamServiceCard(initial) {
             );
             note(
               body,
-              "恢复前应用会自动保存当前数据库；本机 Agent 设置和项目工作目录不会被覆盖。恢复期间其他成员会短暂断开。",
+              "恢复前会先备份当前数据；各机器的项目目录和 Agent 设置不受影响。恢复时其他成员会短暂断开。",
             );
             actions.append(
               button("取消", closeModal),
@@ -231,15 +227,12 @@ function teamServiceCard(initial) {
       controls.append(authorize);
       note(
         card,
-        "需要你在 Tailscale 页面确认启用此入口。确认后应用会自动检查状态，不会替你批准。",
+        "这一步要在 Tailscale 页面点确认，应用不会替你批准。确认后会自动检查状态。",
       );
     }
     const stop = button("停止团队入口", () =>
       modal("停止团队入口", (b, a) => {
-        note(
-          b,
-          "将停止同事通过这个入口连接本机工作台。不会删除账户、项目或任务，也不会关闭本机协作服务。",
-        );
+        note(b, "停止后同事不能再通过这个入口连接。账户、项目和任务都保留。");
         a.append(
           button("取消", closeModal),
           button(
@@ -280,13 +273,38 @@ function executorCard(current) {
   card.append(el("h2", "", "本机可用模型"));
   note(
     card,
-    "这台电脑能跑哪些模型，以及每个模型由哪个 CLI 执行。员工的模型必须从这里选；派发时按模型自动决定用 Codex 还是 DeepSeek Harness，不存在“默认执行器”。",
+    "这台电脑能跑哪些模型，以及每个由哪个 CLI 执行。派任务时按模型自动挑 CLI；表里没有的模型不会被派发。",
   );
 
   const models = Array.isArray(current?.models)
     ? current.models.map((item) => ({ ...item }))
     : [];
   const rows = el("div", "model-table");
+  let timer = null;
+  const save = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const cleaned = models.filter((item) => item.name && item.name.trim());
+      if (!cleaned.length) {
+        notify("至少保留一个模型", true);
+        return;
+      }
+      try {
+        const result = await api("executor-save", { models: cleaned });
+        const status = result?.status;
+        if (status?.found) notify("模型表已保存");
+        else
+          notify(
+            "已保存，但没有检测到可运行的 CLI：" +
+              (status?.error || "请检查安装"),
+            true,
+          );
+        await refresh(true);
+      } catch (error) {
+        notify("保存失败：" + error.message, true);
+      }
+    }, 600);
+  };
   const draw = () => {
     rows.replaceChildren();
     models.forEach((item, index) => {
@@ -298,6 +316,7 @@ function executorCard(current) {
       name.oninput = () => {
         models[index].name = name.value.trim();
       };
+      name.onblur = save;
       const kind = el("select");
       [
         ["codex", "Codex CLI"],
@@ -310,6 +329,7 @@ function executorCard(current) {
       kind.value = item.executor === "dsh" ? "dsh" : "codex";
       kind.onchange = () => {
         models[index].executor = kind.value;
+        save();
       };
       row.append(
         name,
@@ -319,6 +339,7 @@ function executorCard(current) {
           () => {
             models.splice(index, 1);
             draw();
+            save();
           },
           "link",
         ),
@@ -327,39 +348,12 @@ function executorCard(current) {
     });
   };
   draw();
-  card.append(el("p", "muted small", "本机模型表"));
   card.append(rows);
   card.append(
     button("添加模型", () => {
       models.push({ name: "", executor: "codex" });
       draw();
     }),
-  );
-  note(
-    card,
-    "模型表是封闭的：派的模型必须在这里，否则不会派发。两边的完整模型清单无法离线枚举，所以把实际可用的模型填进来；填错不影响别的模型，派发到它时执行器会给出明确错误。",
-  );
-  card.append(
-    button(
-      "保存模型表",
-      async () => {
-        const result = await api("executor-save", {
-          models: models.filter((item) => item.name && item.name.trim()),
-        });
-        const status = result?.status;
-        if (status?.found) {
-          notify("模型表已保存 · " + (status.version || "已检测到程序"));
-        } else {
-          notify(
-            "模型表已保存，但没有检测到可运行的 CLI：" +
-              (status?.error || "请检查安装"),
-            true,
-          );
-        }
-        await refresh(true);
-      },
-      "primary",
-    ),
   );
   return card;
 }
@@ -369,7 +363,7 @@ function proxySettingsCard(current) {
   card.append(el("h2", "", "本机代理端口"));
   note(
     card,
-    "这台电脑上的代理端口（固定 127.0.0.1）。每个 Agent 在自己的“模型请求代理”里单独选择策略：跟随本机、直连或自定义端口；这里只是可供选择的机器端口。团队服务和 Tailscale 不走它。",
+    "端口在这台机器上，固定 127.0.0.1。每个 Agent 在员工设置里自己决定是否走它；团队服务和 Tailscale 不走这里。",
   );
   const port = field(
     card,
@@ -381,34 +375,31 @@ function proxySettingsCard(current) {
   port.min = "1";
   port.max = "65535";
   port.placeholder = "例如 7897";
-  card.append(
-    button(
-      "保存代理端口",
-      async () => {
-        let value = null;
-        const raw = port.value.trim();
-        if (raw) {
-          if (!/^[0-9]+$/.test(raw) || Number(raw) < 1 || Number(raw) > 65535) {
-            notify("请输入 1 到 65535 的代理端口", true);
-            port.focus();
-            return;
-          }
-          value = Number(raw);
-        }
-        await api("proxy-save", {
-          enabled: value !== null,
-          port: value,
-        });
-        notify(
-          value === null
-            ? "已清除本机代理端口。"
-            : "本机代理端口已保存，下次启动的 Agent 任务生效。",
-        );
-        await refresh(true);
-      },
-      "primary",
-    ),
-  );
+  let saved = current?.port ?? "";
+  const apply = async () => {
+    const raw = port.value.trim();
+    if (raw === String(saved ?? "")) return;
+    let value = null;
+    if (raw) {
+      if (!/^[0-9]+$/.test(raw) || Number(raw) < 1 || Number(raw) > 65535) {
+        notify("端口需在 1 到 65535 之间", true);
+        port.focus();
+        return;
+      }
+      value = Number(raw);
+    }
+    await api("proxy-save", { enabled: value !== null, port: value });
+    saved = value ?? "";
+    notify(value === null ? "已清除本机代理端口" : "已保存端口 " + value);
+    await refresh(true);
+  };
+  port.onblur = apply;
+  port.onkeydown = (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      port.blur();
+    }
+  };
   return card;
 }
 function idleSettingsCard(seconds) {
@@ -416,7 +407,7 @@ function idleSettingsCard(seconds) {
   card.append(el("h2", "", "Agent 空闲保活"));
   note(
     card,
-    "有新消息时启动本机 Agent。任务结束后继续等待一段时间，期间的新消息复用同一进程；没有新消息时自动退出。",
+    "任务结束后先不退出，留一段时间给后续消息复用同一个进程。超过这段时间没有新消息就退出。",
   );
   const choice = field(card, "无新活动后退出", String(seconds || 300), [
     [60, "1 分钟"],
@@ -425,17 +416,11 @@ function idleSettingsCard(seconds) {
     [1800, "30 分钟"],
     [3600, "1 小时"],
   ]);
-  card.append(
-    button(
-      "保存保活时间",
-      async () => {
-        await api("warm-idle-save", { seconds: Number(choice.value) });
-        notify("保活时间已保存，下次启动的 Agent 生效。");
-        await refresh(true);
-      },
-      "primary",
-    ),
-  );
+  choice.onchange = async () => {
+    await api("warm-idle-save", { seconds: Number(choice.value) });
+    notify("已保存");
+    await refresh(true);
+  };
   return card;
 }
 function codexCliCard(kind) {
@@ -463,18 +448,14 @@ function codexCliCard(kind) {
   const detect = button("重新检测", async () => {
     await load(true);
   });
-  const save = button(
-    "保存路径",
-    async () => {
-      const value = path.value.trim();
-      const r = await api("codex-cli-save", { path: value, kind });
-      path.value = value ? r?.path || value : "";
-      notify(value ? label + " 路径已保存。" : "已恢复自动检测。");
-      await load();
-    },
-    "primary",
-  );
-  controls.append(detect, browse, save);
+  path.onblur = async () => {
+    const value = path.value.trim();
+    const r = await api("codex-cli-save", { path: value, kind });
+    path.value = value ? r?.path || value : "";
+    notify(value ? label + " 路径已保存。" : "已恢复自动检测。");
+    await load();
+  };
+  controls.append(detect, browse);
   card.append(controls);
   async function load(force = false) {
     detect.disabled = true;
@@ -546,7 +527,7 @@ function codexMcpCard(initial) {
   card.append(el("h2", "", "在 Codex 中使用协作"), statusLine);
   note(
     card,
-    "启用后，你可以在普通 Codex 对话里查看项目、发消息和派发异步任务。这里不会读取或显示登录凭据。",
+    "连接后可以在普通 Codex 对话里查看项目、发消息、派任务。不读取登录凭据。",
   );
   card.append(controls);
   function paint(state) {
@@ -640,7 +621,7 @@ function dshMcpCard(initial) {
   );
   note(
     card,
-    "在你的 DeepSeek Harness 桌面 profile 里登记一个 stdio MCP 服务，不开放端口，也不读取密钥。只影响桌面应用里的普通对话，被派发的 Agent 任务不受影响；Foolship 只增删自己标记的两行，其它配置不动。新的 DSH 会话生效。",
+    "在这台机器的 DeepSeek Harness 里登记协作服务，不开放端口，也不读取密钥。只影响桌面应用里的普通对话，派出去的任务不受影响；新开的 DSH 会话生效。",
   );
   function paint(state) {
     if (state) card.state = state;

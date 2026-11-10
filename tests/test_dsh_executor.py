@@ -195,10 +195,28 @@ class DshLoginTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             write_json(root / "executor.json", {"executor": "dsh"})
-            with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}):
+            with (
+                mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}),
+                mock.patch.object(executors, "_user_environment", return_value=""),
+                mock.patch("pathlib.Path.home", return_value=root / "home"),
+            ):
                 result = executors.login(root, "dsh")
             self.assertTrue(result["logged_in"])
-            self.assertIn("DEEPSEEK_API_KEY", result["credential_warning"])
+            self.assertIn("凭据", result["credential_warning"])
+
+    def test_stored_credentials_are_not_warned_about(self):
+        """A key saved on the Models page lives in DeepSeek Harness's own store."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(root / "executor.json", {"executor": "dsh"})
+            (root / "home" / ".dsh").mkdir(parents=True)
+            (root / "home" / ".dsh" / ".credentials.yaml").write_text("version: 1\n", "utf-8")
+            with (
+                mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}),
+                mock.patch.object(executors, "_user_environment", return_value=""),
+                mock.patch("pathlib.Path.home", return_value=root / "home"),
+            ):
+                self.assertEqual(executors.login(root, "dsh"), {"logged_in": True})
 
     def test_environment_key_is_accepted(self):
         with tempfile.TemporaryDirectory() as folder:

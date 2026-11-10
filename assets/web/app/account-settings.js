@@ -166,45 +166,54 @@ async function renderSettings() {
   const list = el("div", "settings");
   const team = teamServiceCard(settings.team_service);
   list.append(team);
-  const memberships = el("section", "panel");
-  memberships.append(el("h2", "", "已加入的协作服务"));
+  const machine = el("section", "panel");
+  machine.append(el("h2", "", "本机状态"));
   note(
-    memberships,
-    "同一身份可以参与多个服务上的项目。接入本机 agent 是单独操作，项目工作目录不会自动同步。",
+    machine,
+    "接收服务在这台机器上后台运行：领取派给这台机器的任务，也接收发来的文件。登录时自动启动；停止它不会退出应用，但任务会停在服务端等你重新启动。",
   );
-  (
-    settings.services || [
-      { server: settings.server, primary: true, attached: true },
-    ]
-  ).forEach((s) => {
+  const receivers = Array.isArray(settings.receivers) ? settings.receivers : [];
+  const services = settings.services || [
+    { server: settings.server, primary: true, attached: true },
+  ];
+  services.forEach((service) => {
+    const receiver = receivers.find((item) => item.server === service.server);
+    const state = !service.attached
+      ? "未接入这台机器"
+      : receiver?.running
+        ? receiver.online
+          ? "运行中 · 已连接"
+          : "运行中 · 未连接"
+        : "已停止";
     const row = el("div", "setting-row");
     row.append(
       el(
         "div",
         "",
-        serviceName(s.server) +
-          (s.primary ? " · 首个服务" : "") +
-          (s.attached ? " · 本机已接入" : ""),
+        serviceName(service.server) +
+          (service.primary ? " · 首个服务" : "") +
+          " · " +
+          state,
       ),
     );
-    if (!s.attached)
+    if (!service.attached)
       row.append(
-        button("接入本机 agent", () =>
-          modal("接入本机 agent", (b, a) => {
+        button("接入这台机器", () =>
+          modal("接入这台机器", (b, a) => {
             note(
               b,
-              "将这台机器的任务接收端接入 " +
-                s.server +
-                "。此后可在该服务创建和派遣本机员工。",
+              "接入后可以在 " +
+                serviceName(service.server) +
+                " 上创建和派遣本机员工。接入只影响这台机器，不改动其它电脑。",
             );
             a.append(
               button("取消", closeModal),
               button(
                 "确认接入",
                 async () => {
-                  await api("receiver-attach", { server: s.server });
+                  await api("receiver-attach", { server: service.server });
                   closeModal();
-                  notify("本机已接入 " + serviceName(s.server));
+                  notify("本机已接入 " + serviceName(service.server));
                   await refresh(true);
                 },
                 "primary",
@@ -213,18 +222,9 @@ async function renderSettings() {
           }),
         ),
       );
-    memberships.append(row);
+    machine.append(row);
   });
-  list.append(memberships);
-  const machine = el("section", "panel");
-  machine.append(el("h2", "", "本机状态"));
-  const receiverLine = el("p", "muted small", "正在读取接收状态…");
-  receiverLine.style.overflowWrap = "anywhere";
-  machine.append(receiverLine);
-  note(
-    machine,
-    "接收服务是常驻后台进程：轮询协作服务里派给这台机器的任务并拉起本机 Agent，同时接收文件速传。登录时自动启动；停止它不会退出应用，但派给这台机器的任务会停在服务端队列。",
-  );
+  const running = receivers.filter((item) => item.running);
   const controls = el("div", "setting-row");
   const startReceiver = button(
     "启动接收",
@@ -242,28 +242,9 @@ async function renderSettings() {
   });
   controls.append(startReceiver, stopReceiver);
   machine.append(controls, button("完全退出", requestAppClose));
-  const receivers = Array.isArray(settings.receivers) ? settings.receivers : [];
-  const running = receivers.filter((item) => item.running);
-  if (!receivers.length) {
-    receiverLine.className = "error small";
-    receiverLine.textContent = "本机还没有接入协作服务，接收服务无从启动。";
-  } else {
-    receiverLine.className = running.length ? "muted small" : "error small";
-    receiverLine.textContent = receivers
-      .map(
-        (item) =>
-          serviceName(item.server) +
-          " · " +
-          (item.running
-            ? item.online
-              ? "运行中 · 已连接"
-              : "运行中 · 未连接"
-            : "已停止"),
-      )
-      .join("　");
-  }
+  const attached = services.filter((service) => service.attached);
   startReceiver.disabled =
-    receivers.length > 0 && running.length === receivers.length;
+    attached.length > 0 && running.length === attached.length;
   stopReceiver.disabled = running.length === 0;
   list.append(
     machine,
@@ -315,7 +296,7 @@ async function renderSettings() {
   server.readOnly = true;
   note(
     advanced,
-    "此地址是创建身份时接入的首个服务。加入其他服务的项目，请在控制台使用项目邀请。",
+    "这是创建身份时接入的第一个服务。要加入别处的项目，用那个项目发来的邀请。",
   );
   list.append(advanced);
   c.append(list);
@@ -336,7 +317,7 @@ function aiInstallSetup() {
   modal("用 AI 在另一台电脑上安装", (body, actions) => {
     note(
       body,
-      "把生成的提示词交给那台机器上的 AI（Codex 或 DeepSeek Harness）。它会检查环境、下载并校验官方发布包、完成安装；登录与设备批准仍由你本人在那台机器上完成。",
+      "把这段提示词交给那台机器上的 AI。它负责检查环境、下载、校验和安装；登录与设备批准仍由你在那台机器上完成。",
     );
     if (!services.length) {
       note(
@@ -390,7 +371,7 @@ function updateCard() {
   card.append(el("h2", "", "应用更新"));
   note(
     card,
-    "只向本项目的 GitHub Releases 查询版本号。可以后台预先把安装包下载到本机并校验，安装仍然需要你点一次；没有网络时不检查，选择“从不”则完全关闭。",
+    "只向本仓库的 Releases 查版本。可以后台预下载并校验，安装仍要你点一次；没有网络时不检查，选“从不”就完全关闭。",
   );
   const schedule = field(card, "检查频率", "weekly", [
     ["daily", "每天"],
