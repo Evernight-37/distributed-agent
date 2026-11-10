@@ -78,9 +78,7 @@ class Lifecycle:
                 ) as response:
                     value = json.load(response)
                     unmanaged = (
-                        response.status == 200
-                        and value.get("ok") is True
-                        and value.get("service") == "agent-harness-hub"
+                        response.status == 200 and value.get("ok") is True and value.get("service") == "foolship-hub"
                     )
             except (OSError, ValueError):
                 pass

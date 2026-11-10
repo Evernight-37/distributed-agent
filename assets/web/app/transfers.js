@@ -82,7 +82,7 @@ function transferSettings(view) {
           modal("设置 " + device.name + " 的接收目录", (body, actions) => {
             const destination = field(body, "目标机器上的绝对路径", "");
             destination.placeholder =
-              "例如 /home/user/Downloads/Harness 或 D:\\Transfers";
+              "例如 /home/user/Downloads/Foolship 或 D:\\Transfers";
             note(
               body,
               "路径会随签名控制指令经过当前可信协作服务，并在目标机器处理后从服务记录中删除。目标机器必须在线，且该目录必须已经存在。",
@@ -296,4 +296,4 @@ setInterval(() => {
   if (S.page === "transfers" && !document.hidden) renderTransfers();
 }, 3000);
 
-Object.assign(HarnessDesktop.render, { renderTransfers });
+Object.assign(FoolshipDesktop.render, { renderTransfers });

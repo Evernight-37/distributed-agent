@@ -50,17 +50,17 @@ jobs:
         run: |
           python scripts/build_desktop.py --output-root release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:AGENT_HARNESS_TEST_BUNDLE = "$env:GITHUB_WORKSPACE\release\AgentHarness"
+          $env:FOOLSHIP_TEST_BUNDLE = "$env:GITHUB_WORKSPACE\release\Foolship"
           python -m unittest tests.test_desktop.PackagedReceiverTests -q
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/cleanroom_release.py release/AgentHarness build/cleanroom
+          python tests/cleanroom_release.py release/Foolship build/cleanroom
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $version = (Get-Content VERSION -Raw).Trim()
-          python scripts/package_windows_release.py release/AgentHarness "AgentHarness-$version-windows-x64.zip"
+          python scripts/package_windows_release.py release/Foolship "Foolship-$version-windows-x64.zip"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
-          name: AgentHarness-windows-tested
-          path: AgentHarness-*-windows-x64.zip
+          name: Foolship-windows-tested
+          path: Foolship-*-windows-x64.zip
           if-no-files-found: error
           retention-days: 7

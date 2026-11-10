@@ -10,7 +10,7 @@ from agent_harness.account_identity import approve_delegate, generate_identity
 from agent_harness.app_bridge import AppBridge, MCP_DELEGATE_SCOPES
 from agent_harness.collaboration_store import Store
 from agent_harness.common import write_json
-from agent_harness.mcp_adapter import HarnessMcpBackend
+from agent_harness.mcp_adapter import FoolshipMcpBackend
 from agent_harness.panel import handler_for
 
 
@@ -51,7 +51,7 @@ class McpAdapterTests(unittest.TestCase):
             },
         )
         self.bridge._register_mcp_delegate(self.url, {"identity": delegate})
-        self.backend = HarnessMcpBackend(self.grant)
+        self.backend = FoolshipMcpBackend(self.grant)
 
     def tearDown(self):
         self.server.shutdown()
@@ -158,7 +158,7 @@ class McpAdapterTests(unittest.TestCase):
             self.assertNotIn("configuration", enabled)
             self.assertTrue(self.bridge._mcp_grant_path().is_file())
             mcp_name = self.bridge._mcp_name()
-            self.assertTrue(mcp_name.startswith("agent-harness-"))
+            self.assertTrue(mcp_name.startswith("foolship-"))
             add = next(call for call in calls if call[:2] == ("add", mcp_name))
             # The entry registers a stable launcher; the adapter path lives inside
             # it, so an upgrade never changes the command Codex remembers.

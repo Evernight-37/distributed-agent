@@ -1,4 +1,4 @@
-"""Package a built AgentHarness.app for manual GitHub distribution."""
+"""Package a built Foolship.app for manual GitHub distribution."""
 
 from __future__ import annotations
 

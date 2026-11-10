@@ -10,9 +10,9 @@ class MacOSReleaseTests(unittest.TestCase):
     def test_package_requires_app(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            app = root / "AgentHarness.app"
+            app = root / "Foolship.app"
             app.mkdir()
-            output = root / "AgentHarness.zip"
+            output = root / "Foolship.zip"
             with mock.patch("scripts.package_macos_release.subprocess.run") as run:
                 run.side_effect = lambda *a, **k: output.write_bytes(b"archive")
                 result = package(app, output)
@@ -21,7 +21,7 @@ class MacOSReleaseTests(unittest.TestCase):
             run.assert_called_once()
             sidecar = Path(str(output) + ".sha256")
             self.assertTrue(sidecar.is_file())
-            self.assertIn("AgentHarness.zip", sidecar.read_text("ascii"))
+            self.assertIn("Foolship.zip", sidecar.read_text("ascii"))
 
     def test_package_rejects_non_app_directory(self):
         with tempfile.TemporaryDirectory() as directory:

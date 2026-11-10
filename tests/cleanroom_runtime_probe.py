@@ -24,14 +24,14 @@ def main():
     scratch = args.scratch.resolve()
 
     bridge = AppBridge()
-    expected_root = (scratch / "localappdata" / "AgentHarness" / "data").resolve()
+    expected_root = (scratch / "localappdata" / "Foolship" / "data").resolve()
     if bridge.root != expected_root or bridge._host_state_root() != expected_root / "team-service":
         raise RuntimeError("fresh data root is not package independent")
     store = Store(bridge._host_state_root())
     if not (expected_root / "team-service" / "collaboration.sqlite3").is_file() or not store.service_id():
         raise RuntimeError("fresh host database was not created in stable state")
 
-    installed = install_bundle(package, scratch / "localappdata" / "AgentHarness" / "service-runtime")
+    installed = install_bundle(package, scratch / "localappdata" / "Foolship" / "service-runtime")
     installed_package = installed / "client" / "agent_harness"
     if (installed_package / "VERSION").read_text(encoding="utf-8").strip() != args.expected_version:
         raise RuntimeError("installed runtime is not this release")

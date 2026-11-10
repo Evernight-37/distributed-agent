@@ -29,7 +29,7 @@ class LinuxReceiverTests(unittest.TestCase):
 
     def test_standalone_mcp_launcher_uses_binary_subcommand(self):
         with tempfile.TemporaryDirectory() as folder:
-            binary = Path(folder) / "harness"
+            binary = Path(folder) / "foolship"
             binary.write_text("binary", encoding="utf-8")
             launcher = linux_receiver._write_launcher(folder, "profile-one", python=binary, standalone=True)
             content = launcher.read_text(encoding="utf-8")
@@ -329,7 +329,7 @@ class LinuxReceiverTests(unittest.TestCase):
                 result = linux_receiver._set_codex_proxy(root, {"enabled": True, "port": 7897})
             self.assertEqual(read_json(root / "codex-proxy.json"), {"enabled": True, "port": 7897})
             self.assertEqual(result["warnings"][0]["receiver"], "device-one")
-            self.assertIn("重启 Harness", result["note"])
+            self.assertIn("重启 Foolship", result["note"])
 
     def test_root_execution_is_rejected_but_help_remains_available(self):
         with patch.object(os, "geteuid", return_value=0, create=True):
@@ -408,7 +408,7 @@ class LinuxReceiverTests(unittest.TestCase):
             write_json(network, {"proxy": "http://127.0.0.1:18766"})
             first, second = MagicMock(), MagicMock()
             with patch.object(mcp_adapter, "broker_opener", side_effect=[first, second]) as factory:
-                backend = mcp_adapter.HarnessMcpBackend(grant, network)
+                backend = mcp_adapter.FoolshipMcpBackend(grant, network)
                 self.assertIs(backend._opener(), first)
                 write_json(network, {"proxy": "http://127.0.0.1:18767"})
                 self.assertIs(backend._opener(), second)

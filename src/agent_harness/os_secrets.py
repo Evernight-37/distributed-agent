@@ -10,8 +10,8 @@ import subprocess
 import sys
 
 
-_ENTROPY = b"AgentHarness local identity v2"
-_SERVICE = "AgentHarness.Identity"
+_ENTROPY = b"Foolship local identity v2"
+_SERVICE = "Foolship.Identity"
 _TIMEOUT = 10
 
 
@@ -176,9 +176,9 @@ def _protect_linux(value):
             [
                 command,
                 "store",
-                "--label=Agent Harness identity",
+                "--label=Foolship identity",
                 "service",
-                "agent-harness",
+                "foolship",
                 "purpose",
                 "local-identity",
                 "reference",
@@ -207,7 +207,7 @@ def _unprotect_linux(envelope):
                 command,
                 "lookup",
                 "service",
-                "agent-harness",
+                "foolship",
                 "purpose",
                 "local-identity",
                 "reference",
@@ -257,7 +257,7 @@ def _cryptprotect(value):
     crypt.CryptProtectData.restype = wintypes.BOOL
     if not crypt.CryptProtectData(
         ctypes.byref(source),
-        "Agent Harness",
+        "Foolship",
         ctypes.byref(entropy),
         None,
         None,

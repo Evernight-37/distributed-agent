@@ -1,17 +1,17 @@
-; Per-user Agent Harness installer.
-; The installer never requests elevation and never removes %LOCALAPPDATA%\AgentHarness\data.
+; Per-user Foolship installer.
+; The installer never requests elevation and never removes %LOCALAPPDATA%\Foolship\data.
 ; CI passes /DSourceDir and /DMyAppVersion. A missing version is a build error.
 #ifndef SourceDir
-  #define SourceDir "release\AgentHarness"
+  #define SourceDir "release\Foolship"
 #endif
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0"
 #endif
 
-#define AppName "Agent Harness"
-#define AppPublisher "Agent Harness"
+#define AppName "Foolship"
+#define AppPublisher "Foolship"
 #define AppId "{{B9E6D97E-8B31-4A8E-9B5D-7A6E7B4D2C10}"
-#define AppExeName "AgentHarness.exe"
+#define AppExeName "Foolship.exe"
 
 [Setup]
 AppId={#AppId}
@@ -21,14 +21,14 @@ AppPublisher={#AppPublisher}
 ; Per-user install: any directory the user can write to is allowed, and the
 ; wizard asks for it. Choosing a protected directory fails with a permission
 ; error instead of silently installing elsewhere.
-DefaultDirName={localappdata}\AgentHarness\app
+DefaultDirName={localappdata}\Foolship\app
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 OutputDir=..\..
-OutputBaseFilename=AgentHarness-{#MyAppVersion}-windows-x64-setup
+OutputBaseFilename=Foolship-{#MyAppVersion}-windows-x64-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

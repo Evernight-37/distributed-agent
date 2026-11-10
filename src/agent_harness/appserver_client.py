@@ -89,7 +89,7 @@ class AppServer:
             {
                 "clientInfo": {
                     "name": "distributed_agent_harness",
-                    "title": "Distributed Agent Harness",
+                    "title": "Distributed Foolship",
                     "version": application_version(),
                 }
             },

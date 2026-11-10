@@ -28,7 +28,7 @@ from agent_harness.account_identity import (
 
 
 RECOVERY_VERSION = 1
-_AAD = b"agent-harness-recovery-v1"
+_AAD = b"foolship-recovery-v1"
 
 
 def _key(password, salt):

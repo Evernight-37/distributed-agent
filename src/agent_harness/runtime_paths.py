@@ -9,10 +9,10 @@ from pathlib import Path
 def application_home():
     """The platform's per-user storage for this application."""
     if os.environ.get("LOCALAPPDATA"):
-        return Path(os.environ["LOCALAPPDATA"]) / "AgentHarness"
+        return Path(os.environ["LOCALAPPDATA"]) / "Foolship"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "AgentHarness"
-    return Path.home() / "AgentHarness"
+        return Path.home() / "Library" / "Application Support" / "Foolship"
+    return Path.home() / "Foolship"
 
 
 def bundled_root():
@@ -69,13 +69,13 @@ def beside_app_data():
 def data_home():
     """Resolve the data directory.
 
-    Order matters: an explicit ``AGENT_HARNESS_STATE`` wins, then an existing
+    Order matters: an explicit ``FOOLSHIP_STATE`` wins, then an existing
     beside-the-application directory, then an existing legacy directory, and only
     for a fresh copy do we choose beside the application. An older install
     therefore keeps running from the data it already has instead of appearing
     empty after an upgrade.
     """
-    override = os.environ.get("AGENT_HARNESS_STATE")
+    override = os.environ.get("FOOLSHIP_STATE")
     if override:
         return Path(override)
     beside = beside_app_data()
@@ -127,7 +127,7 @@ def migrate_data(next_to, legacy=None):
 
 def default_state():
     """The default ``--state``/data root, migrating legacy data when needed."""
-    override = os.environ.get("AGENT_HARNESS_STATE")
+    override = os.environ.get("FOOLSHIP_STATE")
     if override:
         return Path(override)
     beside = beside_app_data()

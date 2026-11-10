@@ -121,7 +121,7 @@ def _record_path(root):
 
 def _runtime(release):
     release = Path(release).resolve()
-    executable = release / "harness"
+    executable = release / "foolship"
     if executable.is_file():
         return executable, None
     python = release / ".venv" / "bin" / "python"
@@ -163,7 +163,7 @@ def _current_runtime(root):
 
 
 def _bundle_marker(release):
-    return Path(release) / ".agent-harness-bundle-sha256"
+    return Path(release) / ".foolship-bundle-sha256"
 
 
 def _write_bundle_marker(release, digest):

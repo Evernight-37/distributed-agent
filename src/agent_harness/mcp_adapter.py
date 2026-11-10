@@ -1,4 +1,4 @@
-"""Codex-facing MCP adapter for the local Agent Harness account.
+"""Codex-facing MCP adapter for the local Foolship account.
 
 The adapter is a stdio process.  It opens no listening port and holds only a
 server-enforced, capability-scoped delegate credential created by the desktop
@@ -22,7 +22,7 @@ from agent_harness.mcp_server import run_stdio
 from agent_harness.protocol import ensure_hub_compatible
 
 
-class HarnessMcpBackend:
+class FoolshipMcpBackend:
     def __init__(self, grant_path, network_path=None):
         self.grant_path = Path(grant_path).expanduser().resolve()
         self.grant = self._load_grant()
@@ -53,22 +53,22 @@ class HarnessMcpBackend:
             "scopes",
         }
         if not isinstance(value, dict) or value.get("version") != 1 or not required.issubset(value):
-            raise PermissionError("Agent Harness Codex integration is not enabled for this account")
+            raise PermissionError("Foolship Codex integration is not enabled for this account")
         identity = value.get("identity")
         if not isinstance(identity, dict) or not all(
             isinstance(identity.get(key), str) for key in ("private_key", "public_key", "account_id")
         ):
-            raise PermissionError("Agent Harness Codex delegate credential is invalid")
+            raise PermissionError("Foolship Codex delegate credential is invalid")
         scopes = value.get("scopes")
         if not isinstance(scopes, list) or not {
             "collaboration.read",
             "collaboration.message",
             "collaboration.task",
         }.issubset(scopes):
-            raise PermissionError("Agent Harness Codex delegate scopes are incomplete")
+            raise PermissionError("Foolship Codex delegate scopes are incomplete")
         servers = value.get("servers")
         if not isinstance(servers, list) or not servers:
-            raise PermissionError("Agent Harness has no collaboration service")
+            raise PermissionError("Foolship has no collaboration service")
         for server in servers:
             validate_server(server)
         return value
@@ -178,12 +178,12 @@ class HarnessMcpBackend:
         return [
             {
                 "name": "harness_status",
-                "description": "检查 Agent Harness 账户及各协作服务连接状态。",
+                "description": "检查 Foolship 账户及各协作服务连接状态。",
                 "inputSchema": dict(obj, properties={}),
             },
             {
                 "name": "harness_projects_list",
-                "description": "列出当前 Harness 账户参加的项目及其托管服务状态。",
+                "description": "列出当前 Foolship 账户参加的项目及其托管服务状态。",
                 "inputSchema": dict(obj, properties={}),
             },
             {
@@ -344,7 +344,7 @@ class HarnessMcpBackend:
                 "task-status",
                 {"task": arguments["task"]},
             )
-        raise ValueError("Unknown Harness tool")
+        raise ValueError("Unknown Foolship tool")
 
 
 def main(argv=None):
@@ -352,7 +352,7 @@ def main(argv=None):
     parser.add_argument("--grant", required=True)
     parser.add_argument("--network")
     args = parser.parse_args(argv)
-    run_stdio(HarnessMcpBackend(args.grant, args.network))
+    run_stdio(FoolshipMcpBackend(args.grant, args.network))
 
 
 if __name__ == "__main__":

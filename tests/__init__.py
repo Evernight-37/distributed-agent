@@ -1,4 +1,4 @@
-"""Agent Harness test suite.
+"""Foolship test suite.
 
 The model table is seeded from the machine's Codex configuration, so the suite
 supplies its own Codex home instead of depending on whoever runs it. Without

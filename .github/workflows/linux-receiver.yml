@@ -41,17 +41,17 @@ jobs:
         run: |
           python scripts/build_linux_receiver.py
           mkdir -p build/linux-smoke
-          tar -xzf dist/AgentHarness-*-linux-*.tar.gz -C build/linux-smoke
-          build/linux-smoke/AgentHarness-linux/harness --help
-          build/linux-smoke/AgentHarness-linux/runtime/bin/python3 -I -c \
+          tar -xzf dist/Foolship-*-linux-*.tar.gz -C build/linux-smoke
+          build/linux-smoke/Foolship-linux/foolship --help
+          build/linux-smoke/Foolship-linux/runtime/bin/python3 -I -c \
             "import ssl, sqlite3; from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; import agent_harness.desktop_service, agent_harness.direct_transfer, agent_harness.direct_signaling, agent_harness.transfer_trust; key=Ed25519PrivateKey.generate(); key.public_key().verify(key.sign(b'check'), b'check'); print('Linux service bundle OK')"
       - name: Verify package on Ubuntu 22.04
         run: |
           docker run --rm --network none --user "$(id -u):$(id -g)" \
-            -e HOME=/tmp -v "$PWD/build/linux-smoke/AgentHarness-linux:/bundle:ro" \
-            ubuntu:22.04 /bin/sh -c '/bundle/harness --help && /bundle/runtime/bin/python3 -I -c "import ssl,sqlite3,cryptography,agent_harness.desktop_service; print(cryptography.__version__)"'
+            -e HOME=/tmp -v "$PWD/build/linux-smoke/Foolship-linux:/bundle:ro" \
+            ubuntu:22.04 /bin/sh -c '/bundle/foolship --help && /bundle/runtime/bin/python3 -I -c "import ssl,sqlite3,cryptography,agent_harness.desktop_service; print(cryptography.__version__)"'
       - uses: actions/upload-artifact@v4
         with:
-          name: AgentHarness-linux-${{ matrix.architecture }}
-          path: dist/AgentHarness-*-linux-*.tar.gz*
+          name: Foolship-linux-${{ matrix.architecture }}
+          path: dist/Foolship-*-linux-*.tar.gz*
           if-no-files-found: error

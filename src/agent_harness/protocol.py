@@ -30,5 +30,5 @@ def ensure_hub_compatible(challenge):
     if hub < MINIMUM_HUB_PROTOCOL:
         raise RuntimeError("协作服务版本过旧，请先升级托管端")
     if minimum_client > CLIENT_PROTOCOL:
-        raise RuntimeError("当前 Agent Harness 版本过旧，请升级本机应用")
+        raise RuntimeError("当前 Foolship 版本过旧，请升级本机应用")
     return {"legacy": False, "hub": hub, "minimum_client": minimum_client}

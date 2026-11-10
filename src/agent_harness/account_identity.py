@@ -196,7 +196,7 @@ def encrypt_profile(profile, password):
         "version": 1,
         "salt": encode(salt),
         "nonce": encode(nonce),
-        "ciphertext": encode(AESGCM(key).encrypt(nonce, canonical(profile), b"agent-harness-profile-v1")),
+        "ciphertext": encode(AESGCM(key).encrypt(nonce, canonical(profile), b"foolship-profile-v1")),
     }
 
 
@@ -209,7 +209,7 @@ def decrypt_profile(data, password):
             AESGCM(key).decrypt(
                 decode(data["nonce"], 12),
                 decode(data["ciphertext"]),
-                b"agent-harness-profile-v1",
+                b"foolship-profile-v1",
             )
         )
     except Exception:

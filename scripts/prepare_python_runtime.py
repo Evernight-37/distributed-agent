@@ -98,7 +98,7 @@ def validate_runtime(root):
 def prepare(destination):
     destination = Path(destination).resolve()
     name, digest = artifact()
-    marker = destination / ".agent-harness-runtime.sha256"
+    marker = destination / ".foolship-runtime.sha256"
     if destination.exists():
         if marker.is_file() and marker.read_text(encoding="ascii").strip() == digest:
             try:

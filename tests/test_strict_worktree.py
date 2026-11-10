@@ -19,7 +19,7 @@ class StrictWorktreeTests(unittest.TestCase):
         self.base.mkdir()
         git(self.base, "init", "-q")
         git(self.base, "config", "user.email", "test@example.invalid")
-        git(self.base, "config", "user.name", "Harness Test")
+        git(self.base, "config", "user.name", "Foolship Test")
         (self.base / "allowed.txt").write_text("before", encoding="utf-8")
         (self.base / "src").mkdir()
         (self.base / "src" / "file.txt").write_text("before", encoding="utf-8")

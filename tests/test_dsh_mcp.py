@@ -40,11 +40,11 @@ class HomeResolutionTests(unittest.TestCase):
         self.assertIn(str(Path("profiles") / "desktop"), str(dsh_mcp.patch_path(root_home="X")))
 
     def test_server_name_is_contract_legal_and_stable(self):
-        name = dsh_mcp.server_name("agent-harness-profile-0123456789abcdef")
+        name = dsh_mcp.server_name("foolship-profile-0123456789abcdef")
         self.assertRegex(name, r"^[A-Za-z0-9_-]{1,32}$")
         self.assertLessEqual(len(name), 32)
-        self.assertEqual(name, dsh_mcp.server_name("agent-harness-profile-0123456789abcdef"))
-        self.assertNotEqual(name, dsh_mcp.server_name("agent-harness-profile-fedcba9876543210"))
+        self.assertEqual(name, dsh_mcp.server_name("foolship-profile-0123456789abcdef"))
+        self.assertNotEqual(name, dsh_mcp.server_name("foolship-profile-fedcba9876543210"))
 
 
 class EntryTests(unittest.TestCase):

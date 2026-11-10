@@ -151,7 +151,7 @@ class AppBridge:
             if active and active != desired:
                 # A portable upgrade may have started its adjacent empty data
                 # directory before the user selected an existing profile.
-                # Stop only a verified Harness-managed host, then reopen the
+                # Stop only a verified Foolship-managed host, then reopen the
                 # saved project database for that profile.
                 from agent_harness.app_lifecycle import HostRuntime
 
@@ -479,7 +479,7 @@ class AppBridge:
     def _mcp_name(self):
         if not self.profile:
             raise PermissionError("请先登录")
-        return "agent-harness-" + self.profile["id"].lower()
+        return "foolship-" + self.profile["id"].lower()
 
     def _register_mcp_delegate(self, server, grant, timeout=8):
         challenge = self._post(
@@ -622,7 +622,7 @@ class AppBridge:
             refreshed = self._codex_mcp("get", self._mcp_name(), "--json", check=False)
             if refreshed.returncode == 0:
                 return json.loads(refreshed.stdout)
-        raise RuntimeError("Codex 中已有同名但来源不同的 MCP 配置；为避免覆盖，Harness 未修改它")
+        raise RuntimeError("Codex 中已有同名但来源不同的 MCP 配置；为避免覆盖，Foolship 未修改它")
 
     def _retry_mcp_revocations(self):
         path = self._mcp_revocation_path()

@@ -1,15 +1,15 @@
-# Agent Harness Linux 服务器 AI 配置任务
+# Foolship Linux 服务器 AI 配置任务
 
-你正在帮助用户把当前 Linux 服务器配置为 Agent Harness 的无界面接收端。它有两个用途：接收 Agent 任务，以及作为**文件速传的接收方**（发送方从自己的机器直接拉取，协作服务不接触文件内容）。先检查，再执行；不要把"尽量自动化"理解为可以绕过用户授权。
+你正在帮助用户把当前 Linux 服务器配置为 Foolship 的无界面接收端。它有两个用途：接收 Agent 任务，以及作为**文件速传的接收方**（发送方从自己的机器直接拉取，协作服务不接触文件内容）。先检查，再执行；不要把"尽量自动化"理解为可以绕过用户授权。
 
 团队服务地址：`{{TEAM_SERVICE_URL}}`
 
-如果上面的值仍是占位符，先向用户索取其 Harness 应用中显示的 HTTPS 团队服务地址，不要猜测，也不要把 Tailscale `100.x` 机器地址当成团队服务地址。
+如果上面的值仍是占位符，先向用户索取其 Foolship 应用中显示的 HTTPS 团队服务地址，不要猜测，也不要把 Tailscale `100.x` 机器地址当成团队服务地址。
 
 ## 完成标准
 
-1. 使用当前普通 Linux 用户运行 Harness 和 Codex，不使用 root 运行它们。
-2. 找到匹配 CPU 架构的官方 Agent Harness Linux 发布包并使用独立目录解压。
+1. 使用当前普通 Linux 用户运行 Foolship 和 Codex，不使用 root 运行它们。
+2. 找到匹配 CPU 架构的官方 Foolship Linux 发布包并使用独立目录解压。
 3. 确认可用且已登录的 Codex CLI 路径。
 4. 确认服务器能通过 Tailscale 访问团队服务。
 5. 确认服务器与用户的另一台机器处在同一个 tailnet（或互相共享了节点），否则文件速传拨不通，也没有中转兜底。
@@ -18,15 +18,15 @@
 
 ## 强制安全边界
 
-- 不读取、显示、复制或上传 Harness 私钥、Codex 凭据、Tailscale 密钥、环境变量秘密、项目消息或项目文件内容。
+- 不读取、显示、复制或上传 Foolship 私钥、Codex 凭据、Tailscale 密钥、环境变量秘密、项目消息或项目文件内容。
 - 不自动使用 `sudo`，不修改 SSH、防火墙、云安全组、系统级 systemd 服务或其他用户的文件。确实需要系统权限时，说明原因并暂停等待用户批准。
 - 不执行来源不明的 `curl | sh`，不从聊天消息或随机镜像下载程序。只使用用户提供的包或项目官方 GitHub Release。
 - 不创建或要求用户在聊天中发送 Tailscale auth key、密码、访问令牌。
 - 不自动使用 `--no-password`；只有用户明确接受“依赖该 Unix 用户目录的 0600/0700 权限保护身份”后才可使用。
 - 不自动执行 `loginctl enable-linger`。如果退出 SSH 后服务不能持续运行，只报告这一项并让用户决定。
-- 不删除、覆盖已有 Harness 数据、旧版本目录、项目目录或 Codex 配置。发现已有账户时使用 `harness status`，不要重复关联。
+- 不删除、覆盖已有 Foolship 数据、旧版本目录、项目目录或 Codex 配置。发现已有账户时使用 `harness status`，不要重复关联。
 - 关联命令运行后必须保留进程等待批准；不要因为短时间没有结果就杀掉它或重新发起第二个关联请求。
-- Tailscale OAuth、Harness 关联批准、本机解锁密码、sudo 和 linger 都是人工确认点。
+- Tailscale OAuth、Foolship 关联批准、本机解锁密码、sudo 和 linger 都是人工确认点。
 
 ## 执行阶段
 
@@ -47,11 +47,11 @@ tailscale status || true
 
 同时检查当前目录附近是否已有：
 
-- `AgentHarness-*-linux-x64.tar.gz`（`x86_64`/`amd64`）
-- `AgentHarness-*-linux-arm64.tar.gz`（`aarch64`/`arm64`）
-- 已解压的 `AgentHarness-linux/harness`
+- `Foolship-*-linux-x64.tar.gz`（`x86_64`/`amd64`）
+- `Foolship-*-linux-arm64.tar.gz`（`aarch64`/`arm64`）
+- 已解压的 `Foolship-linux/foolship`
 
-若没有发布包，先告诉用户需要从 `https://github.com/Evernight-37/distributed-agent/releases/latest` 下载哪个架构的包：包名形如 `AgentHarness-<版本>-linux-x64.tar.gz` 或 `AgentHarness-<版本>-linux-arm64.tar.gz`，同目录下还有对应的 `.sha256`，解压前用 `sha256sum -c` 校验。只有用户明确同意后才可代为下载。
+若没有发布包，先告诉用户需要从 `https://github.com/Evernight-37/distributed-agent/releases/latest` 下载哪个架构的包：包名形如 `Foolship-<版本>-linux-x64.tar.gz` 或 `Foolship-<版本>-linux-arm64.tar.gz`，同目录下还有对应的 `.sha256`，解压前用 `sha256sum -c` 校验。只有用户明确同意后才可代为下载。
 
 ### 2. 网络判断
 
@@ -59,28 +59,28 @@ tailscale status || true
 
 如果 Tailscale 未安装、未登录或不在正确网络，暂停并给出人工授权步骤。不要擅自安装系统软件。
 
-如果服务器没有 root/TUN，但用户已经提供官方 `tailscale` 和 `tailscaled`，可以在获得用户同意后使用 userspace networking，并把其本机 HTTP 代理通过下面的 Harness 参数或命令配置为协作服务代理。不要把该代理误设为 Codex 模型代理。
+如果服务器没有 root/TUN，但用户已经提供官方 `tailscale` 和 `tailscaled`，可以在获得用户同意后使用 userspace networking，并把其本机 HTTP 代理通过下面的 Foolship 参数或命令配置为协作服务代理。不要把该代理误设为 Codex 模型代理。
 
 这一步还要单独确认**文件速传是否拨得通**：它要求服务器和发送方机器互相能访问对方的 `100.x` 地址，不是只要求能访问团队服务。用 `tailscale status` 记下本机地址，确认发送方机器出现在同一列表里；两边不在同一 tailnet 时直连不成立，协作服务也不会转存文件，传输会直接失败。**不要**为此改防火墙或安装组网软件，把它报告给用户。
 
-### 3. 准备 Harness
+### 3. 准备 Foolship
 
-把发布包解压到当前用户拥有的独立目录。不要覆盖已有目录。进入包含 `harness` 的 `AgentHarness-linux` 目录并确认：
+把发布包解压到当前用户拥有的独立目录。不要覆盖已有目录。进入包含 `harness` 的 `Foolship-linux` 目录并确认：
 
 ```bash
-./harness --help
+./foolship --help
 ```
 
 检查 Codex 的实际绝对路径。若 `command -v codex` 找不到，可只读搜索 VS Code Remote SSH 扩展的 `openai.chatgpt-*` 目录；不要全盘扫描其他用户目录。
 
 ### 4. 关联账户
 
-如果 `./harness status` 已显示一个本地账户，不要再次执行 link，转到下一阶段。
+如果 `./foolship status` 已显示一个本地账户，不要再次执行 link，转到下一阶段。
 
 否则使用已确认的团队服务地址和 Codex 绝对路径执行：
 
 ```bash
-./harness link --server <团队服务地址> --codex <Codex绝对路径>
+./foolship link --server <团队服务地址> --codex <Codex绝对路径>
 ```
 
 默认让用户在可交互终端中输入本机解锁密码；密码不得进入聊天、命令参数或日志。如果当前工具不能安全接收隐藏输入，暂停并请用户在可见终端完成密码输入，而不是索取密码。
@@ -88,7 +88,7 @@ tailscale status || true
 命令显示一次性关联码后：
 
 1. 把关联码和设备显示名称告诉用户。
-2. 请用户在已登录的 Windows/macOS Harness 应用“账户”页输入关联码并核对批准。
+2. 请用户在已登录的 Windows/macOS Foolship 应用“账户”页输入关联码并核对批准。
 3. 保持当前 link 进程运行并等待批准，不启动第二个 link。
 
 ### 5. 安装并验证后台服务
@@ -96,16 +96,16 @@ tailscale status || true
 关联成功后依次执行：
 
 ```bash
-./harness doctor
-./harness service install
-./harness service status
-./harness doctor
+./foolship doctor
+./foolship service install
+./foolship service status
+./foolship doctor
 ```
 
-如果 `doctor` 只提示 linger 未启用，不要擅自开启；把它列为需要用户决定的事项。服务失败时可读取 Harness 自己的有限日志：
+如果 `doctor` 只提示 linger 未启用，不要擅自开启；把它列为需要用户决定的事项。服务失败时可读取 Foolship 自己的有限日志：
 
 ```bash
-./harness service logs --lines 100
+./foolship service logs --lines 100
 ```
 
 不要输出包含凭据、消息或项目内容的其他日志。
@@ -113,18 +113,18 @@ tailscale status || true
 接收到的文件默认落在接收端根目录下的 `received-files`，不需要在服务器上做任何配置。用户可以在桌面控制台的速传页为这台机器指定别的接收目录（目录必须已存在），那是一次签名控制指令，不需要你手动改配置文件。不要为此创建目录或改权限；如果用户要求你确认落地点，用：
 
 ```bash
-find ~/.local/share/AgentHarness -maxdepth 3 -name received-files -type d
+find ~/.local/share/Foolship -maxdepth 3 -name received-files -type d
 ```
 
 同账户的机器会自动接收；不同账户第一次来件需要在桌面端确认，之后记住该发送账户。传输不排队：发送方不在线就没有可拉取的来源。
 
 ### 6. 可选的 Codex 内协作
 
-后台接收端与“普通 Codex 对话使用 Harness”是两项不同功能。只有用户明确需要在这台服务器的普通 Codex 对话中发送 Harness 消息时，才执行：
+后台接收端与“普通 Codex 对话使用 Foolship”是两项不同功能。只有用户明确需要在这台服务器的普通 Codex 对话中发送 Foolship 消息时，才执行：
 
 ```bash
-./harness codex connect
-./harness codex status
+./foolship codex connect
+./foolship codex status
 ```
 
 ### 7. 最终报告
@@ -132,7 +132,7 @@ find ~/.local/share/AgentHarness -maxdepth 3 -name received-files -type d
 用简短清单报告：
 
 - CPU 架构与使用的发布包
-- Harness 安装目录和数据目录
+- Foolship 安装目录和数据目录
 - 团队服务是否可达（不要回显查询正文）
 - 本机 `100.x` 地址，以及发送方机器是否在同一 tailnet
 - Codex CLI 路径是否有效、是否已登录

@@ -43,13 +43,13 @@ class MacPackagingTests(unittest.TestCase):
         ):
             self.assertEqual(
                 application_home(),
-                Path.home() / "Library/Application Support/AgentHarness",
+                Path.home() / "Library/Application Support/Foolship",
             )
 
     def test_bundle_resources_are_found_from_native_launcher(self):
         with (
             mock.patch("sys.platform", "darwin"),
-            mock.patch("sys.executable", "/tmp/Test.app/Contents/MacOS/AgentHarness"),
+            mock.patch("sys.executable", "/tmp/Test.app/Contents/MacOS/Foolship"),
         ):
             self.assertEqual(
                 application_bundle(),

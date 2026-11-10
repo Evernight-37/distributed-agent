@@ -30,23 +30,23 @@ def make_tar(path, members):
 
 def valid_members(version="1.1.0"):
     return [
-        ("AgentHarness-linux/", b""),
-        ("AgentHarness-linux/client/", b""),
-        ("AgentHarness-linux/client/VERSION", version.encode()),
-        ("AgentHarness-linux/client/linux_receiver.py", b"# receiver"),
-        ("AgentHarness-linux/client/mcp_adapter.py", b"# adapter"),
-        ("AgentHarness-linux/install.py", b"# installer"),
-        ("AgentHarness-linux/.venv/", b""),
-        ("AgentHarness-linux/.venv/bin/", b""),
-        ("AgentHarness-linux/.venv/bin/python", b"#!/bin/sh\n"),
+        ("Foolship-linux/", b""),
+        ("Foolship-linux/client/", b""),
+        ("Foolship-linux/client/VERSION", version.encode()),
+        ("Foolship-linux/client/linux_receiver.py", b"# receiver"),
+        ("Foolship-linux/client/mcp_adapter.py", b"# adapter"),
+        ("Foolship-linux/install.py", b"# installer"),
+        ("Foolship-linux/.venv/", b""),
+        ("Foolship-linux/.venv/bin/", b""),
+        ("Foolship-linux/.venv/bin/python", b"#!/bin/sh\n"),
     ]
 
 
 def standalone_members(version="1.2.0"):
     return [
-        ("AgentHarness-linux/", b""),
-        ("AgentHarness-linux/VERSION", version.encode()),
-        ("AgentHarness-linux/harness", b"#!/bin/sh\n"),
+        ("Foolship-linux/", b""),
+        ("Foolship-linux/VERSION", version.encode()),
+        ("Foolship-linux/foolship", b"#!/bin/sh\n"),
     ]
 
 
@@ -85,7 +85,7 @@ class LinuxUpgradeTests(unittest.TestCase):
 
     def test_tar_paths_and_links_are_rejected(self):
         cases = [("../outside", b"bad"), ("/outside", b"bad")]
-        link = tarfile.TarInfo("AgentHarness-linux/link")
+        link = tarfile.TarInfo("Foolship-linux/link")
         link.type = tarfile.SYMTYPE
         link.linkname = "/etc/passwd"
         cases.append(("link", link))
@@ -247,7 +247,7 @@ class LinuxUpgradeTests(unittest.TestCase):
             digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
             destination = (root.parent / "releases/1.2.0").resolve()
             self.make_runtime(destination)
-            (destination / ".agent-harness-bundle-sha256").write_text(digest + "\n", encoding="ascii")
+            (destination / ".foolship-bundle-sha256").write_text(digest + "\n", encoding="ascii")
 
             class FakeManager:
                 def __init__(self, *args):
@@ -263,7 +263,7 @@ class LinuxUpgradeTests(unittest.TestCase):
                 result = linux_upgrade.upgrade(root, bundle, digest, lambda *a, **k: [], retry=True)
             self.assertTrue(result["reused"])
             install.assert_not_called()
-            (destination / ".agent-harness-bundle-sha256").write_text("0" * 64 + "\n", encoding="ascii")
+            (destination / ".foolship-bundle-sha256").write_text("0" * 64 + "\n", encoding="ascii")
             with self.assertRaisesRegex(ValueError, "无法安全匹配"):
                 linux_upgrade.upgrade(root, bundle, digest, lambda *a, **k: [], retry=True)
 

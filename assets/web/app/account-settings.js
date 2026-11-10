@@ -611,5 +611,5 @@ function updateCard() {
   return card;
 }
 
-Object.assign(HarnessDesktop.render, { renderAccount, renderSettings });
-Object.assign(HarnessDesktop.components, { aiInstallSetup });
+Object.assign(FoolshipDesktop.render, { renderAccount, renderSettings });
+Object.assign(FoolshipDesktop.components, { aiInstallSetup });

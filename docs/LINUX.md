@@ -4,28 +4,28 @@
 
 Linux 接收端把服务器作为你账户名下的一台执行机器。Windows 或 macOS 控制台可以在这台机器上添加员工、选择服务器项目目录并派入项目；群聊呼叫员工后，它会启动独立 Codex 会话并回传结果。接收端不会接管 VS Code 中已经打开的 Codex 对话。
 
-不熟悉 Linux 命令时，推荐在桌面 Harness **账户 → 在另一台电脑上安装** 中选择 Linux，复制配置提示词粘贴给服务器 Codex。发布包根目录的 `交给AI安装.md` 也包含同一份受限任务说明；Codex 会执行下面的流程，并在外部账号和权限节点暂停让人确认。说明见 [AI 配置流程](AI-SETUP.md)。
+不熟悉 Linux 命令时，推荐在桌面 Foolship **账户 → 在另一台电脑上安装** 中选择 Linux，复制配置提示词粘贴给服务器 Codex。发布包根目录的 `交给AI安装.md` 也包含同一份受限任务说明；Codex 会执行下面的流程，并在外部账号和权限节点暂停让人确认。说明见 [AI 配置流程](AI-SETUP.md)。
 
-需要可运行且已登录的 Codex CLI，以及到协作服务的网络连接。发布包已经包含 Harness 所需运行时，不要求安装 Python、pip 或 venv，不修改系统 Python，也不需要 Linux 桌面环境。服务器项目工作目录始终留在服务器；Windows 或 macOS 控制台可让 Linux 为项目建立本机默认工作目录。文件速传选择 Linux 为目标后，由 Linux 后台断点接收，不会阻塞 Agent 轮询。账户所有者可在任意桌面控制台的“文件速传 → 接收设置”中填写 Linux 上已经存在的绝对目录；未设置时使用该接收端数据目录下的 `received-files`。
+需要可运行且已登录的 Codex CLI，以及到协作服务的网络连接。发布包已经包含 Foolship 所需运行时，不要求安装 Python、pip 或 venv，不修改系统 Python，也不需要 Linux 桌面环境。服务器项目工作目录始终留在服务器；Windows 或 macOS 控制台可让 Linux 为项目建立本机默认工作目录。文件速传选择 Linux 为目标后，由 Linux 后台断点接收，不会阻塞 Agent 轮询。账户所有者可在任意桌面控制台的“文件速传 → 接收设置”中填写 Linux 上已经存在的绝对目录；未设置时使用该接收端数据目录下的 `received-files`。
 
 Linux 无界面端目前负责接收文件，不提供远程浏览服务器文件或从桌面端填写 Linux 路径发送文件的能力。需要从 Linux 主动发送文件时，应先在 Linux 本机明确选择文件；当前版本尚未提供该 CLI 入口。
 
 ## 首次安装
 
 ```bash
-tar -xzf AgentHarness-2.1.0-linux-x64.tar.gz # ARM64 机器使用 linux-arm64 包
-cd AgentHarness-linux
-./harness link --server https://你的团队地址 --codex /绝对路径/codex
+tar -xzf Foolship-2.1.0-linux-x64.tar.gz # ARM64 机器使用 linux-arm64 包
+cd Foolship-linux
+./foolship link --server https://你的团队地址 --codex /绝对路径/codex
 ```
 
-在任一已登录的 Harness 控制台账户页输入关联码，核对设备名称后批准。可使用 VS Code 扩展自带的 Codex CLI，例如 `~/.vscode-server/extensions/openai.chatgpt-*/bin/linux-x86_64/codex`；必须把通配符替换成实际路径。扩展更新后若旧路径被删除，需要重新关联或更新 CLI 路径。
+在任一已登录的 Foolship 控制台账户页输入关联码，核对设备名称后批准。可使用 VS Code 扩展自带的 Codex CLI，例如 `~/.vscode-server/extensions/openai.chatgpt-*/bin/linux-x86_64/codex`；必须把通配符替换成实际路径。扩展更新后若旧路径被删除，需要重新关联或更新 CLI 路径。
 
 默认要求设置本机解锁密码。无人值守服务器可显式使用 `--no-password`，依靠用户私有目录和 `0600/0700` 权限保护设备身份。密码不会进入命令行、日志或协作服务。
 
 关联后先检查：
 
 ```bash
-./harness doctor
+./foolship doctor
 ```
 
 ## 后台常驻
@@ -33,60 +33,60 @@ cd AgentHarness-linux
 推荐安装为当前 Linux 用户的 systemd 服务：
 
 ```bash
-./harness service install
-./harness service status
-./harness service logs --lines 100
+./foolship service install
+./foolship service status
+./foolship service logs --lines 100
 ```
 
 其他命令：
 
 ```bash
-./harness executor status                     # 显示本机执行器与每个接收端的检测结果
-./harness executor set dsh --model deepseek-flash
-./harness executor set codex                  # 默认值，切回 Codex
-./harness executor mcp connect                # 在 DeepSeek Harness 里登记协作 MCP
-./harness executor mcp status
-./harness executor mcp disconnect
-./harness codex path set /绝对路径/codex
-./harness codex path detect
+./foolship executor status                     # 显示本机执行器与每个接收端的检测结果
+./foolship executor set dsh --model deepseek-flash
+./foolship executor set codex                  # 默认值，切回 Codex
+./foolship executor mcp connect                # 在 DeepSeek Harness 里登记协作 MCP
+./foolship executor mcp status
+./foolship executor mcp disconnect
+./foolship codex path set /绝对路径/codex
+./foolship codex path detect
 ```
 
 执行器按机器保存，与桌面应用的 **设置 → 本机执行器** 是同一份配置。选择 `dsh` 时，这台服务器用 DeepSeek Harness 的 `dsh --profile headless` 执行派发的任务，需要机器上已安装 `dsh` 并可用 `DEEPSEEK_API_KEY`（或已通过 DeepSeek Harness 的 Models 页面保存密钥）；此时 `codex path` 管理的是当前执行器的程序路径。
 
-`executor mcp` 对应桌面设置里的“在 DeepSeek Harness 中使用协作”：它把 stdio MCP 服务登记进 DeepSeek Harness 的 home 补丁层，只增删 Harness 自己标记的两行，并在写后用 `dsh --profile headless --dump-config` 验证、失败即回滚。
+`executor mcp` 对应桌面设置里的“在 DeepSeek Harness 中使用协作”：它把 stdio MCP 服务登记进 DeepSeek Harness 的 home 补丁层，只增删 Foolship 自己标记的两行，并在写后用 `dsh --profile headless --dump-config` 验证、失败即回滚。
 
 ```bash
-./harness service start
-./harness service stop
-./harness service restart
-./harness service logs --follow
-./harness service uninstall
+./foolship service start
+./foolship service stop
+./foolship service restart
+./foolship service logs --follow
+./foolship service uninstall
 ```
 
-卸载服务只删除 `~/.config/systemd/user/agent-harness-receiver.service`，不会删除账户、项目绑定或服务器文件。若 `doctor` 显示 linger 未启用，退出所有 SSH 会话后用户服务可能停止；接收端只提示该状态，不会自行提权修改系统设置。
+卸载服务只删除 `~/.config/systemd/user/foolship-receiver.service`，不会删除账户、项目绑定或服务器文件。若 `doctor` 显示 linger 未启用，退出所有 SSH 会话后用户服务可能停止；接收端只提示该状态，不会自行提权修改系统设置。
 
-也可临时前台运行 `./harness run`，但不建议把 tmux 作为长期守护方案。
+也可临时前台运行 `./foolship run`，但不建议把 tmux 作为长期守护方案。
 
-数据默认位于 `~/.local/share/AgentHarness/data`。
+数据默认位于 `~/.local/share/Foolship/data`。
 
 ## 在 Remote SSH 的 Codex 中协作
 
 关联完成后执行：
 
 ```bash
-./harness codex connect
-./harness codex status
-./harness codex path detect
-./harness codex path set /新的/绝对路径/codex
-./harness codex path status
+./foolship codex connect
+./foolship codex status
+./foolship codex path detect
+./foolship codex path set /新的/绝对路径/codex
+./foolship codex path status
 ```
 
-连接后，Linux 当前用户的普通 Codex 对话可以列出 Harness 项目、读取有权会话、发送消息，并给自己名下的 Agent 派发异步任务。它不能邀请成员、修改管理员、控制别人机器或批准执行命令。
+连接后，Linux 当前用户的普通 Codex 对话可以列出 Foolship 项目、读取有权会话、发送消息，并给自己名下的 Agent 派发异步任务。它不能邀请成员、修改管理员、控制别人机器或批准执行命令。
 
 断开：
 
 ```bash
-./harness codex disconnect
+./foolship codex disconnect
 ```
 
 MCP 使用数据目录中的稳定启动器。并排升级会更新启动器内容而保持 Codex 注册名称和命令路径不变。
@@ -96,53 +96,53 @@ MCP 使用数据目录中的稳定启动器。并排升级会更新启动器内�
 协作服务代理和 Codex 模型代理彼此独立：
 
 ```bash
-./harness network broker-proxy set http://127.0.0.1:18766
-./harness network broker-proxy clear
+./foolship network broker-proxy set http://127.0.0.1:18766
+./foolship network broker-proxy clear
 
-./harness network codex-proxy set --port 7897
-./harness network codex-proxy clear
+./foolship network codex-proxy set --port 7897
+./foolship network codex-proxy clear
 
-./harness network status
-./harness network test
+./foolship network status
+./foolship network test
 ```
 
-两类代理都只接受本机回环地址。修改协作服务代理后执行 `./harness service restart`；长连接 MCP 会在下一次请求时重新读取代理。模型代理保存后会让空闲常驻 worker 退出，活跃 worker 完成本轮后退出，因此新代理从下一次新 worker 生效。`network test` 会检查端口、接收端和 Codex 登录状态，但不会发起模型调用。
+两类代理都只接受本机回环地址。修改协作服务代理后执行 `./foolship service restart`；长连接 MCP 会在下一次请求时重新读取代理。模型代理保存后会让空闲常驻 worker 退出，活跃 worker 完成本轮后退出，因此新代理从下一次新 worker 生效。`network test` 会检查端口、接收端和 Codex 登录状态，但不会发起模型调用。
 
 服务器无法安装内核 Tailscale 时，可在用户目录启动官方 userspace 模式：
 
 ```bash
 tailscaled --tun=userspace-networking \
-  --socket="$HOME/.local/share/AgentHarness/tailscale/tailscaled.sock" \
-  --statedir="$HOME/.local/share/AgentHarness/tailscale/state" \
+  --socket="$HOME/.local/share/Foolship/tailscale/tailscaled.sock" \
+  --statedir="$HOME/.local/share/Foolship/tailscale/state" \
   --outbound-http-proxy-listen=127.0.0.1:18766
-tailscale --socket="$HOME/.local/share/AgentHarness/tailscale/tailscaled.sock" up \
+tailscale --socket="$HOME/.local/share/Foolship/tailscale/tailscaled.sock" up \
   --hostname=linux-agent --accept-dns=false
-./harness network broker-proxy set http://127.0.0.1:18766
-./harness service restart
+./foolship network broker-proxy set http://127.0.0.1:18766
+./foolship service restart
 ```
 
-先在浏览器完成 Tailscale 授权，并选择与团队服务相同的网络。Tailscale 和 Harness 服务都必须保持运行。
+先在浏览器完成 Tailscale 授权，并选择与团队服务相同的网络。Tailscale 和 Foolship 服务都必须保持运行。
 
 ## 安全升级与回滚
 
 升级不会覆盖当前目录，也不会覆盖账户身份、项目绑定或服务器项目数据；它只会更新数据目录中的稳定 MCP 启动器。下载新 tar 包及其可信来源提供的 SHA-256 后执行：
 
 ```bash
-./harness upgrade \
-  --bundle /绝对路径/AgentHarness-2.1.0-linux-x64.tar.gz \
+./foolship upgrade \
+  --bundle /绝对路径/Foolship-2.1.0-linux-x64.tar.gz \
   --sha256 64位十六进制摘要
 ```
 
 接收端会拒绝路径穿越、链接和设备文件，检查摘要，在数据目录旁并排安装新版本；有未结束任务时拒绝切换。新服务启动失败会自动恢复旧服务。需要人工回退时执行：
 
 ```bash
-./harness rollback
+./foolship rollback
 ```
 
 若包已经完整安装、但上次服务切换失败，可验证同一个包和摘要后重试：
 
 ```bash
-./harness upgrade --bundle /绝对路径/同一个包.tar.gz --sha256 原摘要 --retry
+./foolship upgrade --bundle /绝对路径/同一个包.tar.gz --sha256 原摘要 --retry
 ```
 
 不要从聊天消息或不可信网页复制摘要；摘要必须来自你信任的发布渠道。旧版本目录会保留用于回滚，不会自动删除。

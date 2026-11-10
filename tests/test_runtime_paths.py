@@ -26,7 +26,7 @@ class DataHomeTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         self.addCleanup(self.folder.cleanup)
-        os.environ.pop("AGENT_HARNESS_STATE", None)
+        os.environ.pop("FOOLSHIP_STATE", None)
 
     def test_macos_keeps_the_platform_location(self):
         with mock.patch.object(runtime_paths, "sys", types.SimpleNamespace(platform="darwin")):
@@ -46,7 +46,7 @@ class DataHomeTests(unittest.TestCase):
             self.assertEqual(runtime_paths.installation_root(), runtime_paths.application_home())
 
     def test_an_explicit_override_wins(self):
-        os.environ["AGENT_HARNESS_STATE"] = str(self.root / "custom")
+        os.environ["FOOLSHIP_STATE"] = str(self.root / "custom")
         self.assertEqual(runtime_paths.data_home(), self.root / "custom")
 
     def test_a_fresh_copy_keeps_data_beside_the_application(self):

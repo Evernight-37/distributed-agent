@@ -1,6 +1,6 @@
 # 源码结构
 
-Agent Harness 使用标准 Python `src` 布局，把可运行源码与界面资源、测试和维护脚本分开。源码和测试统一通过 `agent_harness.*` 导入，不修改 `sys.path`。`pyproject.toml` 以根目录 `VERSION` 为唯一版本来源，并允许维护者构建普通 wheel；最终用户仍使用自带运行时的便携包，不需要安装 Python。
+Foolship 使用标准 Python `src` 布局，把可运行源码与界面资源、测试和维护脚本分开。源码和测试统一通过 `agent_harness.*` 导入，不修改 `sys.path`。`pyproject.toml` 以根目录 `VERSION` 为唯一版本来源，并允许维护者构建普通 wheel；最终用户仍使用自带运行时的便携包，不需要安装 Python。
 
 ## 顶层目录
 
@@ -34,7 +34,7 @@ Desktop WebView 入口为 `assets/web/app.html`。样式位于 `assets/web/style
 - `health.py`、`diagnostics.py`：跨平台稳定健康 schema 与拒绝默认导出的安全诊断快照。
 - `updates.py`：可配置的版本检查、预下载与安装交接。只读取本项目 GitHub Releases 的最新 tag 与当前 `VERSION` 比较，不下载、不上传其它信息；频率为每天/每周/每月/从不，无网络时只记录一次尝试并在一小时内不再重试。预下载会挑选本机对应的发布资产，边下边算 SHA-256，与发布 digest（或 `.sha256` 资产）一致才落到 `updates/pending/`，使用前再校验一次。**资产与安装方式都取决于副本的布局**：`install_layout()` 比较当前可执行文件位置与 per-user 安装目录，安装器装的副本取 `setup.exe` 并静默运行它；便携解压的副本取 `windows-x64.zip`，把 zip 覆盖解压回原目录。安装本身在应用之外完成：数据目录里生成一个启动器（Windows `.cmd` / macOS `.sh`），它等待进程退出、替换程序、再重新启动；启动后用版本比对确认生效，不一致时由用户触发回退到上一个版本。
 - `mcp_adapter.py`、`mcp_server.py`：Codex 与 DeepSeek Harness 中使用协作功能的 stdio MCP 接口。
-- `dsh_mcp.py`：把上面这个 stdio 服务登记进 DeepSeek Harness **desktop profile** 的补丁层（`~/.dsh/profiles/desktop/cordis.patch.yml`），作用域限于桌面应用里的普通会话；一次性 `headless` profile 不读它，所以派发的任务不受影响。条目只指向数据目录里的稳定启动器 `mcp/launch-<profile>-dsh.*`——运行时路径是内容寻址的，直接钉住会在升级后失效。该文件同时也是 DSH 配置编辑器的写入目标，编辑器按条目替换并保留其它内容，因此只增删 Harness 标记的两行即可共存；写入保留备份，并把这个补丁作为 overlay 交给 `--dump-config` 解析一次，失败回滚。
+- `dsh_mcp.py`：把上面这个 stdio 服务登记进 DeepSeek Harness **desktop profile** 的补丁层（`~/.dsh/profiles/desktop/cordis.patch.yml`），作用域限于桌面应用里的普通会话；一次性 `headless` profile 不读它，所以派发的任务不受影响。条目只指向数据目录里的稳定启动器 `mcp/launch-<profile>-dsh.*`——运行时路径是内容寻址的，直接钉住会在升级后失效。该文件同时也是 DSH 配置编辑器的写入目标，编辑器按条目替换并保留其它内容，因此只增删 Foolship 标记的两行即可共存；写入保留备份，并把这个补丁作为 overlay 交给 `--dump-config` 解析一次，失败回滚。
 - `common.py`：各进程共享的文件、锁、校验和代理辅助函数。
 
 Windows 和 macOS 的后台运行目录保存为 `client/agent_harness/`，而不是一组隐式顶层模块。运行时只把 `client/` 加入解释器搜索路径；可变账户数据、项目工作目录和任务目录永远不会成为 Python 导入路径。旧版内容寻址运行时可继续完成正在执行的任务，新版本启动的新服务使用新的包目录。
@@ -58,4 +58,4 @@ Codex MCP；旧 `/api/session`、`/api/action`、Cookie 页面和浏览器 SSE �
 
 1.0 是干净的数据格式基线。正式代码直接创建当前数据库结构，不包含试验版数据库、版本化目录或旧 MCP 授权的自动迁移逻辑。
 
-运行状态不写入源码树。正式应用统一使用 `%LOCALAPPDATA%\AgentHarness\data`，构建输出和缓存由 `.gitignore` 排除。
+运行状态不写入源码树。正式应用统一使用 `%LOCALAPPDATA%\Foolship\data`，构建输出和缓存由 `.gitignore` 排除。

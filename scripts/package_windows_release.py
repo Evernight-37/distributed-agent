@@ -28,7 +28,7 @@ def package_release(source: Path, destination: Path) -> None:
     destination = destination.resolve()
     if not source.is_dir():
         raise ValueError(f"release source is not a directory: {source}")
-    for required in ("AgentHarness.exe", "VERSION", "app-manifest.json"):
+    for required in ("Foolship.exe", "VERSION", "app-manifest.json"):
         if not (source / required).is_file():
             raise ValueError(f"release source is missing {required}")
     if destination == source or source in destination.parents:
@@ -56,7 +56,7 @@ def package_release(source: Path, destination: Path) -> None:
                 if not path.is_file():
                     continue
                 relative = path.relative_to(source)
-                name = Path("AgentHarness", relative).as_posix()
+                name = Path("Foolship", relative).as_posix()
                 info = zipfile.ZipInfo(name, timestamp)
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = 0o100644 << 16

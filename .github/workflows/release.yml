@@ -1,4 +1,4 @@
-name: Release Agent Harness
+name: Release Foolship
 
 on:
   push:
@@ -41,14 +41,14 @@ jobs:
         shell: pwsh
         run: |
           python scripts/build_desktop.py --output-root release
-          $env:AGENT_HARNESS_TEST_BUNDLE = "$env:GITHUB_WORKSPACE\release\AgentHarness"
+          $env:FOOLSHIP_TEST_BUNDLE = "$env:GITHUB_WORKSPACE\release\Foolship"
           python -m unittest tests.test_desktop.PackagedReceiverTests -q
-          python tests/cleanroom_release.py release/AgentHarness build/cleanroom
+          python tests/cleanroom_release.py release/Foolship build/cleanroom
       - name: Package Windows portable release
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          python scripts/package_windows_release.py release/AgentHarness "AgentHarness-$version-windows-x64.zip"
+          python scripts/package_windows_release.py release/Foolship "Foolship-$version-windows-x64.zip"
       - name: Build per-user Windows installer
         shell: pwsh
         run: |
@@ -56,23 +56,23 @@ jobs:
           $version = (Get-Content VERSION -Raw).Trim()
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found" }
-          & $iscc "/DSourceDir=$env:GITHUB_WORKSPACE\release\AgentHarness" "/DMyAppVersion=$version" installer\windows\AgentHarness.iss
+          & $iscc "/DSourceDir=$env:GITHUB_WORKSPACE\release\Foolship" "/DMyAppVersion=$version" installer\windows\Foolship.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
-          if (-not (Test-Path "AgentHarness-$version-windows-x64-setup.exe")) { throw "Installer output missing" }
+          if (-not (Test-Path "Foolship-$version-windows-x64-setup.exe")) { throw "Installer output missing" }
       - name: Write installer checksum
         shell: pwsh
         run: |
-          $installer = Get-Item "AgentHarness-*-windows-x64-setup.exe" | Select-Object -First 1
+          $installer = Get-Item "Foolship-*-windows-x64-setup.exe" | Select-Object -First 1
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($installer.Name)" | Out-File -Encoding ascii "$($installer.FullName).sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
           path: |
-            AgentHarness-*-windows-x64.zip
-            AgentHarness-*-windows-x64.zip.sha256
-            AgentHarness-*-windows-x64-setup.exe
-            AgentHarness-*-windows-x64-setup.exe.sha256
+            Foolship-*-windows-x64.zip
+            Foolship-*-windows-x64.zip.sha256
+            Foolship-*-windows-x64-setup.exe
+            Foolship-*-windows-x64-setup.exe.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -110,19 +110,19 @@ jobs:
           python -m unittest discover -s tests -t . -q
           python scripts/build_linux_receiver.py --output-root release
           mkdir -p build/linux-smoke
-          tar -xzf release/AgentHarness-*-linux-*.tar.gz -C build/linux-smoke
-          build/linux-smoke/AgentHarness-linux/harness --help
-          build/linux-smoke/AgentHarness-linux/runtime/bin/python3 -I -c \
+          tar -xzf release/Foolship-*-linux-*.tar.gz -C build/linux-smoke
+          build/linux-smoke/Foolship-linux/foolship --help
+          build/linux-smoke/Foolship-linux/runtime/bin/python3 -I -c \
             "import ssl, sqlite3; from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; import agent_harness.desktop_service, agent_harness.direct_transfer, agent_harness.direct_signaling, agent_harness.transfer_trust; key=Ed25519PrivateKey.generate(); key.public_key().verify(key.sign(b'check'), b'check'); print('Linux service bundle OK')"
       - name: Verify package on Ubuntu 22.04
         run: |
           docker run --rm --network none --user "$(id -u):$(id -g)" \
-            -e HOME=/tmp -v "$PWD/build/linux-smoke/AgentHarness-linux:/bundle:ro" \
-            ubuntu:22.04 /bin/sh -c '/bundle/harness --help && /bundle/runtime/bin/python3 -I -c "import ssl,sqlite3,cryptography,agent_harness.desktop_service; print(cryptography.__version__)"'
+            -e HOME=/tmp -v "$PWD/build/linux-smoke/Foolship-linux:/bundle:ro" \
+            ubuntu:22.04 /bin/sh -c '/bundle/foolship --help && /bundle/runtime/bin/python3 -I -c "import ssl,sqlite3,cryptography,agent_harness.desktop_service; print(cryptography.__version__)"'
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux-${{ matrix.architecture }}
-          path: release/AgentHarness-*-linux-*.tar.gz*
+          path: release/Foolship-*-linux-*.tar.gz*
           if-no-files-found: error
           retention-days: 7
 
@@ -154,14 +154,14 @@ jobs:
           python -m ruff format --check src scripts tests
           python -m unittest tests.test_macos -q
           python scripts/build_macos.py --output-root release/macos --python-runtime "$(python -c 'import sys; print(sys.base_prefix)')"
-          python tests/cleanroom_release.py release/macos/AgentHarness.app build/cleanroom-macos
+          python tests/cleanroom_release.py release/macos/Foolship.app build/cleanroom-macos
           python scripts/package_macos_release.py \
-            --app release/macos/AgentHarness.app \
-            --output "AgentHarness-$(tr -d '\r\n' < VERSION)-macos-$(uname -m).zip"
+            --app release/macos/Foolship.app \
+            --output "Foolship-$(tr -d '\r\n' < VERSION)-macos-$(uname -m).zip"
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
-          path: AgentHarness-*-macos-*.zip*
+          path: Foolship-*-macos-*.zip*
           if-no-files-found: error
           retention-days: 7
 
@@ -184,5 +184,5 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" release-files/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" release-files/* --verify-tag --title "Agent Harness $GITHUB_REF_NAME" --generate-notes
+            gh release create "$GITHUB_REF_NAME" release-files/* --verify-tag --title "Foolship $GITHUB_REF_NAME" --generate-notes
           fi

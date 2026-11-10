@@ -1,7 +1,7 @@
 {
-  "name": "agent-harness",
+  "name": "foolship",
   "private": true,
-  "description": "Developer tooling for the Agent Harness web interface",
+  "description": "Developer tooling for the Foolship web interface",
   "scripts": {
     "format:check": "prettier --check \"assets/web/**/*.{html,css,js}\" \"tests/*.js\"",
     "test": "node tests/test_web_syntax.js && node tests/test_ui.js"

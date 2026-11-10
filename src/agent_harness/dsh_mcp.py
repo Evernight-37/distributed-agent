@@ -1,4 +1,4 @@
-"""Install the Harness collaboration MCP server into DeepSeek Harness.
+"""Install the Foolship collaboration MCP server into DeepSeek Harness.
 
 Codex owns its own configuration API (``codex mcp add``).  DeepSeek Harness has
 no equivalent command, but it composes every profile on top of one user patch
@@ -25,7 +25,7 @@ from pathlib import Path
 
 SERVER_MODULE = "@deepseek-ai/dsh-mcp-client"
 ENTRY_ID = "harness-collab"
-MARKER = "# agent-harness: managed DeepSeek Harness collaboration MCP entry"
+MARKER = "# foolship: managed DeepSeek Harness collaboration MCP entry"
 HOME_ENV = "DSH_HOME"
 # The desktop app is the profile a person actually talks to DeepSeek Harness
 # through. The one-shot headless profile used by dispatched turns is left alone,
@@ -59,7 +59,7 @@ def patch_path(profile=DEFAULT_PROFILE, root_home=None):
 
 
 def server_name(mcp_name):
-    """A stable, contract-legal MCP server name for one Harness profile.
+    """A stable, contract-legal MCP server name for one Foolship profile.
 
     DeepSeek Harness requires ``[A-Za-z0-9_-]{1,32}`` and rejects two entries
     with the same name, so a long profile-derived name is shortened with a hash
@@ -72,7 +72,7 @@ def server_name(mcp_name):
 
 
 def entry(launch, name):
-    """The one loader entry that registers the Harness MCP server."""
+    """The one loader entry that registers the Foolship MCP server."""
     if not launch or not all(isinstance(item, str) and item for item in launch):
         raise ValueError("MCP 启动命令无效")
     return {
@@ -109,7 +109,7 @@ def _appendable(text):
             continue
         if raw[0] in {" ", "\t"}:
             continue
-        return "DeepSeek Harness 的 home 补丁不是顶层块状列表，Harness 不会改写它"
+        return "DeepSeek Harness 的 home 补丁不是顶层块状列表，Foolship 不会改写它"
     return None
 
 
@@ -143,7 +143,7 @@ def _remaining_is_empty(text):
 
 def _write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".agent-harness.tmp")
+    temporary = path.with_name(path.name + ".foolship.tmp")
     temporary.write_text(text, encoding="utf-8", newline="\n")
     os.replace(temporary, path)
 
@@ -247,7 +247,7 @@ def install(root_home=None, launch=None, name="harness", probe=None, profile=DEF
     text = base + MARKER + "\n" + line(launch, name) + "\n"
     backup = None
     if path.exists():
-        backup = path.with_name(path.name + ".agent-harness.bak")
+        backup = path.with_name(path.name + ".foolship.bak")
         backup.write_bytes(path.read_bytes())
     _write(path, text)
     result = {
@@ -280,7 +280,7 @@ def remove(root_home=None, profile=DEFAULT_PROFILE):
     text = _strip_managed(existing)
     if _remaining_is_empty(text):
         text = "".join(raw for raw in text.splitlines(keepends=True) if raw.strip() != "[]") + "[]\n"
-    backup = path.with_name(path.name + ".agent-harness.bak")
+    backup = path.with_name(path.name + ".foolship.bak")
     backup.write_bytes(path.read_bytes())
     _write(path, text)
     return {"installed": False, "removed": True, "path": str(path), "profile": profile, "backup": str(backup)}

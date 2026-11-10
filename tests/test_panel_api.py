@@ -52,7 +52,7 @@ class PanelTests(unittest.TestCase):
         status, _, body = self.request("GET", "/healthz")
         self.assertEqual(status, 200)
         value = json.loads(body)
-        self.assertEqual(value["service"], "agent-harness-hub")
+        self.assertEqual(value["service"], "foolship-hub")
         self.assertIs(value["ok"], True)
         self.assertEqual(set(value), {"ok", "service", "protocol"})
 

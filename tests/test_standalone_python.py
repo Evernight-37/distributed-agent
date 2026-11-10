@@ -22,7 +22,7 @@ class StandalonePythonTests(unittest.TestCase):
         python = root / "bin" / "python3.12"
         python.parent.mkdir(parents=True)
         python.touch()
-        (root / ".agent-harness-runtime.sha256").write_text(artifact()[1] + "\n", encoding="ascii")
+        (root / ".foolship-runtime.sha256").write_text(artifact()[1] + "\n", encoding="ascii")
         return root, python
 
     def test_valid_cache_is_probed_without_requiring_matching_builder(self):

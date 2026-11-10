@@ -483,14 +483,14 @@ def kind_for(root, model):
 
 # DeepSeek Harness validates the reasoning effort against the model's own
 # catalog, and providers advertise a smaller vocabulary than the six Codex
-# levels (deepseek-flash accepts off/low/high). ``medium`` is the Harness
+# levels (deepseek-flash accepts off/low/high). ``medium`` is the Foolship
 # default and is deliberately omitted so the model keeps its own default
 # instead of failing on a level the provider may not advertise.
 EFFORT_MAP = {"low": "low", "medium": None, "high": "high", "xhigh": "high", "max": "high", "ultra": "high"}
 
 
 def reasoning_effort(effort):
-    """Project one Harness effort level onto DeepSeek Harness, or None to omit."""
+    """Project one Foolship effort level onto DeepSeek Harness, or None to omit."""
     return EFFORT_MAP.get(effort if isinstance(effort, str) else "", None)
 
 
@@ -670,7 +670,7 @@ def explain_failure(text):
     if "unsupported_reasoning_effort" in lowered or "does not support reasoning effort" in lowered:
         return (
             "所选模型不支持这个思考强度；请在员工设置里换一个档位，或改用该模型支持的模型。"
-            "Harness 会把 medium 视为“用模型默认档”，xhigh/max/ultra 按 high 发送"
+            "Foolship 会把 medium 视为“用模型默认档”，xhigh/max/ultra 按 high 发送"
         )
     if "missing_credential" in lowered or "no api key" in lowered:
         return (

@@ -9,7 +9,7 @@ from agent_harness.linux_service import ServiceManager, build_unit, unit_path
 
 class LinuxServiceTests(unittest.TestCase):
     def test_standalone_unit_uses_binary_directly(self):
-        content = build_unit("/opt/Agent Harness/harness", None, "/srv/harness data")
+        content = build_unit("/opt/Foolship/harness", None, "/srv/harness data")
         self.assertIn("ExecStart=", content)
         self.assertIn(" --root ", content)
         self.assertIn(" run\n", content)
@@ -47,11 +47,11 @@ class LinuxServiceTests(unittest.TestCase):
                 self.assertEqual(manager.path.stat().st_mode & 0o777, 0o600)
             commands = [call.args[0] for call in run.call_args_list]
             self.assertIn(
-                ["systemctl", "--user", "enable", "agent-harness-receiver.service"],
+                ["systemctl", "--user", "enable", "foolship-receiver.service"],
                 commands,
             )
             self.assertIn(
-                ["systemctl", "--user", "restart", "agent-harness-receiver.service"],
+                ["systemctl", "--user", "restart", "foolship-receiver.service"],
                 commands,
             )
 
@@ -94,20 +94,20 @@ class LinuxServiceTests(unittest.TestCase):
             self.assertEqual(
                 commands,
                 [
-                    ["systemctl", "--user", "start", "agent-harness-receiver.service"],
+                    ["systemctl", "--user", "start", "foolship-receiver.service"],
                     [
                         "systemctl",
                         "--user",
                         "restart",
-                        "agent-harness-receiver.service",
+                        "foolship-receiver.service",
                     ],
-                    ["systemctl", "--user", "stop", "agent-harness-receiver.service"],
+                    ["systemctl", "--user", "stop", "foolship-receiver.service"],
                 ],
             )
 
     def test_unit_path_is_under_user_config(self):
         path = unit_path("/tmp/home")
-        self.assertEqual(path.name, "agent-harness-receiver.service")
+        self.assertEqual(path.name, "foolship-receiver.service")
         self.assertEqual(path.parent.name, "user")
         self.assertEqual(path.parent.parent.name, "systemd")
 

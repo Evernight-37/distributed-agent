@@ -51,4 +51,4 @@ jobs:
       - name: Build and verify relocatable macOS app
         run: |
           python scripts/build_macos.py --output-root build/macos-release --python-runtime "$(python -c 'import sys; print(sys.base_prefix)')"
-          python tests/cleanroom_release.py build/macos-release/AgentHarness.app build/cleanroom-macos
+          python tests/cleanroom_release.py build/macos-release/Foolship.app build/cleanroom-macos

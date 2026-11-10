@@ -17,9 +17,9 @@ SERVER = "https://team.example.ts.net"
 
 EXPECTED = {
     "linux": (
-        "./harness link",
-        "./harness doctor",
-        "./harness service install",
+        "./foolship link",
+        "./foolship doctor",
+        "./foolship service install",
         "不自动使用 `sudo`",
         "保持当前 link 进程运行并等待批准",
     ),
@@ -32,9 +32,9 @@ EXPECTED = {
         "不添加防火墙规则",
     ),
     "macos": (
-        "ditto AgentHarness.app",
+        "ditto Foolship.app",
         "shasum -a 256 -c",
-        "open ~/Applications/AgentHarness.app",
+        "open ~/Applications/Foolship.app",
         "不要自动移除隔离属性",
         "不自动使用 `sudo`",
     ),
@@ -112,7 +112,7 @@ class AISetupRunbookTests(unittest.TestCase):
         def fake_runtime(work):
             runtime = work / "runtime"
             runtime.mkdir()
-            (runtime / "harness").write_text("binary", encoding="utf-8")
+            (runtime / "foolship").write_text("binary", encoding="utf-8")
             return runtime
 
         def fake_service_bundle(root):
@@ -134,9 +134,9 @@ class AISetupRunbookTests(unittest.TestCase):
             archive = build_linux_receiver.build(Path(directory))
             with tarfile.open(archive, "r:gz") as bundle:
                 names = set(bundle.getnames())
-                self.assertIn("AgentHarness-linux/交给AI安装.md", names)
-                self.assertIn("AgentHarness-linux/client/agent_harness/desktop_service.py", names)
-                prompt = bundle.extractfile("AgentHarness-linux/交给AI安装.md").read().decode("utf-8")
+                self.assertIn("Foolship-linux/交给AI安装.md", names)
+                self.assertIn("Foolship-linux/client/agent_harness/desktop_service.py", names)
+                prompt = bundle.extractfile("Foolship-linux/交给AI安装.md").read().decode("utf-8")
             self.assertEqual(prompt.count(PLACEHOLDER), 1)
 
 

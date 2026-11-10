@@ -1,4 +1,4 @@
-# macOS 应用
+﻿# macOS 应用
 
 发布构建的独立 Python 选择和验证见 [发布运行环境](RELEASE-RUNTIMES.md)。
 
@@ -7,10 +7,10 @@
 ## 安装与升级
 
 1. 退出旧版应用。
-2. 将新版 `AgentHarness.app` 放到 `/Applications`，替换旧版后打开。
+2. 将新版 `Foolship.app` 放到 `/Applications`，替换旧版后打开。
 3. 在应用内解锁原有账户。
 
-账户、团队数据库和设备配置保存在 `~/Library/Application Support/AgentHarness/data`。替换 `.app` 不会删除这些数据。应用退出后允许后台接收继续运行；托管方升级后应在设置中重启后台服务，使协作服务加载新代码。
+账户、团队数据库和设备配置保存在 `~/Library/Application Support/Foolship/data`。替换 `.app` 不会删除这些数据。应用退出后允许后台接收继续运行；托管方升级后应在设置中重启后台服务，使协作服务加载新代码。
 
 员工卡片提供“设置”和“删除”。工作目录在项目派遣页按机器设置，不属于员工。删除前会显示受影响项目和活动任务；确认后停用员工并退出项目，保留历史消息和本机项目目录。运行任务中的员工暂时不能删除。
 
@@ -35,18 +35,18 @@
 .venv-macos/bin/python -m pip install -r requirements-macos.txt
 .venv-macos/bin/python scripts/build_macos.py \
   --python-runtime /path/to/standalone-python \
-  --output-root /private/tmp/agentharness-release
+  --output-root /private/tmp/foolship-release
 ```
 
-产物为 `/private/tmp/agentharness-release/AgentHarness.app`。脚本验证独立运行时的 SSL、SQLite 和运行依赖，并执行 macOS 本地运行所需的 ad-hoc 签名；项目不要求开发者证书或公证。
+产物为 `/private/tmp/foolship-release/Foolship.app`。脚本验证独立运行时的 SSL、SQLite 和运行依赖，并执行 macOS 本地运行所需的 ad-hoc 签名；项目不要求开发者证书或公证。
 
 构建后验证：
 
 ```bash
 .venv-macos/bin/python -m unittest discover -s tests -t . -q
 .venv-macos/bin/python tests/cleanroom_release.py \
-  /private/tmp/agentharness-release/AgentHarness.app /private/tmp/agentharness-cleanroom
-codesign --verify --deep --strict /private/tmp/agentharness-release/AgentHarness.app
+  /private/tmp/foolship-release/Foolship.app /private/tmp/foolship-cleanroom
+codesign --verify --deep --strict /private/tmp/foolship-release/Foolship.app
 ```
 
 可运行 `tests/gui_acceptance.py` 验证原生界面中的创建账户、默认管理员选项、员工创建与删除。测试使用独立临时数据，不需要实际账户密码。

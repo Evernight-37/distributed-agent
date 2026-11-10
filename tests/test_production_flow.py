@@ -30,7 +30,7 @@ class ProductionFlow(unittest.TestCase):
             patch.dict("os.environ", {"LOCALAPPDATA": td}),
         ):
             bridge = AppBridge()
-            self.assertEqual(bridge.root, (Path(td) / "AgentHarness" / "data").resolve())
+            self.assertEqual(bridge.root, (Path(td) / "Foolship" / "data").resolve())
 
     def test_local_login_restarts_local_service_after_complete_exit(self):
         from agent_harness.account_identity import generate_identity, encrypt_identity

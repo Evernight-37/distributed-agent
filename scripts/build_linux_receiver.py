@@ -1,4 +1,4 @@
-"""Build the self-contained, headless Linux Agent Harness distribution."""
+"""Build the self-contained, headless Linux Foolship distribution."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ def _build_runtime(work):
         "--clean",
         "--onedir",
         "--name",
-        "harness",
+        "foolship",
         "--distpath",
         str(dist),
         "--workpath",
@@ -86,8 +86,8 @@ def _build_runtime(work):
         str(APP_SOURCE / "linux_receiver.py"),
     ]
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)
-    runtime = dist / "harness"
-    if not (runtime / "harness").is_file():
+    runtime = dist / "foolship"
+    if not (runtime / "foolship").is_file():
         raise RuntimeError("PyInstaller did not produce the Linux runtime")
     return runtime
 
@@ -157,18 +157,18 @@ def build(output):
     architecture = _architecture()
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    archive = output / f"AgentHarness-{version}-linux-{architecture}.tar.gz"
+    archive = output / f"Foolship-{version}-linux-{architecture}.tar.gz"
 
-    with tempfile.TemporaryDirectory(prefix="agent-harness-linux-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="foolship-linux-") as temporary:
         temporary = Path(temporary)
         runtime = _build_runtime(temporary)
-        root = temporary / "package" / "AgentHarness-linux"
+        root = temporary / "package" / "Foolship-linux"
         shutil.copytree(runtime, root)
         _build_service_bundle(root)
         shutil.copy2(PROJECT_ROOT / "VERSION", root / "VERSION")
         shutil.copy2(PROJECT_ROOT / "docs/LINUX.md", root / "README.md")
         shutil.copy2(WEB_SOURCE / "linux-ai-setup.md", root / "交给AI安装.md")
-        (root / "harness").chmod(0o755)
+        (root / "foolship").chmod(0o755)
         with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as stream:
             stream.add(root, arcname=root.name)
 

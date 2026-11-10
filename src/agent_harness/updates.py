@@ -96,7 +96,7 @@ def fetch_latest(timeout=8):
         LATEST_API,
         headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": "agent-harness/" + application_version(),
+            "User-Agent": "foolship/" + application_version(),
         },
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -225,11 +225,11 @@ def asset_name(version, system=None, machine=None, layout=None):
     version = str(version).lstrip("v")
     if system in ("win32", "windows"):
         if layout == "portable":
-            return "AgentHarness-%s-windows-x64.zip" % version
-        return "AgentHarness-%s-windows-x64-setup.exe" % version
+            return "Foolship-%s-windows-x64.zip" % version
+        return "Foolship-%s-windows-x64-setup.exe" % version
     if system == "darwin":
-        return "AgentHarness-%s-macos-%s.zip" % (version, "arm64" if machine in {"arm64", "aarch64"} else "x64")
-    return "AgentHarness-%s-linux-%s.tar.gz" % (version, "arm64" if machine in {"aarch64", "arm64"} else "x64")
+        return "Foolship-%s-macos-%s.zip" % (version, "arm64" if machine in {"arm64", "aarch64"} else "x64")
+    return "Foolship-%s-linux-%s.tar.gz" % (version, "arm64" if machine in {"aarch64", "arm64"} else "x64")
 
 
 def select_asset(assets, version, system=None, machine=None, layout=None):
@@ -276,7 +276,7 @@ def fetch_release(tag, timeout=8):
         TAG_API + quote(str(tag), safe=""),
         headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": "agent-harness/" + application_version(),
+            "User-Agent": "foolship/" + application_version(),
         },
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -323,7 +323,7 @@ def verify_staged(root):
 
 
 def _read_checksum(url, opener, timeout):
-    request = urllib.request.Request(url, headers={"User-Agent": "agent-harness/" + application_version()})
+    request = urllib.request.Request(url, headers={"User-Agent": "foolship/" + application_version()})
     with (opener or urllib.request.urlopen)(request, timeout=timeout) as response:
         text = response.read(4096).decode("utf-8", "replace")
     token = text.strip().split()[0] if text.strip() else ""
@@ -333,7 +333,7 @@ def _read_checksum(url, opener, timeout):
 def _stream(url, destination, opener, timeout, size, on_progress):
     import hashlib
 
-    request = urllib.request.Request(url, headers={"User-Agent": "agent-harness/" + application_version()})
+    request = urllib.request.Request(url, headers={"User-Agent": "foolship/" + application_version()})
     digest = hashlib.sha256()
     received = 0
     with (opener or urllib.request.urlopen)(request, timeout=timeout) as response, destination.open("wb") as stream:
@@ -681,7 +681,7 @@ def apply_target(bundle=None):
     from agent_harness.service_install import application_bundle
 
     directory = Path(bundle or application_bundle()).resolve()
-    return directory, directory / "AgentHarness.exe"
+    return directory, directory / "Foolship.exe"
 
 
 def write_helper(root, version, installer, target, pid, layout=None, launcher=None, prune=None):

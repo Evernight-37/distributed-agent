@@ -18,7 +18,7 @@ from agent_harness.service_install import runtime_python
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PACKAGED_APP = Path(os.environ.get("AGENT_HARNESS_TEST_BUNDLE", PROJECT_ROOT / "dist" / "AgentHarness"))
+PACKAGED_APP = Path(os.environ.get("FOOLSHIP_TEST_BUNDLE", PROJECT_ROOT / "dist" / "Foolship"))
 
 
 class FakeConnector:
@@ -155,7 +155,7 @@ class DesktopServiceTests(unittest.TestCase):
 class DesktopRuntimeContractTests(unittest.TestCase):
     def test_team_service_probe_uses_public_healthz_not_retired_session_api(self):
         response = mock.MagicMock()
-        response.__enter__.return_value.read.return_value = b'{"ok":true,"service":"agent-harness-hub"}'
+        response.__enter__.return_value.read.return_value = b'{"ok":true,"service":"foolship-hub"}'
         opener = mock.MagicMock()
         opener.open.return_value = response
         with (

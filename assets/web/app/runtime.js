@@ -131,5 +131,5 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refresh(true);
 });
 
-HarnessDesktop.events.refresh = refresh;
-HarnessDesktop.events.boot = boot;
+FoolshipDesktop.events.refresh = refresh;
+FoolshipDesktop.events.boot = boot;

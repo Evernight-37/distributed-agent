@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 
-UNIT_NAME = "agent-harness-receiver.service"
+UNIT_NAME = "foolship-receiver.service"
 
 
 def _path(value, label):
@@ -50,7 +50,7 @@ def build_unit(python, script, root):
     )
     return (
         "[Unit]\n"
-        "Description=Agent Harness Linux receiver\n"
+        "Description=Foolship Linux receiver\n"
         "Wants=network-online.target\n"
         "After=network-online.target\n\n"
         "[Service]\n"

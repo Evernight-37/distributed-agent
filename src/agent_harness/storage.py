@@ -241,7 +241,7 @@ def inspect_database(database):
                 raise ValueError(f"备份数据库版本 {version} 高于当前程序支持的 {SCHEMA_VERSION}")
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "service_metadata" not in tables or "service_host" not in tables:
-                raise ValueError("所选文件不是 Agent Harness 协作服务备份")
+                raise ValueError("所选文件不是 Foolship 协作服务备份")
             service = connection.execute("SELECT service_id FROM service_metadata WHERE id=1").fetchone()
             host = connection.execute("SELECT owner_account_id FROM service_host WHERE id=1").fetchone()
             if not service or not host:

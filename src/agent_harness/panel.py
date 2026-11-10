@@ -121,10 +121,10 @@ def handler_for(root, backend=None, public_origin=None):
                 if request_path == "/healthz":
                     return self.send(
                         200,
-                        {"ok": True, "service": "agent-harness-hub", "protocol": hub_advertisement()},
+                        {"ok": True, "service": "foolship-hub", "protocol": hub_advertisement()},
                     )
                 if request_path in RETIRED_BROWSER_APIS:
-                    return self.send(410, {"error": "浏览器工作台已停用；请使用 Agent Harness 应用或 Codex MCP"})
+                    return self.send(410, {"error": "浏览器工作台已停用；请使用 Foolship 应用或 Codex MCP"})
                 return self.send(404, {"error": "Not found"})
             except PermissionError as exc:
                 self.send(403, {"error": str(exc)})
@@ -172,7 +172,7 @@ def handler_for(root, backend=None, public_origin=None):
                 except Exception:
                     return self.send(500, {"error": "Device operation failed"})
             if urlsplit(self.path).path in RETIRED_BROWSER_APIS:
-                return self.send(410, {"error": "浏览器工作台已停用；请使用 Agent Harness 应用或 Codex MCP"})
+                return self.send(410, {"error": "浏览器工作台已停用；请使用 Foolship 应用或 Codex MCP"})
             return self.send(404, {"error": "Not found"})
 
     Handler.store = store

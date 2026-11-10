@@ -10,16 +10,16 @@ class PackageWindowsReleaseTests(unittest.TestCase):
     def test_archive_has_stable_root_and_unicode_names(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "release" / "AgentHarness"
+            source = root / "release" / "Foolship"
             source.mkdir(parents=True)
             for name, content in {
-                "AgentHarness.exe": b"app",
+                "Foolship.exe": b"app",
                 "VERSION": b"1.2.0\n",
                 "app-manifest.json": b"{}",
                 "\u5f00\u59cb\u4f7f\u7528.txt": "\u8bf4\u660e".encode(),
             }.items():
                 (source / name).write_bytes(content)
-            destination = root / "AgentHarness-1.2.0-windows-x64.zip"
+            destination = root / "Foolship-1.2.0-windows-x64.zip"
 
             package_release(source, destination)
 
@@ -27,23 +27,23 @@ class PackageWindowsReleaseTests(unittest.TestCase):
                 self.assertEqual(
                     archive.namelist(),
                     [
-                        "AgentHarness/AgentHarness.exe",
-                        "AgentHarness/app-manifest.json",
-                        "AgentHarness/VERSION",
-                        "AgentHarness/\u5f00\u59cb\u4f7f\u7528.txt",
+                        "Foolship/app-manifest.json",
+                        "Foolship/Foolship.exe",
+                        "Foolship/VERSION",
+                        "Foolship/\u5f00\u59cb\u4f7f\u7528.txt",
                     ],
                 )
                 self.assertEqual(
-                    archive.read("AgentHarness/\u5f00\u59cb\u4f7f\u7528.txt"),
+                    archive.read("Foolship/\u5f00\u59cb\u4f7f\u7528.txt"),
                     "\u8bf4\u660e".encode(),
                 )
 
     def test_rejects_incomplete_release(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "AgentHarness"
+            source = root / "Foolship"
             source.mkdir()
-            with self.assertRaisesRegex(ValueError, "missing AgentHarness.exe"):
+            with self.assertRaisesRegex(ValueError, "missing Foolship.exe"):
                 package_release(source, root / "release.zip")
 
 

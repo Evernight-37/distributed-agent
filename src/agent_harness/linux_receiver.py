@@ -154,7 +154,7 @@ def link(args):
         {"server": args.server, "name": args.name, "password": password},
     )
     print(
-        "在任一已登录的 Harness 控制台账户页输入关联码，核对并批准这台 Linux 服务器：",
+        "在任一已登录的 Foolship 控制台账户页输入关联码，核对并批准这台 Linux 服务器：",
         flush=True,
     )
     print(request["code"], flush=True)
@@ -176,7 +176,7 @@ def link(args):
 def run(root):
     paths = receiver_paths(root)
     if not paths:
-        raise ValueError("请先执行 link 并在 Harness 控制台批准关联")
+        raise ValueError("请先执行 link 并在 Foolship 控制台批准关联")
     stopped = threading.Event()
     stop_path = Path(root) / "linux-stop.json"
     stop_path.unlink(missing_ok=True)
@@ -332,7 +332,7 @@ def _set_broker_proxy(root, proxy):
         "proxy": proxy,
         "receiver_restart_required": True,
         "codex_mcp_restart_required": False,
-        "note": "请重启 Harness 服务；长连接 Codex MCP 会在下一次请求时自动重新读取代理",
+        "note": "请重启 Foolship 服务；长连接 Codex MCP 会在下一次请求时自动重新读取代理",
     }
 
 
@@ -353,7 +353,7 @@ def _set_codex_proxy(root, setting):
     result = {**setting, "applies_to": "next newly started Codex worker"}
     if warnings:
         result["warnings"] = warnings
-        result["note"] = "代理已保存；部分常驻 worker 无法请求安全回收，请重启 Harness 服务"
+        result["note"] = "代理已保存；部分常驻 worker 无法请求安全回收，请重启 Foolship 服务"
     return result
 
 
@@ -599,9 +599,9 @@ def service_command(root, args):
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=Path.home() / ".local/share/AgentHarness/data")
+    parser.add_argument("--root", type=Path, default=Path.home() / ".local/share/Foolship/data")
     commands = parser.add_subparsers(dest="command", required=True)
-    pairing = commands.add_parser("link", help="Link this server to your existing Harness account")
+    pairing = commands.add_parser("link", help="Link this server to your existing Foolship account")
     pairing.add_argument("--server", required=True)
     pairing.add_argument("--name", default=socket.gethostname() + " · Linux")
     pairing.add_argument("--codex", help="Absolute Codex CLI path, including a VS Code bundled CLI")
@@ -628,7 +628,7 @@ def build_parser():
     internal_mcp = commands.add_parser("mcp-stdio", help="Internal MCP bridge; managed automatically")
     internal_mcp.add_argument("--grant", required=True)
     internal_mcp.add_argument("--network")
-    codex = commands.add_parser("codex", help="Connect the interactive Codex CLI to Harness")
+    codex = commands.add_parser("codex", help="Connect the interactive Codex CLI to Foolship")
     codex_actions = codex.add_subparsers(dest="codex_action", required=True)
     for name in ("connect", "status", "disconnect"):
         codex_actions.add_parser(name)
@@ -645,7 +645,7 @@ def build_parser():
     executor_set.add_argument("executor", choices=["codex", "dsh"])
     executor_set.add_argument("--model", help="Model this machine asks DeepSeek Harness for")
     executor_set.add_argument("--provider", help="DeepSeek Harness model provider route")
-    executor_mcp = executor_actions.add_parser("mcp", help="Register the Harness MCP server in DeepSeek Harness")
+    executor_mcp = executor_actions.add_parser("mcp", help="Register the Foolship MCP server in DeepSeek Harness")
     mcp_actions = executor_mcp.add_subparsers(dest="mcp_action", required=True)
     for name in ("connect", "status", "disconnect"):
         mcp_actions.add_parser(name)
@@ -676,7 +676,7 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if hasattr(os, "geteuid") and os.geteuid() == 0:
-        raise PermissionError("拒绝以 root 运行 Agent Harness；请使用专用普通用户")
+        raise PermissionError("拒绝以 root 运行 Foolship；请使用专用普通用户")
     args.root = args.root.expanduser().resolve()
     args.root.mkdir(parents=True, exist_ok=True, mode=0o700)
     args.root.chmod(0o700)

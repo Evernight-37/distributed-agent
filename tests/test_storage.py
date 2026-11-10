@@ -118,7 +118,7 @@ class StorageMigrationTests(unittest.TestCase):
             path = Path(temporary) / "other.sqlite3"
             with closing(sqlite3.connect(path)) as db:
                 db.execute("CREATE TABLE unrelated(value TEXT)")
-            with self.assertRaisesRegex(ValueError, "不是 Agent Harness"):
+            with self.assertRaisesRegex(ValueError, "不是 Foolship"):
                 inspect_database(path)
 
     def test_housekeeping_removes_only_expired_ephemeral_rows(self):

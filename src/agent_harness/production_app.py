@@ -68,7 +68,7 @@ def main():
             return result
 
     window = webview.create_window(
-        "Agent Harness · 协作工作台",
+        "Foolship · 协作工作台",
         url=str(web_assets() / "app.html"),
         js_api=API(),
         width=1220,

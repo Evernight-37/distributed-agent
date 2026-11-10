@@ -8,7 +8,7 @@ const html = fs.readFileSync(
 );
 
 assert.match(html, /浏览器工作台已经停用/);
-assert.match(html, /Agent Harness 桌面应用/);
+assert.match(html, /Foolship 桌面应用/);
 assert.match(html, /Codex/);
 assert.ok(!/<form\b/i.test(html), "retired Hub page has no credential form");
 assert.ok(!/password/i.test(html), "retired Hub page asks for no password");

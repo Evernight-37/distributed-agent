@@ -58,13 +58,13 @@ class CodexLauncherTests(unittest.TestCase):
         # move must still be recognised, or the toggle keeps refusing to repair it.
         transport = {
             "type": "stdio",
-            "command": "C:\\Users\\old\\AppData\\Local\\AgentHarness\\service-runtime\\abc\\runtime\\python.exe",
+            "command": "C:\\Users\\old\\AppData\\Local\\Foolship\\service-runtime\\abc\\runtime\\python.exe",
             "args": [
                 "-X",
                 "utf8",
-                "C:\\Users\\old\\AppData\\Local\\AgentHarness\\service-runtime\\abc\\client\\mcp_adapter.py",
+                "C:\\Users\\old\\AppData\\Local\\Foolship\\service-runtime\\abc\\client\\mcp_adapter.py",
                 "--grant",
-                "C:\\Users\\old\\AppData\\Local\\AgentHarness\\data\\mcp\\grant-profile-one.json",
+                "C:\\Users\\old\\AppData\\Local\\Foolship\\data\\mcp\\grant-profile-one.json",
             ],
         }
         self.assertTrue(self.bridge._mcp_entry_is_ours(transport))

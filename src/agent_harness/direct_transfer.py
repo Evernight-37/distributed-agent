@@ -206,7 +206,7 @@ class Sender:
                 if not sender.recipient_public_key:
                     self._deny(409)
                     return False
-                if not sender._authorized(resource, self.headers.get("X-Harness-Auth", "")):
+                if not sender._authorized(resource, self.headers.get("X-Foolship-Auth", "")):
                     self._deny(403)
                     return False
                 return True
@@ -215,14 +215,14 @@ class Sender:
                 if not self._gate(meta_resource):
                     return
                 self.send_response(200)
-                self.send_header("X-Harness-Size", str(sender.size))
-                self.send_header("X-Harness-Name", urllib.parse.quote(sender.path.name))
+                self.send_header("X-Foolship-Size", str(sender.size))
+                self.send_header("X-Foolship-Name", urllib.parse.quote(sender.path.name))
                 try:
-                    self.send_header("X-Harness-Mtime", str(sender.path.stat().st_mtime_ns))
+                    self.send_header("X-Foolship-Mtime", str(sender.path.stat().st_mtime_ns))
                 except OSError:
                     pass
                 if sender.sha256:
-                    self.send_header("X-Harness-Sha256", sender.sha256)
+                    self.send_header("X-Foolship-Sha256", sender.sha256)
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
@@ -288,15 +288,15 @@ def probe(url, private_key, public_key, transfer_id, timeout=10):
     request = urllib.request.Request(
         url,
         method="HEAD",
-        headers={"X-Harness-Auth": authorization(private_key, public_key, transfer_id, resource)},
+        headers={"X-Foolship-Auth": authorization(private_key, public_key, transfer_id, resource)},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            mtime = response.headers.get("X-Harness-Mtime")
+            mtime = response.headers.get("X-Foolship-Mtime")
             return {
-                "size": int(response.headers.get("X-Harness-Size", "0")),
-                "name": urllib.parse.unquote(response.headers.get("X-Harness-Name", "")),
-                "sha256": response.headers.get("X-Harness-Sha256"),
+                "size": int(response.headers.get("X-Foolship-Size", "0")),
+                "name": urllib.parse.unquote(response.headers.get("X-Foolship-Name", "")),
+                "sha256": response.headers.get("X-Foolship-Sha256"),
                 "mtime": int(mtime) if mtime and mtime.isdigit() else None,
             }
     except urllib.error.HTTPError as exc:
@@ -373,7 +373,7 @@ def fetch(
         marker.unlink(missing_ok=True)
         offset = 0
     resource = "/transfer/" + transfer_id
-    headers = {"X-Harness-Auth": authorization(private_key, public_key, transfer_id, resource)}
+    headers = {"X-Foolship-Auth": authorization(private_key, public_key, transfer_id, resource)}
     if offset:
         headers["Range"] = "bytes=%d-" % offset
     try:

@@ -26,7 +26,7 @@
 
 | 文件 | 内容 |
 |---|---|
-| `src/agent_harness/direct_transfer.py` | `Sender`（Range 服务、签名校验、`set_recipient`、未认领 409、`X-Harness-Mtime`）、`pull`（probe + 续传 + 等待认领，两端共用一个循环）、`fetch`（`.part` + 出处标记续传、大小与 sha256 校验）、`probe`、`local_tailnet_address` |
+| `src/agent_harness/direct_transfer.py` | `Sender`（Range 服务、签名校验、`set_recipient`、未认领 409、`X-Foolship-Mtime`）、`pull`（probe + 续传 + 等待认领，两端共用一个循环）、`fetch`（`.part` + 出处标记续传、大小与 sha256 校验）、`probe`、`local_tailnet_address` |
 | `src/agent_harness/direct_signaling.py` | schema v6 `direct_transfers`；`offer` 接受发送方编号（格式校验 + 唯一性）；respond/progress/visible/view |
 | `src/agent_harness/transfer_trust.py` | 接收方本机信任的发送账户（`transfer-trust.json`，上限 200） |
 | `src/agent_harness/direct_send.py` | 桌面侧 `send`/`cancel`/`observe`；发送时把编号交给中心；独立后台 watcher 学习认领公钥，不再依赖速传页渲染 |

@@ -28,7 +28,7 @@ def run(*requests):
 class McpServerTests(unittest.TestCase):
     def test_initialize(self):
         result = run({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})[0]
-        self.assertEqual(result["result"]["serverInfo"]["name"], "agent-harness")
+        self.assertEqual(result["result"]["serverInfo"]["name"], "foolship")
         self.assertEqual(
             result["result"]["serverInfo"]["version"],
             Path(__file__).resolve().parents[1].joinpath("VERSION").read_text().strip(),

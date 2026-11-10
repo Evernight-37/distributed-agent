@@ -69,9 +69,9 @@ def build(output_root, python_runtime):
             "--add-data",
             f"{WEB_SOURCE}:web",
             "--name",
-            "AgentHarness",
+            "Foolship",
             "--osx-bundle-identifier",
-            "org.agentharness.desktop",
+            "org.foolship.desktop",
             str(APP_SOURCE / "production_app.py"),
         ],
         cwd=PROJECT_ROOT,
@@ -81,7 +81,7 @@ def build(output_root, python_runtime):
         },
         check=True,
     )
-    app = output_root / "AgentHarness.app"
+    app = output_root / "Foolship.app"
     contents = app / "Contents"
     bundle = contents / "Resources" / "service-bundle"
     runtime = bundle / "runtime"
@@ -139,7 +139,7 @@ def build(output_root, python_runtime):
     shutil.copytree(WEB_SOURCE, package / "web")
     manifest = {
         "format": 1,
-        "name": "AgentHarness",
+        "name": "Foolship",
         "version": version,
         "platform": "macos",
         "architecture": platform.machine(),
@@ -171,7 +171,7 @@ def build(output_root, python_runtime):
     )
     # Cloud-backed Desktop folders may recreate FinderInfo while codesign runs.
     # Sign on a local temporary volume, then copy the signed bundle back.
-    with tempfile.TemporaryDirectory(prefix="agentharness-sign-", dir="/private/tmp") as temporary:
+    with tempfile.TemporaryDirectory(prefix="foolship-sign-", dir="/private/tmp") as temporary:
         staged = Path(temporary) / app.name
         subprocess.run(["ditto", "--norsrc", "--noextattr", str(app), str(staged)], check=True)
         subprocess.run(["xattr", "-cr", str(staged)], check=True)

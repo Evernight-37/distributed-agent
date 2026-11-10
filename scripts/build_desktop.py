@@ -39,7 +39,7 @@ def write_release_metadata(destination, source=PROJECT_ROOT):
         json.dumps(
             {
                 "format": 1,
-                "name": "AgentHarness",
+                "name": "Foolship",
                 "version": version,
                 "python_runtime": PYTHON_VERSION,
             },
@@ -53,7 +53,7 @@ def write_release_metadata(destination, source=PROJECT_ROOT):
 
 
 def getting_started_text(version):
-    return f"Agent Harness {version}\n双击 AgentHarness.exe。\n账户、接收设置、MCP 授权和团队数据库统一保存在 %LOCALAPPDATA%\\AgentHarness\\data；团队数据库位于其中的 team-service。\n首次使用点击“创建账户”；自己的另一台电脑点击“关联我的另一台电脑”，由已登录设备批准。\n控制台管理所有关联机器上的员工。凭服务地址和项目邀请代码加入其他团队，不用重新创建身份。\n进入项目后派遣自己的员工，群主设置管理员与邀请成员。\n设置页管理设备、后台接收和服务连接。\n在“设置 → 在 Codex 中使用协作”点“连接到 Codex”后，可以在普通 Codex 对话里查看 Harness 项目、发消息和给自己的员工派异步任务。\nCodex 使用单独的受限身份，不能邀请成员、管理别人的机器或批准命令；断开不会删除项目。\n首次运行 agent 或连接 Codex 前，每台机器需要已有可用的 Codex 登录。\n账户身份保存在当前 Windows 用户目录；项目文件不会自动同步。\n升级或移动应用目录不会改变持久数据位置；卸载前如需保留数据，请备份 %LOCALAPPDATA%\\AgentHarness\\data。\n请保留整个发布目录，不要只复制 exe。\n"
+    return f"Foolship {version}\n双击 Foolship.exe。\n账户、接收设置、MCP 授权和团队数据库统一保存在 %LOCALAPPDATA%\\Foolship\\data；团队数据库位于其中的 team-service。\n首次使用点击“创建账户”；自己的另一台电脑点击“关联我的另一台电脑”，由已登录设备批准。\n控制台管理所有关联机器上的员工。凭服务地址和项目邀请代码加入其他团队，不用重新创建身份。\n进入项目后派遣自己的员工，群主设置管理员与邀请成员。\n设置页管理设备、后台接收和服务连接。\n在“设置 → 在 Codex 中使用协作”点“连接到 Codex”后，可以在普通 Codex 对话里查看 Foolship 项目、发消息和给自己的员工派异步任务。\nCodex 使用单独的受限身份，不能邀请成员、管理别人的机器或批准命令；断开不会删除项目。\n首次运行 agent 或连接 Codex 前，每台机器需要已有可用的 Codex 登录。\n账户身份保存在当前 Windows 用户目录；项目文件不会自动同步。\n升级或移动应用目录不会改变持久数据位置；卸载前如需保留数据，请备份 %LOCALAPPDATA%\\Foolship\\data。\n请保留整个发布目录，不要只复制 exe。\n"
 
 
 def main(output_root=None):
@@ -101,13 +101,13 @@ def main(output_root=None):
             "--add-data",
             f"{WEB_SOURCE};web",
             "--name",
-            "AgentHarness",
+            "Foolship",
             str(APP_SOURCE / "production_app.py"),
         ],
         cwd=PROJECT_ROOT,
         check=True,
     )
-    destination = output_root / "AgentHarness"
+    destination = output_root / "Foolship"
     runtime = destination / "runtime"
     runtime.mkdir(exist_ok=True)
     with zipfile.ZipFile(archive) as bundle:
@@ -165,6 +165,6 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Build the portable Windows app")
-    parser.add_argument("--output-root", help="Destination containing AgentHarness (default: dist)")
+    parser.add_argument("--output-root", help="Destination containing Foolship (default: dist)")
     args = parser.parse_args()
     main(args.output_root)

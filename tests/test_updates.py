@@ -206,17 +206,15 @@ def release_for(name, data, digest=None, with_sha_asset=False):
 
 class AssetTests(unittest.TestCase):
     def test_asset_names_follow_the_published_layout(self):
-        self.assertEqual(updates.asset_name("v2.2.0", "win32", "AMD64"), "AgentHarness-2.2.0-windows-x64-setup.exe")
-        self.assertEqual(updates.asset_name("v2.2.0", "darwin", "arm64"), "AgentHarness-2.2.0-macos-arm64.zip")
-        self.assertEqual(updates.asset_name("v2.2.0", "linux", "x86_64"), "AgentHarness-2.2.0-linux-x64.tar.gz")
-        self.assertEqual(updates.asset_name("v2.2.0", "linux", "aarch64"), "AgentHarness-2.2.0-linux-arm64.tar.gz")
+        self.assertEqual(updates.asset_name("v2.2.0", "win32", "AMD64"), "Foolship-2.2.0-windows-x64-setup.exe")
+        self.assertEqual(updates.asset_name("v2.2.0", "darwin", "arm64"), "Foolship-2.2.0-macos-arm64.zip")
+        self.assertEqual(updates.asset_name("v2.2.0", "linux", "x86_64"), "Foolship-2.2.0-linux-x64.tar.gz")
+        self.assertEqual(updates.asset_name("v2.2.0", "linux", "aarch64"), "Foolship-2.2.0-linux-arm64.tar.gz")
 
     def test_a_portable_windows_copy_installs_from_the_zip(self):
+        self.assertEqual(updates.asset_name("v2.2.0", "win32", "AMD64", "portable"), "Foolship-2.2.0-windows-x64.zip")
         self.assertEqual(
-            updates.asset_name("v2.2.0", "win32", "AMD64", "portable"), "AgentHarness-2.2.0-windows-x64.zip"
-        )
-        self.assertEqual(
-            updates.asset_name("v2.2.0", "win32", "AMD64", "installed"), "AgentHarness-2.2.0-windows-x64-setup.exe"
+            updates.asset_name("v2.2.0", "win32", "AMD64", "installed"), "Foolship-2.2.0-windows-x64-setup.exe"
         )
 
     def test_layout_is_read_from_where_the_application_lives(self):
@@ -234,20 +232,18 @@ class AssetTests(unittest.TestCase):
             self.assertEqual(updates.install_layout(folder), "installed")
 
     def test_a_custom_install_directory_still_installs_into_itself(self):
-        text = updates.windows_helper(
-            r"C:\setup.exe", r"D:\apps\AgentHarness\AgentHarness.exe", 5, r"D:\apps\AgentHarness"
-        )
-        self.assertIn('/DIR="D:\\apps\\AgentHarness"', text)
+        text = updates.windows_helper(r"C:\setup.exe", r"D:\apps\Foolship\Foolship.exe", 5, r"D:\apps\Foolship")
+        self.assertIn('/DIR="D:\\apps\\Foolship"', text)
         self.assertIn("/VERYSILENT", text)
 
     def test_digest_is_preferred_and_a_checksum_asset_is_kept(self):
-        release = release_for("AgentHarness-2.2.0-windows-x64-setup.exe", b"x", digest="a" * 64, with_sha_asset=True)
+        release = release_for("Foolship-2.2.0-windows-x64-setup.exe", b"x", digest="a" * 64, with_sha_asset=True)
         asset = updates.select_asset(release["assets"], "v2.2.0", "win32", "AMD64")
         self.assertEqual(asset["sha256"], "a" * 64)
         self.assertTrue(asset["checksum_url"].endswith(".sha256"))
 
     def test_a_release_without_a_matching_artifact_is_rejected(self):
-        release = release_for("AgentHarness-2.2.0-linux-x64.tar.gz", b"x", digest="a" * 64)
+        release = release_for("Foolship-2.2.0-linux-x64.tar.gz", b"x", digest="a" * 64)
         with self.assertRaises(ValueError) as raised:
             updates.select_asset(release["assets"], "v2.2.0", "win32", "AMD64")
         self.assertIn("没有适用于本机", str(raised.exception))
@@ -352,10 +348,10 @@ class DownloadTests(unittest.TestCase):
 
 class HelperTests(unittest.TestCase):
     def test_the_windows_launcher_waits_installs_and_relaunches(self):
-        text = updates.windows_helper(r"C:\data\setup.exe", r"C:\app\AgentHarness.exe", 4321)
+        text = updates.windows_helper(r"C:\data\setup.exe", r"C:\app\Foolship.exe", 4321)
         self.assertIn('tasklist /FI "PID eq 4321"', text)
         self.assertIn('call "C:\\data\\setup.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART', text)
-        self.assertIn('start "" "C:\\app\\AgentHarness.exe"', text)
+        self.assertIn('start "" "C:\\app\\Foolship.exe"', text)
         self.assertIn("goto wait_for_exit", text)
         self.assertTrue(text.endswith("\r\n"))
 
@@ -363,13 +359,13 @@ class HelperTests(unittest.TestCase):
         # A PID can be reused by an unrelated process, so an unbounded wait would
         # leave a hidden watcher spinning indefinitely.
         for text in (
-            updates.windows_helper(r"C:\data\setup.exe", r"C:\app\AgentHarness.exe", 4321),
-            updates.windows_zip_helper(r"C:\d\u.zip", r"C:\app", r"C:\app\AgentHarness.exe", 4321),
+            updates.windows_helper(r"C:\data\setup.exe", r"C:\app\Foolship.exe", 4321),
+            updates.windows_zip_helper(r"C:\d\u.zip", r"C:\app", r"C:\app\Foolship.exe", 4321),
         ):
             self.assertIn("if %tries% GEQ " + str(updates.WAIT_LIMIT), text)
             self.assertIn("goto give_up", text)
             self.assertIn(":give_up", text)
-        unix = updates.unix_helper("/tmp/new.zip", "/Applications/AgentHarness.app", 99)
+        unix = updates.unix_helper("/tmp/new.zip", "/Applications/Foolship.app", 99)
         self.assertIn("tries=$((tries + 1))", unix)
         self.assertIn("-ge " + str(updates.WAIT_LIMIT), unix)
 
@@ -384,13 +380,13 @@ class HelperTests(unittest.TestCase):
             self.assertTrue(keep.is_file())
 
     def test_the_unix_launcher_waits_unpacks_and_reopens(self):
-        text = updates.unix_helper("/tmp/new.zip", "/Applications/AgentHarness.app", 99)
+        text = updates.unix_helper("/tmp/new.zip", "/Applications/Foolship.app", 99)
         self.assertIn("while kill -0 99", text)
         self.assertIn('unzip -q "/tmp/new.zip"', text)
-        self.assertIn('open "/Applications/AgentHarness.app"', text)
+        self.assertIn('open "/Applications/Foolship.app"', text)
 
     def test_the_portable_launcher_unwraps_the_archive_root(self):
-        text = updates.windows_zip_helper(r"C:\d\u.zip", r"C:\app", r"C:\app\AgentHarness.exe", 7)
+        text = updates.windows_zip_helper(r"C:\d\u.zip", r"C:\app", r"C:\app\Foolship.exe", 7)
         # The release zip keeps everything under one directory; extracting it
         # straight into the target would nest a copy instead of replacing it.
         self.assertIn("$items.Count -eq 1", text)
@@ -414,7 +410,7 @@ class ApplyTests(unittest.TestCase):
 
         directory = updates.pending_dir(folder)
         directory.mkdir(parents=True, exist_ok=True)
-        target = directory / "AgentHarness-2.2.0-windows-x64-setup.exe"
+        target = directory / "Foolship-2.2.0-windows-x64-setup.exe"
         target.write_bytes(data)
         write_json(
             directory / "meta.json",
@@ -515,8 +511,8 @@ class StaleFileTests(unittest.TestCase):
         (app / "VERSION").write_text("2.0.0\n", encoding="utf-8")
         archive = Path(folder) / "release.zip"
         with zipfile.ZipFile(archive, "w") as bundle:
-            bundle.writestr("AgentHarness/client/agent_harness/kept.py", "keep\n")
-            bundle.writestr("AgentHarness/VERSION", "2.1.0\n")
+            bundle.writestr("Foolship/client/agent_harness/kept.py", "keep\n")
+            bundle.writestr("Foolship/VERSION", "2.1.0\n")
         return app, archive
 
     def test_files_the_release_dropped_are_listed(self):

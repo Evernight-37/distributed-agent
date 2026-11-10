@@ -65,8 +65,8 @@ class DesktopIdentityActions:
 
             chosen = bridge.window.create_file_dialog(
                 webview.FileDialog.SAVE,
-                save_filename="AgentHarness-recovery.json",
-                file_types=("Agent Harness recovery (*.json)",),
+                save_filename="Foolship-recovery.json",
+                file_types=("Foolship recovery (*.json)",),
             )
             if not chosen:
                 return {"saved": False}
@@ -82,7 +82,7 @@ class DesktopIdentityActions:
 
             chosen = bridge.window.create_file_dialog(
                 webview.FileDialog.OPEN,
-                file_types=("Agent Harness recovery (*.json)",),
+                file_types=("Foolship recovery (*.json)",),
             )
             if not chosen:
                 return {"imported": False}

@@ -193,7 +193,7 @@ class ServiceHostingTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as local_app_data,
             patch.dict("os.environ", {"LOCALAPPDATA": local_app_data}),
         ):
-            stale = Store(Path(local_app_data) / "AgentHarness" / "shared-data")
+            stale = Store(Path(local_app_data) / "Foolship" / "shared-data")
             bridge = AppBridge(Path(local_app_data) / "desktop")
             bridge.identity = generate_identity()
             bridge.profile = {}
@@ -235,7 +235,7 @@ class ServiceHostingTests(unittest.TestCase):
 
     def test_app_uses_package_independent_host_data(self):
         bridge = AppBridge(Path(self.temp.name) / "desktop")
-        executable = Path(self.temp.name) / "AgentHarness" / "AgentHarness.exe"
+        executable = Path(self.temp.name) / "Foolship" / "Foolship.exe"
         with (
             patch("agent_harness.app_bridge.sys.frozen", True, create=True),
             patch("agent_harness.app_bridge.sys.executable", str(executable)),

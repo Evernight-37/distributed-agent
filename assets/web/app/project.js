@@ -133,8 +133,8 @@ function startDirectConversation() {
   });
 }
 
-Object.assign(HarnessDesktop.render, { renderProject });
-Object.assign(HarnessDesktop.events, {
+Object.assign(FoolshipDesktop.render, { renderProject });
+Object.assign(FoolshipDesktop.events, {
   openProject,
   selectConversation,
   streamMessageText,

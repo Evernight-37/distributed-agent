@@ -265,7 +265,7 @@ function teamServiceCard(initial) {
   return card;
 }
 
-Object.assign(HarnessDesktop.components, {
+Object.assign(FoolshipDesktop.components, {
   renderApprovals,
   teamServiceCard,
   proxySettingsCard,
@@ -639,7 +639,7 @@ function dshMcpCard(initial) {
   );
   note(
     card,
-    "在你的 DeepSeek Harness 桌面 profile 里登记一个 stdio MCP 服务，不开放端口，也不读取密钥。只影响桌面应用里的普通对话，被派发的 Agent 任务不受影响；Harness 只增删自己标记的两行，其它配置不动。新的 DSH 会话生效。",
+    "在你的 DeepSeek Harness 桌面 profile 里登记一个 stdio MCP 服务，不开放端口，也不读取密钥。只影响桌面应用里的普通对话，被派发的 Agent 任务不受影响；Foolship 只增删自己标记的两行，其它配置不动。新的 DSH 会话生效。",
   );
   function paint(state) {
     if (state) card.state = state;

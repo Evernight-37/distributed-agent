@@ -298,7 +298,7 @@ class DesktopRuntime:
             try:
                 with opener.open(url + "/healthz", timeout=1) as response:
                     value = json.load(response)
-                return value.get("ok") is True and value.get("service") == "agent-harness-hub"
+                return value.get("ok") is True and value.get("service") == "foolship-hub"
             except (OSError, ValueError):
                 return False
 

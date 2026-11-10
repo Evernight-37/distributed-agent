@@ -1,6 +1,6 @@
 """Small dependency-free MCP JSON-RPC stdio adapter.
 
-The adapter intentionally knows nothing about Harness identity or transport.  A
+The adapter intentionally knows nothing about Foolship identity or transport.  A
 backend only needs ``tool_specs()`` and ``call(name, arguments)`` methods.
 """
 
@@ -56,7 +56,7 @@ def _dispatch(backend: Any, method: str, params: Any) -> Any:
         return {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "agent-harness", "version": server_version()},
+            "serverInfo": {"name": "foolship", "version": server_version()},
         }
     if method == "ping":
         return {}

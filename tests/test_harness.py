@@ -277,7 +277,7 @@ class WorkerTests(unittest.TestCase):
                     "-C",
                     str(repo),
                     "-c",
-                    "user.name=HarnessTest",
+                    "user.name=FoolshipTest",
                     "-c",
                     "user.email=harness@example.invalid",
                     "commit",

@@ -19,7 +19,7 @@ def version():
         if value:
             return value
     try:
-        return package_version("agent-harness")
+        return package_version("foolship")
     except PackageNotFoundError:
         return "unknown"
 

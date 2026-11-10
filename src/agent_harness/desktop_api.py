@@ -463,7 +463,7 @@ class DesktopTeamServiceActions:
             from agent_harness.storage import create_database_backup
 
             store = self.bridge._owned_local_store()
-            filename = time.strftime("AgentHarness-team-backup-%Y%m%d-%H%M%S.sqlite3")
+            filename = time.strftime("Foolship-team-backup-%Y%m%d-%H%M%S.sqlite3")
             chosen = self.bridge.window.create_file_dialog(webview.FileDialog.SAVE, save_filename=filename)
             if not chosen:
                 return {"saved": False}

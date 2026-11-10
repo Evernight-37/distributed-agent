@@ -513,8 +513,8 @@ function openEmployeeSettings(e, models) {
     );
   });
 }
-Object.assign(HarnessDesktop.render, { renderDashboard });
-Object.assign(HarnessDesktop.components, {
+Object.assign(FoolshipDesktop.render, { renderDashboard });
+Object.assign(FoolshipDesktop.components, {
   newProject,
   joinProject,
   newEmployee,

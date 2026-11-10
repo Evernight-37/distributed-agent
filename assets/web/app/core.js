@@ -2,11 +2,11 @@
 // Keep the desktop page's public surface in one namespace.  The page still
 // uses classic scripts for file:// WebView compatibility, but shared state and
 // services no longer need to be discovered as anonymous globals.
-const HarnessDesktop = ((typeof window !== "undefined"
+const FoolshipDesktop = ((typeof window !== "undefined"
   ? window
   : globalThis
-).HarnessDesktop = (typeof window !== "undefined" ? window : globalThis)
-  .HarnessDesktop || {
+).FoolshipDesktop = (typeof window !== "undefined" ? window : globalThis)
+  .FoolshipDesktop || {
   state: {},
   api: {},
   render: {},
@@ -14,7 +14,7 @@ const HarnessDesktop = ((typeof window !== "undefined"
   components: {},
 });
 const $ = (id) => document.getElementById(id);
-const S = (HarnessDesktop.state = {
+const S = (FoolshipDesktop.state = {
   page: "dashboard",
   dash: null,
   view: null,
@@ -63,7 +63,7 @@ async function api(action, data = {}) {
   if (!reply?.ok) throw Error(reply?.error || "操作失败");
   return reply.result;
 }
-HarnessDesktop.api.invoke = api;
+FoolshipDesktop.api.invoke = api;
 function notify(text, error = false) {
   $("toast").textContent = text;
   $("toast").classList.remove("hidden");
@@ -508,7 +508,7 @@ function updateProfile() {
     "当前设备：" + (d.devices.find((x) => x.local)?.name || "本机");
 }
 
-Object.assign(HarnessDesktop.components, {
+Object.assign(FoolshipDesktop.components, {
   attachmentCard,
   field,
   modal,

@@ -31,7 +31,7 @@ def main():
     client_package = client / "agent_harness"
     runtime = package / "runtime" / ("bin/python3" if app else "python.exe")
     required = (
-        app / "Contents/MacOS/AgentHarness" if app else package / "AgentHarness.exe",
+        app / "Contents/MacOS/Foolship" if app else package / "Foolship.exe",
         runtime,
         client_package / "app_bridge.py",
         client_package / "mcp_adapter.py",

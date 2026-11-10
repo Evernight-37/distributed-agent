@@ -13,7 +13,7 @@ build/release-env/bin/python -m pip install -e . -r requirements-macos.txt
 build/release-env/bin/python scripts/build_macos.py \
   --output-root dist/macos --python-runtime build/standalone-python
 build/release-env/bin/python tests/cleanroom_release.py \
-  dist/macos/AgentHarness.app build/cleanroom-macos
+  dist/macos/Foolship.app build/cleanroom-macos
 ```
 
 Linux 使用相同的前两步，依赖改为 `-e . -r requirements-linux-build.txt`，再执行 `build/release-env/bin/python scripts/build_linux_receiver.py`。应在与目标相同的 CPU 架构上构建。
