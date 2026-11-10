@@ -21,6 +21,33 @@ from agent_harness.desktop_runtime import web_assets
 from agent_harness.pull_worker import validate_server
 
 
+def hosting_url(root):
+    """The HTTPS address this machine publishes for its own team service.
+
+    Read from the service record rather than by asking Tailscale, because the
+    prompt only needs the string and a probe would make this fail offline.
+    """
+    value = read_json(Path(root) / "team-service" / "team-service.json", {})
+    url = value.get("url") if isinstance(value, dict) else None
+    if not isinstance(url, str) or not url.startswith("https://"):
+        return None
+    return url.rstrip("/")
+
+
+def setup_targets(bridge):
+    """Every service address an install prompt may legitimately point at.
+
+    A machine that hosts the team service keeps its own profile on the loopback
+    address, so the published HTTPS address never enters ``_services()``; without
+    it here, the machine that owns the team entry could not hand out a prompt.
+    """
+    targets = set(bridge._services())
+    url = hosting_url(bridge.root)
+    if url:
+        targets.add(url)
+    return targets
+
+
 class DesktopIdentityActions:
     """Local identity unlock, device association, and host ownership."""
 
@@ -51,7 +78,7 @@ class DesktopIdentityActions:
                 raise ValueError("未知的目标平台")
             server = data["server"].strip().rstrip("/")
             validate_server(server)
-            if server not in bridge._services():
+            if server not in setup_targets(bridge):
                 raise ValueError("只能为当前账户已接入的协作服务生成提示词")
             prompt = render_setup_prompt(web_assets() / runbook, server)
             return {"server": server, "platform": platform, "prompt": prompt}

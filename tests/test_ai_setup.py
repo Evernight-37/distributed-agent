@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from agent_harness.ai_setup import PLACEHOLDER, RUNBOOKS, render_setup_prompt
 from agent_harness.api_contracts import DESKTOP_CONTROL
-from agent_harness.desktop_actions import DesktopIdentityActions
+from agent_harness.desktop_actions import DesktopIdentityActions, hosting_url, setup_targets
 from agent_harness.desktop_runtime import web_assets
 from agent_harness.linux_receiver import build_parser
 from scripts import build_linux_receiver
@@ -69,6 +69,7 @@ class AISetupRunbookTests(unittest.TestCase):
     def test_the_action_serves_every_platform_from_an_account_service(self):
         class Bridge:
             identity = {"account_id": "account"}
+            root = Path(tempfile.gettempdir()) / "no-team-service-here"
 
             @staticmethod
             def _services():
@@ -138,6 +139,42 @@ class AISetupRunbookTests(unittest.TestCase):
                 self.assertIn("Foolship-linux/client/agent_harness/desktop_service.py", names)
                 prompt = bundle.extractfile("Foolship-linux/交给AI安装.md").read().decode("utf-8")
             self.assertEqual(prompt.count(PLACEHOLDER), 1)
+
+
+class SetupTargetTests(unittest.TestCase):
+    """A machine that hosts the team service must still be able to hand out a prompt."""
+
+    def bridge(self, root):
+        class Bridge:
+            def __init__(self, root):
+                self.root = root
+
+            def _services(self):
+                return ["http://127.0.0.1:8765"]
+
+        return Bridge(root)
+
+    def test_the_published_address_is_a_target(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "team-service").mkdir()
+            (root / "team-service" / "team-service.json").write_text(
+                '{"mode": "tailscale-serve", "url": "%s", "proxy": "http://127.0.0.1:8765"}' % SERVER,
+                "utf-8",
+            )
+            targets = setup_targets(self.bridge(root))
+            self.assertIn(SERVER, targets)
+            self.assertIn("http://127.0.0.1:8765", targets)
+
+    def test_a_missing_or_plain_record_yields_nothing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertIsNone(hosting_url(root))
+            (root / "team-service").mkdir()
+            (root / "team-service" / "team-service.json").write_text(
+                '{"mode": "local", "url": "http://127.0.0.1:8765"}', "utf-8"
+            )
+            self.assertIsNone(hosting_url(root))
 
 
 if __name__ == "__main__":

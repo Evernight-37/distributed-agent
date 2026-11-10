@@ -305,10 +305,22 @@ async function renderSettings() {
   else await team.refresh();
 }
 
-function aiInstallSetup() {
-  const services = (S.dash.services || []).filter((item) =>
+async function aiInstallSetup() {
+  let services = (S.dash.services || []).filter((item) =>
     String(item.server || "").startsWith("https://"),
   );
+  try {
+    const settings = await api("settings-get");
+    const hosted = settings?.team_service;
+    if (
+      hosted?.state === "ready" &&
+      String(hosted.url || "").startsWith("https://") &&
+      !services.some((item) => item.server === hosted.url)
+    )
+      services = [...services, { server: hosted.url, hosted_by_me: true }];
+  } catch {
+    // Without the settings payload the dashboard list is still worth offering.
+  }
   const platforms = [
     ["linux", "Linux 服务器（无界面接收端）"],
     ["windows", "Windows 电脑"],
