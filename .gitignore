@@ -49,3 +49,4 @@ owner-control.lock
 team-service-operation.json
 team-service-launch.lock
 team-service-control.lock
+*.egg-info/
