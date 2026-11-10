@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import subprocess
 from pathlib import Path
+
+
+def _write_sidecar(archive):
+    digest = hashlib.sha256(Path(archive).read_bytes()).hexdigest()
+    sidecar = Path(str(archive) + ".sha256")
+    sidecar.write_text(f"{digest}  {Path(archive).name}\n", encoding="ascii")
+    return sidecar
 
 
 def package(app, output):
@@ -17,6 +25,7 @@ def package(app, output):
         ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(output)],
         check=True,
     )
+    _write_sidecar(output)
     return output
 
 

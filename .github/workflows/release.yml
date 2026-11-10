@@ -59,12 +59,20 @@ jobs:
           & $iscc "/DSourceDir=$env:GITHUB_WORKSPACE\release\AgentHarness" "/DMyAppVersion=$version" installer\windows\AgentHarness.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
           if (-not (Test-Path "AgentHarness-$version-windows-x64-setup.exe")) { throw "Installer output missing" }
+      - name: Write installer checksum
+        shell: pwsh
+        run: |
+          $installer = Get-Item "AgentHarness-*-windows-x64-setup.exe" | Select-Object -First 1
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($installer.Name)" | Out-File -Encoding ascii "$($installer.FullName).sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
           path: |
             AgentHarness-*-windows-x64.zip
+            AgentHarness-*-windows-x64.zip.sha256
             AgentHarness-*-windows-x64-setup.exe
+            AgentHarness-*-windows-x64-setup.exe.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -153,7 +161,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
-          path: AgentHarness-*-macos-*.zip
+          path: AgentHarness-*-macos-*.zip*
           if-no-files-found: error
           retention-days: 7
 

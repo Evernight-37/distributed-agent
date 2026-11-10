@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import time
 import zipfile
 from pathlib import Path
+
+
+def _write_sidecar(archive: Path) -> Path:
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    sidecar = Path(str(archive) + ".sha256")
+    sidecar.write_text(f"{digest}  {archive.name}\n", encoding="ascii")
+    return sidecar
 
 
 def _archive_timestamp() -> tuple[int, int, int, int, int, int]:
@@ -56,6 +64,7 @@ def package_release(source: Path, destination: Path) -> None:
         os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
+    _write_sidecar(destination)
 
 
 def main() -> None:
