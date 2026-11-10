@@ -20,7 +20,10 @@ Thus the fools gathered aboard a single ship, some of flesh, others of clockwork
 
 ## 安装
 
-当前稳定版为 **2.10.1**，从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases/latest) 下载与系统和 CPU 架构相符的发布包。
+当前稳定版为 **2.10.1**，有两种装法：
+
+- **自己装**：从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases/latest) 下载与系统和 CPU 架构相符的发布包。
+- **让那台机器上的 AI 装**：把对应的任务书交给它，由它下载、校验、安装（见下）。
 
 | 使用环境 | 下载文件 | 使用方法 |
 | --- | --- | --- |
@@ -30,6 +33,28 @@ Thus the fools gathered aboard a single ship, some of flesh, others of clockwork
 | Linux x64 / ARM64 | `Foolship-2.10.1-linux-x64.tar.gz` 或 `Foolship-2.10.1-linux-arm64.tar.gz` | 无界面接收端，见 [Linux 说明](docs/LINUX.md) |
 
 发布包自带运行时，不需要另行安装 Python、pip 或 venv。Windows 需要 Edge WebView2；每台实际执行 Agent 的机器仍需安装并登录 Codex 或 DeepSeek Harness。升级只替换程序文件，不动账户数据。
+
+### 让那台机器上的 AI 装
+
+仓库为三种目标各准备了一份任务书，交给那台机器上的 AI（Codex 或 DeepSeek Harness）执行即可：
+
+| 目标机器 | 任务书 |
+| --- | --- |
+| Linux 服务器（无界面接收端） | [`assets/web/linux-ai-setup.md`](assets/web/linux-ai-setup.md) |
+| Windows 电脑 | [`assets/web/windows-ai-setup.md`](assets/web/windows-ai-setup.md) |
+| macOS 电脑 | [`assets/web/macos-ai-setup.md`](assets/web/macos-ai-setup.md) |
+
+任务书里写明了下载哪个包、如何校验、装到哪里、哪些步骤必须停下来等人确认、装完如何报告。唯一需要补充的是团队服务地址：Linux 接收端在最后一步要把机器关联到已有的团队服务，所以那时必须有；桌面应用装完由你登录，团队服务可以之后再建。
+
+无需克隆仓库即可取用：
+
+```
+https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web/linux-ai-setup.md
+https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web/windows-ai-setup.md
+https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web/macos-ai-setup.md
+```
+
+已经有一台装好并登录的机器时，也可以让应用直接生成这份文本：**账户 → 在另一台电脑上安装** 选择目标机器后会替换好地址。完整说明见 [AI 配置流程](docs/AI-SETUP.md)。
 
 ## 第一次使用
 
@@ -44,29 +69,11 @@ Thus the fools gathered aboard a single ship, some of flesh, others of clockwork
 
 ## 多台机器
 
-一个账户可以关联多台机器——自己的另一台电脑、自己的服务器。每台装同一个应用并登录同一账户，同一账户的机器之间传文件不需要逐次确认。
+一个账户可以关联多台机器——自己的另一台电脑、自己的服务器。每台都用上面任一方式安装，登录同一账户即可：同一账户的机器之间传文件不需要逐次确认，Agent 任务也可以派给任意一台。
 
-新机器不必手工照抄命令。仓库为三种目标各准备了一份任务书，交给那台机器上的 AI 执行即可：
+## 模型与执行器
 
-| 目标机器 | 任务书 |
-| --- | --- |
-| Linux 服务器（无界面接收端） | [`assets/web/linux-ai-setup.md`](assets/web/linux-ai-setup.md) |
-| Windows 电脑 | [`assets/web/windows-ai-setup.md`](assets/web/windows-ai-setup.md) |
-| macOS 电脑 | [`assets/web/macos-ai-setup.md`](assets/web/macos-ai-setup.md) |
-
-任务书里写明了下载哪个包、如何校验、装到哪里、哪些步骤必须停下来等人确认、装完如何报告；唯一需要补充的是团队服务地址。无需克隆仓库即可取用：
-
-```
-https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web/linux-ai-setup.md
-https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web/windows-ai-setup.md
-https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web/macos-ai-setup.md
-```
-
-也可以让应用直接生成：**账户 → 在另一台电脑上安装**，选择目标机器后得到同样的文本并已替换好地址。完整说明见 [AI 配置流程](docs/AI-SETUP.md)。
-
-## 执行器与 MCP
-
-执行器按机器保存，所以同一个项目里可以同时有 Codex 和 DeepSeek Harness 的 Agent，由同一套项目记忆和任务路由协调。在 **设置 → 本机执行器** 里二选一。
+桌面端按**模型**决定用哪个 CLI：**设置 → 本机可用模型** 里维护一张表，写明这台电脑能跑哪些模型、每个模型由 Codex 还是 DeepSeek Harness 执行。员工的模型必须从这张表里选，派发时按模型自动选执行器——所以同一台机器可以同时跑两种，不存在“默认执行器”。Linux 无界面接收端另有机器级的 `foolship executor set codex|dsh`，用来指定它默认用哪个 CLI。
 
 | 对比项 | Codex CLI | DeepSeek Harness |
 | --- | --- | --- |

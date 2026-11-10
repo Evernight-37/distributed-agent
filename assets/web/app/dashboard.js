@@ -407,7 +407,7 @@ function openEmployeeSettings(e, models) {
         el(
           "p",
           "muted small",
-          "本机还没有配置模型表；请先到设置 → 本机执行器里添加模型。",
+          "本机还没有配置模型表；请先到设置 → 本机可用模型里添加模型。",
         ),
       );
     const effort = field(

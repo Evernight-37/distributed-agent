@@ -682,5 +682,5 @@ def explain_failure(text):
     if "does not exist; omit --session-id" in lowered or "cannot be adopted" in lowered:
         return "DeepSeek Harness 无法续接上一轮会话：会话已删除、工作目录已改变或被占用，请清除本项目的会话后重试"
     if "no such model" in lowered or "model not found" in lowered or "unknown model" in lowered:
-        return "DeepSeek Harness 不认识本机为该项目配置的模型；请在本机执行器设置中指定 DSH 模型（例如 deepseek-flash）"
+        return "DeepSeek Harness 不认识本机为该项目配置的模型；请在本机可用模型里指定 DSH 模型（例如 deepseek-flash）"
     return None

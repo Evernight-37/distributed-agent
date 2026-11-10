@@ -51,7 +51,7 @@ cd Foolship-linux
 ./foolship codex path detect
 ```
 
-执行器按机器保存，与桌面应用的 **设置 → 本机执行器** 是同一份配置。选择 `dsh` 时，这台服务器用 DeepSeek Harness 的 `dsh --profile headless` 执行派发的任务，需要机器上已安装 `dsh` 并可用 `DEEPSEEK_API_KEY`（或已通过 DeepSeek Harness 的 Models 页面保存密钥）；此时 `codex path` 管理的是当前执行器的程序路径。
+`executor set` 写的是这台接收端的机器级默认执行器（桌面端的 **设置 → 本机可用模型** 维护的是按模型分派的表，两者不是同一份配置）。选择 `dsh` 时，这台服务器用 DeepSeek Harness 的 `dsh --profile headless` 执行派发的任务，需要机器上已安装 `dsh` 并可用 `DEEPSEEK_API_KEY`（或已通过 DeepSeek Harness 的 Models 页面保存密钥）；此时 `codex path` 管理的是当前执行器的程序路径。
 
 `executor mcp` 对应桌面设置里的“在 DeepSeek Harness 中使用协作”：它把 stdio MCP 服务登记进 DeepSeek Harness 的 home 补丁层，只增删 Foolship 自己标记的两行，并在写后用 `dsh --profile headless --dump-config` 验证、失败即回滚。
 

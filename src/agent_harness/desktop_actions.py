@@ -342,7 +342,7 @@ class DesktopOwnerActions:
             model = settings.get("model")
             if isinstance(model, str) and model.strip():
                 if executors.model_kind(bridge.root, model.strip()) is None:
-                    raise ValueError("本机模型表里没有 " + model.strip() + "；请先在本机执行器设置中添加该模型")
+                    raise ValueError("本机模型表里没有 " + model.strip() + "；请先在本机可用模型设置中添加该模型")
             return bridge._owner(
                 "configure",
                 employee["node"],
