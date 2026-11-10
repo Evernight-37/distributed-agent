@@ -1,6 +1,6 @@
 # Agent Harness Linux 服务器 AI 配置任务
 
-你正在帮助用户把当前 Linux 服务器配置为 Agent Harness 2.0 无界面接收端。先检查，再执行；不要把“尽量自动化”理解为可以绕过用户授权。
+你正在帮助用户把当前 Linux 服务器配置为 Agent Harness 的无界面接收端。它有两个用途：接收 Agent 任务，以及作为**文件速传的接收方**（发送方从自己的机器直接拉取，协作服务不接触文件内容）。先检查，再执行；不要把"尽量自动化"理解为可以绕过用户授权。
 
 团队服务地址：`{{TEAM_SERVICE_URL}}`
 
@@ -11,9 +11,10 @@
 1. 使用当前普通 Linux 用户运行 Harness 和 Codex，不使用 root 运行它们。
 2. 找到匹配 CPU 架构的官方 Agent Harness Linux 发布包并使用独立目录解压。
 3. 确认可用且已登录的 Codex CLI 路径。
-4. 确认服务器能通过 Tailscale访问团队服务。
-5. 完成设备关联、`harness doctor`、systemd 用户服务安装与状态检查。
-6. 最终只报告允许分享的状态，不输出身份材料、令牌、密码、消息或项目内容。
+4. 确认服务器能通过 Tailscale 访问团队服务。
+5. 确认服务器与用户的另一台机器处在同一个 tailnet（或互相共享了节点），否则文件速传拨不通，也没有中转兜底。
+6. 完成设备关联、`harness doctor`、systemd 用户服务安装与状态检查。
+7. 最终只报告允许分享的状态，不输出身份材料、令牌、密码、消息或项目内容。
 
 ## 强制安全边界
 
@@ -50,7 +51,7 @@ tailscale status || true
 - `AgentHarness-*-linux-arm64.tar.gz`（`aarch64`/`arm64`）
 - 已解压的 `AgentHarness-linux/harness`
 
-若没有发布包，先告诉用户需要从 `https://github.com/Evernight-37/distributed-agent/releases` 下载哪个架构的包；只有用户明确同意后才可代为下载。
+若没有发布包，先告诉用户需要从 `https://github.com/Evernight-37/distributed-agent/releases/latest` 下载哪个架构的包：包名形如 `AgentHarness-<版本>-linux-x64.tar.gz` 或 `AgentHarness-<版本>-linux-arm64.tar.gz`，同目录下还有对应的 `.sha256`，解压前用 `sha256sum -c` 校验。只有用户明确同意后才可代为下载。
 
 ### 2. 网络判断
 
@@ -59,6 +60,8 @@ tailscale status || true
 如果 Tailscale 未安装、未登录或不在正确网络，暂停并给出人工授权步骤。不要擅自安装系统软件。
 
 如果服务器没有 root/TUN，但用户已经提供官方 `tailscale` 和 `tailscaled`，可以在获得用户同意后使用 userspace networking，并把其本机 HTTP 代理通过下面的 Harness 参数或命令配置为协作服务代理。不要把该代理误设为 Codex 模型代理。
+
+这一步还要单独确认**文件速传是否拨得通**：它要求服务器和发送方机器互相能访问对方的 `100.x` 地址，不是只要求能访问团队服务。用 `tailscale status` 记下本机地址，确认发送方机器出现在同一列表里；两边不在同一 tailnet 时直连不成立，协作服务也不会转存文件，传输会直接失败。**不要**为此改防火墙或安装组网软件，把它报告给用户。
 
 ### 3. 准备 Harness
 
@@ -107,6 +110,14 @@ tailscale status || true
 
 不要输出包含凭据、消息或项目内容的其他日志。
 
+接收到的文件默认落在接收端根目录下的 `received-files`，不需要在服务器上做任何配置。用户可以在桌面控制台的速传页为这台机器指定别的接收目录（目录必须已存在），那是一次签名控制指令，不需要你手动改配置文件。不要为此创建目录或改权限；如果用户要求你确认落地点，用：
+
+```bash
+find ~/.local/share/AgentHarness -maxdepth 3 -name received-files -type d
+```
+
+同账户的机器会自动接收；不同账户第一次来件需要在桌面端确认，之后记住该发送账户。传输不排队：发送方不在线就没有可拉取的来源。
+
 ### 6. 可选的 Codex 内协作
 
 后台接收端与“普通 Codex 对话使用 Harness”是两项不同功能。只有用户明确需要在这台服务器的普通 Codex 对话中发送 Harness 消息时，才执行：
@@ -123,9 +134,11 @@ tailscale status || true
 - CPU 架构与使用的发布包
 - Harness 安装目录和数据目录
 - 团队服务是否可达（不要回显查询正文）
+- 本机 `100.x` 地址，以及发送方机器是否在同一 tailnet
 - Codex CLI 路径是否有效、是否已登录
 - 设备是否已关联
 - systemd 用户服务是否运行
+- 文件接收目录（默认 `received-files` 的绝对路径）
 - 是否需要用户决定 linger
 - 是否连接了 Codex MCP
 - 下一步：在 Windows/macOS 控制台“我的 Agents”中选择这台 Linux 机器添加员工，并填写服务器上的项目绝对路径
