@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.9.0 - 2026-11-10
+
+- **产品更名为 Foolship**。用户拿到的东西里不再出现旧名字：
+  - 发布产物：`Foolship-<版本>-windows-x64.zip`、`-windows-x64-setup.exe`、`-macos-arm64.zip`、`-linux-x64.tar.gz` / `-linux-arm64.tar.gz`
+  - Windows：安装到 `%LOCALAPPDATA%\Foolship\app`，程序为 `Foolship.exe`，便携包解压出 `Foolship\` 目录
+  - macOS：`Foolship.app`，bundle id 为 `org.foolship.desktop`
+  - Linux：包解压为 `Foolship-linux/`，命令行工具由 `harness` 改名为 `foolship`，systemd 用户服务为 `foolship-receiver.service`
+  - 账户数据：`%LOCALAPPDATA%\Foolship\data`、`~/Library/Application Support/Foolship/data`、`~/.local/share/Foolship/data`；状态目录环境变量为 `FOOLSHIP_STATE`
+  - 窗口标题、安装向导、说明文档与 AI 安装提示词同步更新。
+- **内部标识符不变**：Python 包仍是 `agent_harness`，信令里的 `harness-*` 字符串与功能开关不动，仓库名也不变。这次改名只触及看得见的那一层。
+- 没有兼容负担：此前没有对外发布过，旧目录不会被自动迁移；本地若还留着 `AgentHarness` 目录，可以手动删掉。
+
 ## 2.8.0 - 2026-11-10
 
 - **Windows 和 macOS 也有"AI 帮我装"**。此前只有 Linux 服务器能从应用里生成一份交给那台机器 AI 的受限提示词，桌面版只能人工下载安装。现在 **账户 → 在另一台电脑上安装** 支持三种目标：
@@ -109,7 +121,7 @@
 
 ## 2.3.3 - 2026-11-04
 
-- 修复接收端在数据搬家后**重建旧目录**的问题：`pull-config.json` 里存着入网时的绝对路径，迁移后它仍指向 `%LOCALAPPDATA%\AgentHarness\data\receivers\...`。接收进程按这个路径工作，于是在旧位置重新建出一套空目录。现在以**配置自己所在的目录**为准（配置始终与接收端同目录），发现保存的路径不同就顺手改写，旧位置的目录不再被创建。
+- 修复接收端在数据搬家后**重建旧目录**的问题：`pull-config.json` 里存着入网时的绝对路径，迁移后它仍指向 `%LOCALAPPDATA%\Foolship\data\receivers\...`。接收进程按这个路径工作，于是在旧位置重新建出一套空目录。现在以**配置自己所在的目录**为准（配置始终与接收端同目录），发现保存的路径不同就顺手改写，旧位置的目录不再被创建。
 - 这与 2.3.2 修的是同一类问题：**存绝对路径，数据一搬就失效**。已经排查过其余配置文件（`executor.json`、`local-policy.json`、`desktop-service.json`、`team-service.json`），只有 `pull-config.json` 存了文件系统路径。
 
 ## 2.3.2 - 2026-11-04
@@ -119,19 +131,19 @@
 
 ## 2.3.1 - 2026-11-04
 
-- 后台接收端的运行时副本从 `%LOCALAPPDATA%\AgentHarness\service-runtime` 移到**安装目录下的 `service-runtime\`**。此前它和用户数据是两处例外，现在 Windows 上属于应用的东西都在安装目录内：程序、`data\`、`service-runtime\`。
+- 后台接收端的运行时副本从 `%LOCALAPPDATA%\Foolship\service-runtime` 移到**安装目录下的 `service-runtime\`**。此前它和用户数据是两处例外，现在 Windows 上属于应用的东西都在安装目录内：程序、`data\`、`service-runtime\`。
 - 每次发布都会产生一个新哈希的运行时副本，不清理会随每次更新在安装目录里堆积（每份约 70 MB）。现在启动时只保留当前使用的那一份，旧的自动删除；正在被接收端占用而删不掉的目录会跳过，不影响启动。
-- macOS 仍把数据和运行时放在 `~/Library/Application Support/AgentHarness`：`.app` 是封签目录，不能写入。
+- macOS 仍把数据和运行时放在 `~/Library/Application Support/Foolship`：`.app` 是封签目录，不能写入。
 
 ## 2.3.0 - 2026-11-04
 
-- 用户数据默认改到**应用目录下的 `data\`**（Windows 便携/安装版都是），不再放在 `%LOCALAPPDATA%\AgentHarness\data`。升级与回退只替换程序文件，从不写入或删除该目录，所以数据不会被更新覆盖。旧位置的数据会在首次启动时**复制**过去，原目录改名为 `data.migrated-<时间>` 保留；复制失败则继续使用旧位置，不会出现"数据丢失"的半成品。macOS 仍遵循平台惯例放在 `~/Library/Application Support/AgentHarness`（`.app` 是封签目录，不适合写入用户数据）。仍可用 `AGENT_HARNESS_STATE` 指定任意目录。
-- Windows 安装器允许**选择安装目录**（默认仍是 `%LOCALAPPDATA%\AgentHarness\app`，per-user、无需管理员）。无法写入的目录会在安装阶段报错，而不是悄悄装到别处。更新时的静默安装会带 `/DIR` 指回当前目录，避免装出第二份副本。
+- 用户数据默认改到**应用目录下的 `data\`**（Windows 便携/安装版都是），不再放在 `%LOCALAPPDATA%\Foolship\data`。升级与回退只替换程序文件，从不写入或删除该目录，所以数据不会被更新覆盖。旧位置的数据会在首次启动时**复制**过去，原目录改名为 `data.migrated-<时间>` 保留；复制失败则继续使用旧位置，不会出现"数据丢失"的半成品。macOS 仍遵循平台惯例放在 `~/Library/Application Support/Foolship`（`.app` 是封签目录，不适合写入用户数据）。仍可用 `FOOLSHIP_STATE` 指定任意目录。
+- Windows 安装器允许**选择安装目录**（默认仍是 `%LOCALAPPDATA%\Foolship\app`，per-user、无需管理员）。无法写入的目录会在安装阶段报错，而不是悄悄装到别处。更新时的静默安装会带 `/DIR` 指回当前目录，避免装出第二份副本。
 - "是否安装版"不再靠路径判断，而是看目录里有没有安装器留下的 `unins*.exe`，因此装在自定义目录也能被正确识别并按安装器方式更新。
 
 ## 2.2.1 - 2026-11-03
 
-- 修复便携包无法自我更新的问题：发布 zip 把所有文件放在 `AgentHarness/` 这一层目录下，而启动器原来直接解压到程序目录，结果会在里面多出一层 `AgentHarness/`，原有文件一个都没被替换——升级静默失败，版本仍是旧的。现在先解压到临时目录，遇到单一顶层目录就下钻，再覆盖到程序目录。已用真实的 `AgentHarness-2.2.0-windows-x64.zip` 验证：2.1.2 目录被更新为 2.2.0、`client/agent_harness/updates.py` 到位、不再产生嵌套目录。
+- 修复便携包无法自我更新的问题：发布 zip 把所有文件放在 `Foolship/` 这一层目录下，而启动器原来直接解压到程序目录，结果会在里面多出一层 `Foolship/`，原有文件一个都没被替换——升级静默失败，版本仍是旧的。现在先解压到临时目录，遇到单一顶层目录就下钻，再覆盖到程序目录。已用真实的 `Foolship-2.2.0-windows-x64.zip` 验证：2.1.2 目录被更新为 2.2.0、`client/agent_harness/updates.py` 到位、不再产生嵌套目录。
 - 2.2.0 的便携版因此不能靠自身升级（它的启动器带的是旧逻辑）。用 2.2.0 便携包的人需要手动覆盖一次到 2.2.1，之后即可正常自我更新。
 
 ## 2.2.0 - 2026-11-03
@@ -149,7 +161,7 @@
 - DeepSeek Harness 没有常驻 app-server，群聊的托管轮次对它退回一次性进程，不再尝试启动 warm worker；结构化回复只靠提示词契约约束（Codex 仍使用 JSON schema）。
 - DeepSeek Harness 的失败码会被翻译成可操作的中文提示（缺 API Key、会话无法续接、权限预设冲突、模型不被识别），原始错误保留在 `provider_error`。
 - 修复接收端心跳读错目录的问题：`pull_worker._health` 之前读 `codex-cli.json`，而该文件只写在应用数据目录，接收端目录里从来没有，导致 Codex 组件恒为“尚未配置”；现在改为读接收端自己的 `executor.json`。
-- 新增“在 DeepSeek Harness 中使用协作”：DeepSeek Harness 没有 `codex mcp add` 的等价命令，因此把 MCP 服务登记进 **desktop profile** 的补丁层 `~/.dsh/profiles/desktop/cordis.patch.yml`，作用域只到桌面应用里的普通会话——被派发任务用的 headless profile 不读它，无需在每轮补丁里关闭。该文件也是 DSH 配置编辑器的写入目标，编辑器按条目替换并保留其它内容，所以只增删 Harness 标记的两行即可共存；写入保留 `.agent-harness.bak` 备份，写后把该补丁当作 overlay 交给 `--dump-config` 解析并在失败时回滚，profile 不存在则拒绝写入。
+- 新增“在 DeepSeek Harness 中使用协作”：DeepSeek Harness 没有 `codex mcp add` 的等价命令，因此把 MCP 服务登记进 **desktop profile** 的补丁层 `~/.dsh/profiles/desktop/cordis.patch.yml`，作用域只到桌面应用里的普通会话——被派发任务用的 headless profile 不读它，无需在每轮补丁里关闭。该文件也是 DSH 配置编辑器的写入目标，编辑器按条目替换并保留其它内容，所以只增删 Foolship 标记的两行即可共存；写入保留 `.foolship.bak` 备份，写后把该补丁当作 overlay 交给 `--dump-config` 解析并在失败时回滚，profile 不存在则拒绝写入。
 - DeepSeek Harness 的 MCP 条目改为指向一个稳定启动器 `mcp/launch-<profile>-dsh.cmd|sh`：运行时装在内容寻址目录里，直接钉住会在应用升级后失效（症状是协作工具悄悄消失）。启动器路径不变，内容在每次打开设置或重新连接时刷新。设置页会显示“条目已过期，请重新连接”，而不是让用户自己发现。
 - DeepSeek Harness 的思考强度改为按模型目录投影：`low`/`high` 原样传递，`xhigh`/`max`/`ultra` 按 `high` 发送，`medium` 留空使用模型默认档（提供方的档位通常少于员工设置里的六档）。被拒绝的档位会转成中文提示。
 - Linux 接收端新增 `executor status` / `executor set codex|dsh [--model …] [--provider …]` 和 `executor mcp connect|status|disconnect`，与桌面应用的执行器选择和“在 DeepSeek Harness 中使用协作”是同一份配置；`status` 和 `doctor` 的组件文案按当前执行器显示。
