@@ -226,7 +226,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             )
             write_json(
                 root / "executor.json",
-                {"warm_idle_seconds": 300, "cli_path": str(root / "missing-codex.exe")},
+                {"warm_idle_seconds": 300, "cli_paths": {"codex": str(root / "missing-codex.exe")}},
             )
             runtime = worker.ManagedRuntime(root)
             result = runtime.rpc(

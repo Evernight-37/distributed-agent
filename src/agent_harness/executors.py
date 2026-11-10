@@ -258,17 +258,26 @@ def status(root, probe=None):
     return status_of(root, selected(root), probe)
 
 
+def cli_paths(root):
+    """Explicit binaries per executor, as chosen in the desktop settings."""
+    value = settings(root).get("cli_paths")
+    if not isinstance(value, dict):
+        return {}
+    return {kind: path for kind, path in value.items() if kind in KINDS and isinstance(path, str) and path}
+
+
 def status_of(root, kind, probe=None):
     """Find a working binary of ``kind`` regardless of this machine's selection.
 
-    The saved explicit path belongs to the selected executor only; a probe for
-    the other one has to discover its own binary. ``probe`` lets the caller keep
-    its own version hook (the worker exposes one and tests override it).
+    Each executor keeps its own explicit path, so a machine that runs both CLIs
+    can point one of them at a hand-picked binary without affecting the other.
+    ``probe`` lets the caller keep its own version hook (the worker exposes one
+    and tests override it).
     """
     probe = probe or version
     root = Path(root)
     label = _label(kind)
-    explicit = settings(root).get("cli_path") if kind == selected(root) else None
+    explicit = cli_paths(root).get(kind)
     if explicit:
         if not isinstance(explicit, str) or not Path(explicit).is_absolute() or not Path(explicit).is_file():
             return {

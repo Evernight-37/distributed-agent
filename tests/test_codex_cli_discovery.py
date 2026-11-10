@@ -37,7 +37,7 @@ class CodexCliDiscoveryTests(unittest.TestCase):
     def test_invalid_explicit_path_has_actionable_status(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            write_json(root / "executor.json", {"cli_path": str(root / "missing.exe")})
+            write_json(root / "executor.json", {"cli_paths": {"codex": str(root / "missing.exe")}})
             result = cli_status(root)
             self.assertFalse(result["found"])
             self.assertIn("重新选择", result["error"])
@@ -49,7 +49,7 @@ class CodexCliDiscoveryTests(unittest.TestCase):
             root = Path(folder)
             executable = root / "codex.exe"
             executable.write_bytes(b"not a real cli")
-            write_json(root / "executor.json", {"cli_path": str(executable)})
+            write_json(root / "executor.json", {"cli_paths": {"codex": str(executable)}})
             with patch("agent_harness.worker.codex_version", return_value=(7, 8, 9)):
                 result = cli_status(root)
             self.assertEqual(result["version"], "7.8.9")
@@ -69,7 +69,7 @@ class CodexCliDiscoveryTests(unittest.TestCase):
                 "path": str(executable),
                 "version": "0.300.1",
             }
-            with patch("agent_harness.worker.cli_status", return_value=detected) as probe:
+            with patch("agent_harness.desktop_api.executors_status_of", return_value=detected) as probe:
                 self.assertTrue(bridge.invoke("codex-cli-status")["result"]["found"])
                 self.assertTrue(bridge.invoke("codex-cli-status")["result"]["found"])
                 self.assertEqual(probe.call_count, 1)
@@ -110,7 +110,7 @@ class CodexCliDiscoveryTests(unittest.TestCase):
             saved = bridge.invoke("codex-cli-save", {"path": str(shim)})
             self.assertTrue(saved["ok"])
             self.assertTrue(saved["result"]["found"])
-            self.assertEqual(read_json(receiver / "executor.json")["cli_path"], str(shim))
+            self.assertEqual(read_json(receiver / "executor.json")["cli_paths"]["codex"], str(shim))
             self.assertEqual(read_json(root / "codex-cli.json")["path"], str(shim))
             self.assertTrue(bridge.invoke("codex-cli-status")["result"]["found"])
             cleared = bridge.invoke("codex-cli-save", {"path": ""})
@@ -118,7 +118,7 @@ class CodexCliDiscoveryTests(unittest.TestCase):
             self.assertEqual(read_json(root / "codex-cli.json")["mode"], "auto")
             if cleared["result"]["found"]:
                 self.assertEqual(
-                    read_json(receiver / "executor.json")["cli_path"],
+                    read_json(receiver / "executor.json")["cli_paths"]["codex"],
                     cleared["result"]["path"],
                 )
 

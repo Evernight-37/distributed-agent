@@ -369,30 +369,25 @@ function proxySettingsCard(current) {
   card.append(el("h2", "", "本机代理端口"));
   note(
     card,
-    "这台电脑上的代理地址（固定 127.0.0.1）。它只是本机的一个端点：员工在“模型请求代理”里选择“跟随本机设置”时才使用，选“直连”的员工不受影响。团队服务和 Tailscale 不走它。",
+    "这台电脑上的代理端口（固定 127.0.0.1）。每个 Agent 在自己的“模型请求代理”里单独选择策略：跟随本机、直连或自定义端口；这里只是可供选择的机器端口。团队服务和 Tailscale 不走它。",
   );
-  const row = el("label", "setting-row");
-  const enabled = el("input", "check");
-  enabled.type = "checkbox";
-  enabled.checked = !!current?.enabled;
-  row.append(el("span", "", "本机 Agent 使用本机代理"), enabled);
-  card.append(row);
-  const port = field(card, "代理端口", current?.port ?? "", null, "number");
+  const port = field(
+    card,
+    "端口（留空表示不提供）",
+    current?.port ?? "",
+    null,
+    "number",
+  );
   port.min = "1";
   port.max = "65535";
   port.placeholder = "例如 7897";
-  const update = () => {
-    port.disabled = !enabled.checked;
-  };
-  enabled.onchange = update;
-  update();
   card.append(
     button(
-      "保存代理设置",
+      "保存代理端口",
       async () => {
         let value = null;
-        if (enabled.checked) {
-          const raw = port.value.trim();
+        const raw = port.value.trim();
+        if (raw) {
           if (!/^[0-9]+$/.test(raw) || Number(raw) < 1 || Number(raw) > 65535) {
             notify("请输入 1 到 65535 的代理端口", true);
             port.focus();
@@ -401,10 +396,14 @@ function proxySettingsCard(current) {
           value = Number(raw);
         }
         await api("proxy-save", {
-          enabled: enabled.checked,
+          enabled: value !== null,
           port: value,
         });
-        notify("代理设置已保存，下次启动的 agent 任务生效。");
+        notify(
+          value === null
+            ? "已清除本机代理端口。"
+            : "本机代理端口已保存，下次启动的 Agent 任务生效。",
+        );
         await refresh(true);
       },
       "primary",
@@ -439,8 +438,8 @@ function idleSettingsCard(seconds) {
   );
   return card;
 }
-function codexCliCard(executor) {
-  const dsh = executor === "dsh";
+function codexCliCard(kind) {
+  const dsh = kind === "dsh";
   const label = dsh ? "DeepSeek Harness CLI" : "Codex CLI";
   const card = el("section", "panel"),
     statusLine = el("p", "muted small", "正在检测 " + label + "…"),
@@ -468,7 +467,7 @@ function codexCliCard(executor) {
     "保存路径",
     async () => {
       const value = path.value.trim();
-      const r = await api("codex-cli-save", { path: value });
+      const r = await api("codex-cli-save", { path: value, kind });
       path.value = value ? r?.path || value : "";
       notify(value ? label + " 路径已保存。" : "已恢复自动检测。");
       await load();
@@ -480,7 +479,9 @@ function codexCliCard(executor) {
   async function load(force = false) {
     detect.disabled = true;
     try {
-      const r = await api(force ? "codex-cli-redetect" : "codex-cli-status");
+      const r = await api(force ? "codex-cli-redetect" : "codex-cli-status", {
+        kind,
+      });
       if (r?.found) {
         statusLine.className = r.logged_in ? "muted small" : "error small";
         statusLine.textContent =

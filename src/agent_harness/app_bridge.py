@@ -1086,14 +1086,20 @@ class AppBridge:
             executor["proxy"] = setting
             write_json(path, executor)
 
-    def _sync_cli(self, runtime, selected):
+    def _sync_cli(self, runtime, selected, kind="codex"):
         path = runtime.root / "executor.json"
         with lock(runtime.root / "executor.lock"):
             executor = read_json(path, {})
+            paths = executor.get("cli_paths")
+            paths = dict(paths) if isinstance(paths, dict) else {}
             if selected:
-                executor["cli_path"] = selected
+                paths[kind] = selected
             else:
-                executor.pop("cli_path", None)
+                paths.pop(kind, None)
+            if paths:
+                executor["cli_paths"] = paths
+            else:
+                executor.pop("cli_paths", None)
             write_json(path, executor)
 
     def _executor(self):
@@ -1133,7 +1139,7 @@ class AppBridge:
             if isinstance(models, list) and models:
                 executor["models"] = models
             if reset_path:
-                executor.pop("cli_path", None)
+                executor.pop("cli_paths", None)
             write_json(path, executor)
 
     def _idle_seconds(self):
@@ -1169,12 +1175,10 @@ class AppBridge:
             self._sync_proxy(runtime, self._proxy_settings())
         choice = self._executor()
         self._sync_executor(runtime, choice)
-        models = choice.get("models") or []
-        kind = models[0].get("executor") if models else "codex"
-        cache = "dsh-cli.json" if kind == "dsh" else "codex-cli.json"
-        selected = read_json(self.root / cache)
-        if selected is not None:
-            self._sync_cli(runtime, selected.get("path", ""))
+        for kind, cache in (("codex", "codex-cli.json"), ("dsh", "dsh-cli.json")):
+            saved = read_json(self.root / cache)
+            if saved is not None:
+                self._sync_cli(runtime, saved.get("path", ""), kind)
         self._sync_idle(runtime, self._idle_seconds())
         runtime.start()
 

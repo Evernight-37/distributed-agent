@@ -106,7 +106,7 @@ class DshWorkerTurnTests(unittest.TestCase):
         self.remote.mkdir(parents=True)
         self.launcher = fake_dsh(Path(self._temp.name) / "bin")
         self.record = Path(self._temp.name) / "record.json"
-        write_json(self.root / "executor.json", {"executor": "dsh", "cli_path": str(self.launcher)})
+        write_json(self.root / "executor.json", {"executor": "dsh", "cli_paths": {"dsh": str(self.launcher)}})
         self._old_root = worker.ROOT
         worker.ROOT = self.root
         patcher = mock.patch.dict(os.environ, {"FAKE_DSH_RECORD": str(self.record), "FAKE_DSH_MODE": "ok"})

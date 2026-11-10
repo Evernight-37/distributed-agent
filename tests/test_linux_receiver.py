@@ -81,7 +81,7 @@ class LinuxReceiverTests(unittest.TestCase):
             )
             write_json(
                 receiver / "executor.json",
-                {"cli_path": "/opt/codex", "warm_idle_seconds": 120},
+                {"cli_paths": {"codex": "/opt/codex"}, "warm_idle_seconds": 120},
             )
             with patch.object(linux_receiver, "broker_opener") as opener:
                 linux_receiver._set_broker_proxy(root, "http://127.0.0.1:18766")
@@ -100,7 +100,7 @@ class LinuxReceiverTests(unittest.TestCase):
                 linux_receiver._set_codex_proxy(root, {"enabled": True, "port": 7897})
             sync.assert_called_once()
             runtime._control.assert_called_once_with("action", {"action": "retire-workers-after-turn"})
-            self.assertEqual(read_json(receiver / "executor.json")["cli_path"], "/opt/codex")
+            self.assertEqual(read_json(receiver / "executor.json")["cli_paths"]["codex"], "/opt/codex")
             self.assertEqual(read_json(root / "codex-proxy.json"), {"enabled": True, "port": 7897})
             linux_receiver._set_broker_proxy(root, None)
             self.assertNotIn("broker_proxy", read_json(receiver / "pull-config.json"))

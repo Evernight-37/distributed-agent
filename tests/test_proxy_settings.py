@@ -64,7 +64,7 @@ class ProxySettingsTests(unittest.TestCase):
             write_json(
                 receiver / "executor.json",
                 {
-                    "cli_path": "C:/Codex/codex.exe",
+                    "cli_paths": {"codex": "C:/Codex/codex.exe"},
                     "network_env": {
                         "HTTP_PROXY": "http://127.0.0.1:7897",
                         "HTTPS_PROXY": "http://127.0.0.1:7897",
@@ -82,7 +82,7 @@ class ProxySettingsTests(unittest.TestCase):
             )
             executor = read_json(receiver / "executor.json")
             self.assertEqual(executor["proxy"], {"enabled": True, "port": 7897})
-            self.assertEqual(executor["cli_path"], "C:/Codex/codex.exe")
+            self.assertEqual(executor["cli_paths"], {"codex": "C:/Codex/codex.exe"})
             self.assertEqual(executor["network_env"], {"OTHER": "keep"})
             self.assertEqual(read_json(root / "codex-proxy.json"), executor["proxy"])
             self.assertEqual(

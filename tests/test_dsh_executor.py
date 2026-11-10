@@ -140,7 +140,7 @@ class DshDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             exe = fake_cli(root / "bin", "dsh", "0.2.1-rc.5")
-            write_json(root / "executor.json", {"executor": "dsh", "cli_path": str(exe)})
+            write_json(root / "executor.json", {"executor": "dsh", "cli_paths": {"dsh": str(exe)}})
             result = executors.status(root)
             self.assertEqual(
                 result,
@@ -157,7 +157,7 @@ class DshDiscoveryTests(unittest.TestCase):
             root = Path(folder)
             dsh = fake_cli(root / "bin", "dsh", "0.2.1")
             codex = fake_cli(root / "other", "codex", "codex-cli 1.2.3")
-            write_json(root / "executor.json", {"executor": "dsh", "cli_path": str(dsh)})
+            write_json(root / "executor.json", {"executor": "dsh", "cli_paths": {"dsh": str(dsh)}})
             # Registering the Codex MCP entry must find Codex itself, not the
             # DeepSeek Harness binary this machine happens to run.
             with mock.patch.object(executors, "_codex_candidates", return_value=[codex]):
@@ -178,7 +178,7 @@ class DshDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             exe = fake_cli(root / "bin", "codex", "codex-cli 1.2.3")
-            write_json(root / "executor.json", {"cli_path": str(exe)})
+            write_json(root / "executor.json", {"cli_paths": {"codex": str(exe)}})
             self.assertEqual(
                 executors.status(root),
                 {

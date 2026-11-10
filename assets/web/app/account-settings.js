@@ -217,41 +217,64 @@ async function renderSettings() {
   });
   list.append(memberships);
   const machine = el("section", "panel");
-  machine.append(el("h2", "", "本机接收任务"));
+  machine.append(el("h2", "", "本机状态"));
+  const receiverLine = el("p", "muted small", "正在读取接收状态…");
+  receiverLine.style.overflowWrap = "anywhere";
+  machine.append(receiverLine);
   note(
     machine,
-    "点击窗口关闭按钮时会询问退出方式：继续后台运行，或完全退出。停止接收仅停止任务接收服务；完全退出还会停止任务接收服务启动的本机协作服务。",
+    "接收服务是常驻后台进程：轮询协作服务里派给这台机器的任务并拉起本机 Agent，同时接收文件速传。登录时自动启动；停止它不会退出应用，但派给这台机器的任务会停在服务端队列。",
   );
   const controls = el("div", "setting-row");
-  controls.append(
-    button(
-      "启动接收",
-      async () => {
-        await api("receiver-start");
-        notify("本机接收服务已启动");
-        await refresh(true);
-      },
-      "primary",
-    ),
-    button("停止接收", async () => {
-      await api("receiver-stop");
-      notify("接收服务已停止；已启动的作业独立运行。");
+  const startReceiver = button(
+    "启动接收",
+    async () => {
+      await api("receiver-start");
+      notify("本机接收服务已启动");
       await refresh(true);
-    }),
+    },
+    "primary",
   );
+  const stopReceiver = button("停止接收", async () => {
+    await api("receiver-stop");
+    notify("接收服务已停止；已启动的作业独立运行。");
+    await refresh(true);
+  });
+  controls.append(startReceiver, stopReceiver);
   machine.append(controls, button("完全退出", requestAppClose));
+  const receivers = Array.isArray(settings.receivers) ? settings.receivers : [];
+  const running = receivers.filter((item) => item.running);
+  if (!receivers.length) {
+    receiverLine.className = "error small";
+    receiverLine.textContent = "本机还没有接入协作服务，接收服务无从启动。";
+  } else {
+    receiverLine.className = running.length ? "muted small" : "error small";
+    receiverLine.textContent = receivers
+      .map(
+        (item) =>
+          serviceName(item.server) +
+          " · " +
+          (item.running
+            ? item.online
+              ? "运行中 · 已连接"
+              : "运行中 · 未连接"
+            : "已停止"),
+      )
+      .join("　");
+  }
+  startReceiver.disabled =
+    receivers.length > 0 && running.length === receivers.length;
+  stopReceiver.disabled = running.length === 0;
   list.append(
     machine,
     executorCard(settings.executor),
     proxySettingsCard(settings.proxy),
     idleSettingsCard(settings.warm_idle_seconds),
-    codexCliCard(settings.executor?.executor),
+    codexCliCard("codex"),
+    codexCliCard("dsh"),
+    codexMcpCard(settings.codex_mcp),
+    dshMcpCard(settings.dsh_mcp),
   );
-  // Each executor has its own collaboration entry point: Codex owns its config
-  // through `codex mcp add`, DeepSeek Harness through its home patch layer.
-  if (settings.executor?.executor === "dsh")
-    list.append(dshMcpCard(settings.dsh_mcp));
-  else list.append(codexMcpCard(settings.codex_mcp));
   list.append(updateCard());
   const diagnostics = el("section", "panel");
   diagnostics.append(

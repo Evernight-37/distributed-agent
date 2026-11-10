@@ -144,10 +144,15 @@ class DesktopSettingsActions:
             if path.is_dir() and path.resolve().parent == receivers.resolve()
         ]
 
-    def _cli_cache(self):
-        """The UI cache file for the executor currently in force."""
-        kind = self.bridge._executor().get("executor", "codex")
+    def _cli_cache(self, kind="codex"):
+        """The UI cache file for one executor."""
         return self.bridge.root / ("codex-cli.json" if kind == "codex" else "dsh-cli.json")
+
+    def _kind(self, data):
+        kind = data.get("kind", "codex")
+        if kind not in ("codex", "dsh"):
+            raise ValueError("未知的执行器")
+        return kind
 
     def _active_work(self):
         """Work that replacing the application now would interrupt."""
@@ -159,11 +164,11 @@ class DesktopSettingsActions:
                 break
         return busy
 
-    def _cli_status(self, kind=None):
-        from agent_harness.worker import cli_status, codex_login_status
+    def _cli_status(self, kind="codex"):
+        from agent_harness.worker import codex_login_status
 
         root = self.bridge._runtime().root
-        result = cli_status(root) if kind is None else executors_status_of(root, kind)
+        result = executors_status_of(root, kind)
         if result.get("found"):
             result.update(codex_login_status(result["path"], root, kind=kind))
         return result
@@ -196,6 +201,10 @@ class DesktopSettingsActions:
             return {
                 "server": self.bridge.profile["server"],
                 "services": dashboard["services"],
+                "receivers": [
+                    {"server": server, **self.bridge._runtime(server).status()}
+                    for server in self.bridge._attached_services()
+                ],
                 "can_host_locally": not enabled,
                 "local_host_enabled": enabled,
                 "background": self.bridge.profile.get("background", True),
@@ -223,7 +232,9 @@ class DesktopSettingsActions:
         if action == "codex-cli-status":
             from agent_harness.worker import codex_login_status
 
-            saved = read_json(self._cli_cache(), {})
+            kind = self._kind(data)
+            label = "DeepSeek Harness" if kind == "dsh" else "Codex"
+            saved = read_json(self._cli_cache(kind), {})
             if (
                 isinstance(saved, dict)
                 and isinstance(saved.get("path"), str)
@@ -236,23 +247,23 @@ class DesktopSettingsActions:
                     "path": saved["path"],
                     "version": saved.get("version", ""),
                 }
-                result.update(codex_login_status(saved["path"], self.bridge._runtime().root))
+                result.update(codex_login_status(saved["path"], self.bridge._runtime().root, kind=kind))
                 return result
             if isinstance(saved, dict) and saved.get("mode") == "manual":
                 return {
                     "found": False,
                     "configured": True,
-                    "error": "设置的 Codex 路径已失效，请重新选择程序",
+                    "error": "设置的 %s 路径已失效，请重新选择程序" % label,
                 }
             if isinstance(saved, dict) and saved.get("mode") == "auto" and not saved.get("path"):
                 return {
                     "found": False,
                     "configured": False,
-                    "error": saved.get("error", "未找到可运行的 Codex CLI；请点击重新检测"),
+                    "error": saved.get("error", "未找到可运行的 %s CLI；请点击重新检测" % label),
                 }
-            result = self._cli_status()
+            result = self._cli_status(kind)
             write_json(
-                self._cli_cache(),
+                self._cli_cache(kind),
                 {
                     "path": result.get("path", ""),
                     "version": result.get("version", ""),
@@ -262,17 +273,18 @@ class DesktopSettingsActions:
             )
             if result["found"]:
                 for receiver in self._receiver_paths():
-                    self.bridge._sync_cli(DesktopRuntime(receiver), result["path"])
+                    self.bridge._sync_cli(DesktopRuntime(receiver), result["path"], kind)
             return result
         if action == "codex-cli-redetect":
+            kind = self._kind(data)
             for receiver in self._receiver_paths():
-                self.bridge._sync_cli(DesktopRuntime(receiver), "")
-            result = self._cli_status()
+                self.bridge._sync_cli(DesktopRuntime(receiver), "", kind)
+            result = self._cli_status(kind)
             selected = result.get("path", "") if result.get("found") else ""
             for receiver in self._receiver_paths():
-                self.bridge._sync_cli(DesktopRuntime(receiver), selected)
+                self.bridge._sync_cli(DesktopRuntime(receiver), selected, kind)
             write_json(
-                self._cli_cache(),
+                self._cli_cache(kind),
                 {
                     "path": selected,
                     "version": result.get("version", ""),
@@ -327,9 +339,10 @@ class DesktopSettingsActions:
             result = self._cli_status(first)
             if result.get("found"):
                 for receiver in self._receiver_paths():
-                    self.bridge._sync_cli(DesktopRuntime(receiver), result["path"])
+                    self.bridge._sync_cli(DesktopRuntime(receiver), result["path"], first)
             return {"choice": choice, "status": result}
         if action == "codex-cli-save":
+            kind = self._kind(data)
             selected = data.get("path", "")
             if not isinstance(selected, str):
                 raise ValueError("本机 Agent 程序路径必须是文字")
@@ -343,14 +356,14 @@ class DesktopSettingsActions:
                         "DeepSeek Harness: dsh / dsh.cmd）"
                     )
             for receiver in self._receiver_paths():
-                self.bridge._sync_cli(DesktopRuntime(receiver), selected)
-            result = self._cli_status()
+                self.bridge._sync_cli(DesktopRuntime(receiver), selected, kind)
+            result = self._cli_status(kind)
             if not selected and result.get("found"):
                 selected = result["path"]
                 for receiver in self._receiver_paths():
-                    self.bridge._sync_cli(DesktopRuntime(receiver), selected)
+                    self.bridge._sync_cli(DesktopRuntime(receiver), selected, kind)
             write_json(
-                self._cli_cache(),
+                self._cli_cache(kind),
                 {
                     "path": selected,
                     "version": result.get("version", ""),
