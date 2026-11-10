@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.10.0 - 2026-11-10
+
+- **清理旧版本遗留**。此前没有对外发布过，为旧安装保留的兼容代码没有存在理由：
+  - 删除旧数据目录迁移（`legacy_data` / `migrate_data`）与主机状态选择里的 legacy 分支：数据只放在程序目录的 `data\`，macOS 放平台目录，不再从别的位置搬运。
+  - DeepSeek Harness 补丁条目 id 由 `harness-collab` 改为 `foolship-collab`。
+  - 后台运行时只认 `client/agent_harness/` 布局，不再识别更早的 `client/desktop_service.py`。
+  - Linux 升级器不再处理 1.1 时代的 `install.py` 特殊安装。
+  - **schema v7 删除两张死表** `file_transfers` / `file_transfer_tokens`（暂存通道退役后的残留），新建数据库也不再创建它们。
+  - Codex app-server 的 `clientInfo.name` 由 `distributed_agent_harness` 改为 `distributed_foolship`。
+- 线上标识保持不变：`harness-*` 协议域、功能开关、Python 包名 `agent_harness` 都没有改，这次删的只是本地兼容分支。
+
 ## 2.9.1 - 2026-11-10
 
 - **DeepSeek Harness 里的 MCP 服务名改为 `foolship-<哈希>`**，不再是泛化的 `harness-`。这个名称会出现在 DeepSeek Harness 的设置和带命名空间的工具名里，`harness` 太通用、容易和别的插件撞名。Codex 那边本来就是 `foolship-<profile id>`，两边现在一致。
