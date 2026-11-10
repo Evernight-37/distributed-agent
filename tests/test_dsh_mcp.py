@@ -9,7 +9,7 @@ from agent_harness import dsh_mcp, executors
 from agent_harness.common import write_json
 
 LAUNCH = [r"C:\python.exe", "-X", "utf8", r"C:\app\mcp_adapter.py", "--grant", r"C:\data\grant.json"]
-NAME = "harness-abc12345"
+NAME = "foolship-abc12345"
 PROJECT = {"model": "deepseek-flash", "effort": "medium", "local_control": True}
 
 

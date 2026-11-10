@@ -68,7 +68,7 @@ def server_name(mcp_name):
     import hashlib
 
     digest = hashlib.sha256(mcp_name.encode("utf-8")).hexdigest()[:8]
-    return "harness-" + digest
+    return "foolship-" + digest
 
 
 def entry(launch, name):
@@ -178,7 +178,7 @@ def recorded_launch(root_home=None, profile=DEFAULT_PROFILE):
     return None
 
 
-def repair(root_home=None, launch=None, name="harness", probe=None, profile=DEFAULT_PROFILE):
+def repair(root_home=None, launch=None, name="foolship", probe=None, profile=DEFAULT_PROFILE):
     """Re-point a stale entry whose command no longer exists.
 
     Moving user data leaves the recorded launcher path pointing at the old
@@ -197,7 +197,7 @@ def repair(root_home=None, launch=None, name="harness", probe=None, profile=DEFA
     return {"repaired": True, **status(root_home=root_home, launch=launch, name=name, profile=profile)}
 
 
-def status(root_home=None, launch=None, name="harness", profile=DEFAULT_PROFILE):
+def status(root_home=None, launch=None, name="foolship", profile=DEFAULT_PROFILE):
     """Report whether this module's entry is present and still up to date."""
     path = patch_path(profile, root_home)
     try:
@@ -219,7 +219,7 @@ def status(root_home=None, launch=None, name="harness", profile=DEFAULT_PROFILE)
     }
 
 
-def install(root_home=None, launch=None, name="harness", probe=None, profile=DEFAULT_PROFILE):
+def install(root_home=None, launch=None, name="foolship", probe=None, profile=DEFAULT_PROFILE):
     """Add or refresh this module's entry, then prove the file still composes."""
     if not launch:
         raise ValueError("缺少 MCP 启动命令")
@@ -286,6 +286,6 @@ def remove(root_home=None, profile=DEFAULT_PROFILE):
     return {"installed": False, "removed": True, "path": str(path), "profile": profile, "backup": str(backup)}
 
 
-def snippet(launch, name="harness"):
+def snippet(launch, name="foolship"):
     """The exact lines a user can paste when the file must not be edited."""
     return MARKER + "\n" + line(launch, name) + "\n"
