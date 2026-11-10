@@ -133,7 +133,7 @@ python tests/cleanroom_release.py dist/Foolship build/cleanroom
 
 **Windows 上属于这个应用的东西都在安装目录内**：程序本身、用户数据 `data\`、后台接收端运行时 `service-runtime\`。整个目录可以直接复制或备份；升级只替换程序文件，从不写入或删除 `data\`。
 
-用户数据默认放在 `data\`。如果那里还没有数据，而平台目录 `%LOCALAPPDATA%\Foolship\data` 里有一份更早的拷贝，首次启动会把它复制过来，原目录改名为 `data.migrated-<时间>` 保留作为备份；复制失败则继续使用旧位置。改名前的 `%LOCALAPPDATA%\AgentHarness\data` 不会被自动迁移：那种位置只在更早的版本里使用过，需要的话手动把内容拷进 `data\`。`service-runtime\` 是运行时的按版本哈希副本，启动时只保留当前使用的一份，旧版本自动清理。
+用户数据默认放在 `data\`；可写时只放在这里，不会再去别的位置找。`service-runtime\` 是运行时的按版本哈希副本，启动时只保留当前使用的一份，旧版本自动清理。
 
 需要把数据放到别处时，设置环境变量 `FOOLSHIP_STATE` 指向目标目录即可（任意路径、任意磁盘）。注意：数据在应用目录内，意味着**手动删除应用文件夹会一并删除数据**；改用应用内更新则不会有这个问题。
 

@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 
 SERVER_MODULE = "@deepseek-ai/dsh-mcp-client"
-ENTRY_ID = "harness-collab"
+ENTRY_ID = "foolship-collab"
 MARKER = "# foolship: managed DeepSeek Harness collaboration MCP entry"
 HOME_ENV = "DSH_HOME"
 # The desktop app is the profile a person actually talks to DeepSeek Harness

@@ -36,14 +36,12 @@
 | `src/agent_harness/direct_receive.py` | 桌面接收方：自己的 Ed25519 身份（`transfer-key.json`，公钥经 `transfer-key-publish` 上报）、`incoming`/`outgoing`、自动与手动接受、后台拉取与进度上报、应用打开期间每 4 秒消费一次 |
 | 中心 | op `transfer-direct-offer/respond/list/progress/key-publish`；respond 透传 `node` 与 `claim_key`；`transfer-peers` 带上各设备的 `transfer_public_key`；设备端点 `transfer-respond/progress` |
 | 界面 | `file-transfer-dashboard` 返回 `direct` 列表（收/发两个方向），速传页新增"直连传输"区块；确认/拒绝走 `file-transfer-direct-respond` |
-| 旧暂存通道 | 已整体删除：`file_transfers.py`、`file_transfer_client.py`、`headless_transfers.py`、设备端上传/下载端点、面板分片接口，以及 5 个桌面动作。`transfer-peers` 的名单查询已挪进 `direct_signaling.peers`；接收目录设置由 `direct_receive` 独占 |
+| 旧暂存通道 | 已整体删除：`file_transfers.py`、`file_transfer_client.py`、`headless_transfers.py`、设备端上传/下载端点、面板分片接口，以及 5 个桌面动作。数据库里的 `file_transfers` / `file_transfer_tokens` 两张表也由 schema v7 删除。`transfer-peers` 的名单查询在 `direct_signaling.peers`；接收目录设置由 `direct_receive` 独占 |
 
-## 剩余工作（按顺序）
+## 剩余工作
 
 1. **双机端到端验证**：本机测试覆盖不到 tailnet 连通性、真实中心与两台机器的时间窗；
    桌面接收路径目前只有本机 socket + 假中心的测试
-2. **数据库里的旧表**：`file_transfers` / `file_transfer_tokens` 已无代码读写，但 `SCHEMA_V4`
-   仍在建它们，`_v4_layout_current` 也仍以它们判断布局。要清理得加一次迁移，收益不大，暂时留着
 
 ## 已知风险
 

@@ -43,20 +43,20 @@ class ServiceInstallTests(unittest.TestCase):
             bundle = root / "download"
             destination = root / "installed"
             (bundle / "runtime").mkdir(parents=True)
-            (bundle / "client").mkdir()
+            (bundle / "client/agent_harness").mkdir(parents=True)
             (bundle / "runtime/python.exe").write_bytes(b"python")
-            (bundle / "client/desktop_service.py").write_bytes(b"v1")
+            (bundle / "client/agent_harness/desktop_service.py").write_bytes(b"v1")
             first = install_bundle(bundle, destination)
             self.assertEqual(len(first.name), 16)
             self.assertEqual(len((first / ".complete").read_text(encoding="ascii")), 64)
             self.assertEqual(install_bundle(bundle, destination), first)
-            self.assertEqual((first / "client/desktop_service.py").read_bytes(), b"v1")
-            (bundle / "client/desktop_service.py").write_bytes(b"v2")
+            self.assertEqual((first / "client/agent_harness/desktop_service.py").read_bytes(), b"v1")
+            (bundle / "client/agent_harness/desktop_service.py").write_bytes(b"v2")
             second = install_bundle(bundle, destination)
             self.assertNotEqual(first, second)
-            self.assertEqual((first / "client/desktop_service.py").read_bytes(), b"v1")
-            self.assertEqual((second / "client/desktop_service.py").read_bytes(), b"v2")
-            (second / "client/desktop_service.py").write_bytes(b"corrupt")
+            self.assertEqual((first / "client/agent_harness/desktop_service.py").read_bytes(), b"v1")
+            self.assertEqual((second / "client/agent_harness/desktop_service.py").read_bytes(), b"v2")
+            (second / "client/agent_harness/desktop_service.py").write_bytes(b"corrupt")
             with self.assertRaisesRegex(RuntimeError, "校验失败"):
                 install_bundle(bundle, destination)
 

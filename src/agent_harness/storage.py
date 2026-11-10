@@ -14,7 +14,7 @@ from pathlib import Path
 from agent_harness.common import lock
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 BACKUP_RETENTION = 5
 
 
@@ -89,39 +89,6 @@ DROP TABLE IF EXISTS sessions;
 
 SCHEMA_V4 = """
 DROP TABLE IF EXISTS artifact_tokens;
-CREATE TABLE IF NOT EXISTS file_transfers(
-    id TEXT PRIMARY KEY,
-    sender_id TEXT NOT NULL,
-    sender_node TEXT NOT NULL,
-    recipient_id TEXT NOT NULL,
-    recipient_node TEXT,
-    name TEXT NOT NULL,
-    size INTEGER NOT NULL CHECK(size > 0),
-    sha256 TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN (
-        'requested','accepted','uploading','ready','completed',
-        'rejected','cancelled','expired'
-    )),
-    received_bytes INTEGER NOT NULL DEFAULT 0 CHECK(received_bytes >= 0),
-    created_at REAL NOT NULL,
-    updated_at REAL NOT NULL,
-    accepted_at REAL,
-    completed_at REAL,
-    expires_at REAL
-);
-CREATE INDEX IF NOT EXISTS file_transfers_sender
-    ON file_transfers(sender_id,state,updated_at);
-CREATE INDEX IF NOT EXISTS file_transfers_recipient
-    ON file_transfers(recipient_id,state,updated_at);
-CREATE TABLE IF NOT EXISTS file_transfer_tokens(
-    token_hash TEXT PRIMARY KEY,
-    transfer_id TEXT NOT NULL,
-    account_id TEXT NOT NULL,
-    node TEXT NOT NULL,
-    purpose TEXT NOT NULL CHECK(purpose IN ('upload','download')),
-    expires_at REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS file_transfer_tokens_expiry ON file_transfer_tokens(expires_at);
 CREATE TABLE IF NOT EXISTS project_workspaces(
     project_id TEXT NOT NULL,
     owner_id TEXT NOT NULL,
@@ -171,15 +138,17 @@ CREATE INDEX IF NOT EXISTS attachment_approvals_owner
     ON attachment_approvals(owner_id,state,created_at);
 """
 
+# The retired staged-transfer channel left two tables behind. Nothing reads or
+# writes them, and the channel itself is gone, so the migration drops them.
+SCHEMA_V7 = """
+DROP TABLE IF EXISTS file_transfers;
+DROP TABLE IF EXISTS file_transfer_tokens;
+"""
+
 
 def _v4_layout_current(connection):
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    return (
-        "file_transfers" in tables
-        and "file_transfer_tokens" in tables
-        and "project_workspaces" in tables
-        and "project_artifacts" not in tables
-    )
+    return "project_workspaces" in tables and "project_artifacts" not in tables
 
 
 def _private(path, directory=False):
@@ -457,6 +426,20 @@ def migrate_database(database, backup_root=None):
                         (6, time.time()),
                     )
                     connection.execute("PRAGMA user_version=6")
+                if (
+                    current < 7
+                    or connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name IN ('file_transfers','file_transfer_tokens')"
+                    ).fetchone()
+                ):
+                    for statement in SCHEMA_V7.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+                        (7, time.time()),
+                    )
+                    connection.execute("PRAGMA user_version=7")
                 connection.commit()
                 _integrity(connection)
                 connection.execute("PRAGMA journal_mode=WAL")

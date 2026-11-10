@@ -1,7 +1,6 @@
 """Runtime paths shared by the local panel and packaged application."""
 
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -46,11 +45,6 @@ def _writable(directory):
         return False
 
 
-def legacy_data():
-    """Where data lived before it moved beside the application."""
-    return application_home() / "data"
-
-
 def beside_app_data():
     """Data beside a portable or installed copy, or None when that makes no sense."""
     if sys.platform == "darwin":
@@ -69,70 +63,21 @@ def beside_app_data():
 def data_home():
     """Resolve the data directory.
 
-    Order matters: an explicit ``FOOLSHIP_STATE`` wins, then an existing
-    beside-the-application directory, then an existing legacy directory, and only
-    for a fresh copy do we choose beside the application. An older install
-    therefore keeps running from the data it already has instead of appearing
-    empty after an upgrade.
+    ``FOOLSHIP_STATE`` wins; otherwise a portable or installed copy keeps its
+    data beside the application, and macOS (a sealed .app bundle) uses the
+    platform location.
     """
     override = os.environ.get("FOOLSHIP_STATE")
     if override:
         return Path(override)
     beside = beside_app_data()
-    if beside is not None and beside.is_dir():
-        return beside
-    legacy = legacy_data()
-    if legacy.is_dir():
-        return legacy
     if beside is not None:
         return beside
-    return legacy
-
-
-def migrate_data(next_to, legacy=None):
-    """Copy an existing legacy data directory beside the application.
-
-    Returns the directory to use. The copy is built aside and renamed into place
-    only when complete, so an interrupted run leaves the previous data intact and
-    keeps using it. The legacy directory is kept as a backup, renamed so that a
-    later start cannot silently go back to stale data.
-    """
-    import time
-
-    destination = Path(next_to)
-    source = Path(legacy or legacy_data())
-    if not source.is_dir() or destination.exists():
-        return destination
-    if not _writable(destination.parent):
-        return source
-    staging = destination.with_name(destination.name + ".migrating")
-    shutil.rmtree(staging, ignore_errors=True)
-    try:
-        shutil.copytree(source, staging)
-    except OSError:
-        shutil.rmtree(staging, ignore_errors=True)
-        return source
-    try:
-        staging.rename(destination)
-    except OSError:
-        shutil.rmtree(staging, ignore_errors=True)
-        return source
-    backup = source.with_name(source.name + ".migrated-" + time.strftime("%Y%m%d%H%M%S"))
-    try:
-        source.rename(backup)
-    except OSError:
-        pass
-    return destination
+    return application_home() / "data"
 
 
 def default_state():
-    """The default ``--state``/data root, migrating legacy data when needed."""
-    override = os.environ.get("FOOLSHIP_STATE")
-    if override:
-        return Path(override)
-    beside = beside_app_data()
-    if beside is not None and not beside.is_dir() and legacy_data().is_dir():
-        return migrate_data(beside)
+    """The default ``--state``/data root."""
     return data_home()
 
 

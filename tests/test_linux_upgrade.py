@@ -35,7 +35,6 @@ def valid_members(version="1.1.0"):
         ("Foolship-linux/client/VERSION", version.encode()),
         ("Foolship-linux/client/linux_receiver.py", b"# receiver"),
         ("Foolship-linux/client/mcp_adapter.py", b"# adapter"),
-        ("Foolship-linux/install.py", b"# installer"),
         ("Foolship-linux/.venv/", b""),
         ("Foolship-linux/.venv/bin/", b""),
         ("Foolship-linux/.venv/bin/python", b"#!/bin/sh\n"),
@@ -152,7 +151,7 @@ class LinuxUpgradeTests(unittest.TestCase):
                 result = linux_upgrade.upgrade(root, bundle, digest, refresh)
             self.assertEqual(result["version"], "1.1.0")
             self.assertTrue(result["rollback_available"])
-            run.assert_called_once()
+            run.assert_not_called()
             self.assertEqual(len(calls), 2)
             self.assertEqual(calls[0].installs, 1)
             state = read_json(root.parent / "install-state.json")
@@ -274,7 +273,7 @@ class LinuxUpgradeTests(unittest.TestCase):
             bundle = Path(directory) / "bundle.tar.gz"
             make_tar(bundle, valid_members("1.2.0"))
             digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
-            install_error = linux_upgrade.subprocess.CalledProcessError(1, ["install"])
+            install_error = ValueError("install")
             destination = (root.parent / "releases/1.2.0").resolve()
             original_rmtree = linux_upgrade.shutil.rmtree
 
@@ -284,7 +283,7 @@ class LinuxUpgradeTests(unittest.TestCase):
                 return original_rmtree(path, *args, **kwargs)
 
             with (
-                patch.object(linux_upgrade.subprocess, "run", side_effect=install_error),
+                patch.object(linux_upgrade, "_runtime", side_effect=install_error),
                 patch.object(linux_upgrade.shutil, "rmtree", side_effect=cleanup),
             ):
                 with self.assertRaisesRegex(RuntimeError, "清理也未完成") as caught:

@@ -49,14 +49,13 @@ MCP_DELEGATE_SCOPES = [
 ]
 
 
-def pick_host_state(default, saved, has_database, knows_account, is_legacy=None):
+def pick_host_state(default, saved, has_database, knows_account):
     """Choose the collaboration service's state directory.
 
     A saved path can outlive the data it pointed at: moving user data leaves the
     profile pointing at the old directory, and starting the service there creates
     an empty database whose account has no devices. Data that actually holds this
-    account wins; a location the user deliberately chose is still honoured; a path
-    inside the directory we migrated away from is treated as stale.
+    account wins; a location the user deliberately chose is still honoured.
     """
     default = Path(default).expanduser().resolve()
     saved = Path(saved).expanduser().resolve() if saved else None
@@ -66,8 +65,6 @@ def pick_host_state(default, saved, has_database, knows_account, is_legacy=None)
         return default
     if knows_account(saved):
         return saved
-    if is_legacy and is_legacy(saved):
-        return default
     if has_database(default) and not has_database(saved):
         return default
     return saved
@@ -166,26 +163,14 @@ class AppBridge:
         return server
 
     def _host_state_root(self):
-        from agent_harness.runtime_paths import legacy_data
-
         default = self.root / "team-service"
         saved = (self.profile or {}).get("local_host_state")
-        legacy = legacy_data().resolve()
-
-        def is_legacy(state):
-            candidate = Path(state).expanduser().resolve()
-            try:
-                candidate.relative_to(legacy)
-            except ValueError:
-                return False
-            return True
 
         chosen = pick_host_state(
             default,
             saved,
             has_database=self._state_has_database,
             knows_account=self._state_knows_account,
-            is_legacy=is_legacy,
         )
         if saved and chosen != Path(saved).expanduser().resolve() and self.profile is not None:
             # Remember the correction so the next start does not repeat the search.

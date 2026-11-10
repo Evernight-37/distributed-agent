@@ -88,7 +88,7 @@ class AppServer:
             "initialize",
             {
                 "clientInfo": {
-                    "name": "distributed_agent_harness",
+                    "name": "distributed_foolship",
                     "title": "Distributed Foolship",
                     "version": application_version(),
                 }

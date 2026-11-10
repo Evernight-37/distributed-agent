@@ -21,7 +21,7 @@ from tests.helpers import provision_account
 
 
 class StorageMigrationTests(unittest.TestCase):
-    def test_v6_adds_the_direct_transfer_table_to_an_older_database(self):
+    def test_an_older_database_gains_the_direct_transfer_table(self):
         with tempfile.TemporaryDirectory() as folder:
             database = Path(folder) / "hub.sqlite3"
             migrate_database(database)
@@ -31,7 +31,7 @@ class StorageMigrationTests(unittest.TestCase):
                 db.commit()
             migrate_database(database)
             with closing(sqlite3.connect(database)) as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 6)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 7)
                 self.assertTrue(db.execute("SELECT 1 FROM sqlite_master WHERE name='direct_transfers'").fetchone())
 
     def test_online_backup_and_offline_restore_preserve_service_data(self):
@@ -154,8 +154,6 @@ class StorageMigrationTests(unittest.TestCase):
                         "project_memory_notes",
                         "account_event_sequences",
                         "account_events",
-                        "file_transfers",
-                        "file_transfer_tokens",
                         "project_workspaces",
                         "schema_migrations",
                     }.issubset(tables)
@@ -280,8 +278,8 @@ class StorageMigrationTests(unittest.TestCase):
             with closing(sqlite3.connect(database)) as db:
                 db.executescript(
                     """
-                    DROP TABLE file_transfer_tokens;
-                    DROP TABLE file_transfers;
+                    DROP TABLE IF EXISTS file_transfer_tokens;
+                    DROP TABLE IF EXISTS file_transfers;
                     DROP TABLE project_workspaces;
                     CREATE TABLE project_artifacts(id TEXT PRIMARY KEY);
                     CREATE TABLE artifact_tokens(token_hash TEXT PRIMARY KEY);
@@ -301,7 +299,9 @@ class StorageMigrationTests(unittest.TestCase):
                     db.execute("SELECT id FROM retired_project_artifacts_v21").fetchone()[0],
                     "retired-local-build-row",
                 )
-                self.assertTrue({"file_transfers", "file_transfer_tokens", "project_workspaces"}.issubset(tables))
+                self.assertIn("project_workspaces", tables)
+                self.assertNotIn("file_transfers", tables)
+                self.assertNotIn("file_transfer_tokens", tables)
 
     def test_backup_retention_is_bounded(self):
         with tempfile.TemporaryDirectory() as temporary:

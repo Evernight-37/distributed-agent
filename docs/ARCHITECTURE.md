@@ -25,7 +25,7 @@ Desktop WebView 入口为 `assets/web/app.html`。样式位于 `assets/web/style
 - `production_app.py`、`app_bridge.py`：桌面窗口与受限本机 API。
 - `account_*`、`owner_*`：账户身份、设备归属与机器主人的授权边界。
 - `collaboration_store.py`、`broker.py`、`coordinator.py`、`project_memory.py`：项目数据、消息、任务路由与项目记忆。
-- `file_transfers.py`、`file_transfer_client.py`：独立于项目的账户/设备传输状态机，以及不经过 JSON/Base64 的原生分块传输。
+- `direct_transfer.py`、`direct_signaling.py`、`direct_send.py`、`direct_receive.py`、`transfer_trust.py`：设备到设备的文件速传。字节只在两台机器的 tailnet 地址之间流动，协作服务只保存“谁发给谁、大小、地址”和状态。
 - `desktop_*`、`pull_worker.py`：本机接收服务和连接生命周期。正式桌面 WebView 通过受密钥保护的 loopback `/desktop/*` 接口控制后台服务，不再维护第二套浏览器控制台。
 - `executors.py`：本机执行器适配层。一台机器只用一种执行器（Codex 或 DeepSeek Harness），由接收端 `executor.json` 决定；它负责可执行文件探测、命令构造、权限环境，并把各家的事件流归一成 `thread.started`/`item.completed`/`turn.completed`/`turn.failed`，因此 worker、coordinator 和 broker 不需要认识第二套协议。DeepSeek Harness 没有常驻 app-server，它的群聊托管轮次退回一次性进程。
 - `worker.py`、`warm_worker.py`、`jobrunner.py`、`appserver_client.py`：执行进程、活跃期与任务状态；`warm_worker` 与 `appserver_client` 只服务 Codex 的常驻 app-server。

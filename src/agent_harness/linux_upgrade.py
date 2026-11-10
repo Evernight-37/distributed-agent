@@ -272,11 +272,6 @@ def upgrade(root, bundle, expected_sha256, refresh_launchers, retry=False):
             os.replace(unpacked, destination)
     if not reused:
         try:
-            installer = destination / "install.py"
-            if installer.is_file():
-                # Legacy 1.1 bundles embed absolute venv paths and must be
-                # installed only after reaching their final location.
-                subprocess.run([sys.executable, str(installer)], cwd=destination, check=True)
             _runtime(destination)
             _write_bundle_marker(destination, expected)
         except (OSError, subprocess.CalledProcessError, ValueError) as exc:
