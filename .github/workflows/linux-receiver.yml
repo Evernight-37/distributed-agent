@@ -1,4 +1,4 @@
-﻿name: Verify Linux receiver
+name: Verify Linux receiver
 
 on:
   push:

@@ -1,4 +1,4 @@
-﻿name: Verify macOS support
+name: Verify macOS support
 
 on:
   push:

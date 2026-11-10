@@ -1,4 +1,4 @@
-﻿# macOS 应用
+# macOS 应用
 
 发布构建的独立 Python 选择和验证见 [发布运行环境](RELEASE-RUNTIMES.md)。
 

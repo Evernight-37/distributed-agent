@@ -1,4 +1,4 @@
-﻿import tempfile
+import tempfile
 import unittest
 import os
 from pathlib import Path

@@ -1,4 +1,4 @@
-﻿name: Release Foolship
+name: Release Foolship
 
 on:
   push:
