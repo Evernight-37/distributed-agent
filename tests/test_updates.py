@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from agent_harness import updates
 from agent_harness.common import read_json, write_json
@@ -584,6 +585,62 @@ class MarkerTests(unittest.TestCase):
             with self.assertRaises(ValueError) as raised:
                 updates.rollback(folder)
             self.assertIn("没有可以回退", str(raised.exception))
+
+
+class DownloadGateTests(unittest.TestCase):
+    """The download button must work right after the check that found the update."""
+
+    def bridge(self, root):
+        class Bridge:
+            def __init__(self, root):
+                self.root = root
+
+            identity = {"account_id": "account"}
+            profile = {"server": "http://127.0.0.1:8765"}
+
+        return Bridge(root)
+
+    def record_update(self, root):
+        document = updates.load(root)
+        document["latest_version"] = next_version()
+        document["last_checked"] = 0
+        updates.save(root, document)
+
+    def test_a_recorded_update_is_downloadable_without_a_second_check(self):
+        from agent_harness.desktop_api import DesktopSettingsActions
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.record_update(root)
+            with (
+                mock.patch.object(updates, "start_download", return_value={"status": "downloading"}) as start,
+                mock.patch.object(updates, "status", side_effect=AssertionError("must not re-check")),
+            ):
+                result = DesktopSettingsActions(self.bridge(root)).invoke("update-download", {})
+            self.assertEqual(result["status"], "downloading")
+            self.assertEqual(start.call_count, 1)
+
+    def test_nothing_recorded_is_reported_as_up_to_date(self):
+        from agent_harness.desktop_api import DesktopSettingsActions
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with (
+                mock.patch.object(updates, "status", return_value={"status": "current"}),
+                mock.patch.object(updates, "start_download") as start,
+            ):
+                with self.assertRaisesRegex(ValueError, "已经是最新版本"):
+                    DesktopSettingsActions(self.bridge(root)).invoke("update-download", {})
+            start.assert_not_called()
+
+    def test_offline_is_not_reported_as_up_to_date(self):
+        from agent_harness.desktop_api import DesktopSettingsActions
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with mock.patch.object(updates, "status", return_value={"status": "offline"}):
+                with self.assertRaisesRegex(ValueError, "连不上发布页"):
+                    DesktopSettingsActions(self.bridge(root)).invoke("update-download", {})
 
 
 if __name__ == "__main__":

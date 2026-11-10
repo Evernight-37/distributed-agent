@@ -169,6 +169,20 @@ def status(root, force=False, fetch=None, now=None):
     }
 
 
+def available(root):
+    """The newer version this machine already checked, or None.
+
+    Downloading must not require a fresh check: the check that found the update
+    records it, and the schedule then makes further checks "idle". Reading the
+    recorded version keeps the download button working right after a check.
+    """
+    document = load(root)
+    latest = document.get("latest_version")
+    if isinstance(latest, str) and is_newer(latest, application_version()):
+        return latest
+    return None
+
+
 def release_url(root):
     """The stored release page, validated before anything opens a browser."""
     document = load(root)

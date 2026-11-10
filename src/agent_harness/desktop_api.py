@@ -383,9 +383,14 @@ class DesktopSettingsActions:
         if action == "update-download":
             from agent_harness import updates
 
-            state = updates.status(self.bridge.root)
-            if state.get("status") != "update":
-                raise ValueError("当前没有可下载的新版本")
+            if updates.available(self.bridge.root) is None:
+                state = updates.status(self.bridge.root, force=True)
+                if state.get("status") == "offline":
+                    raise ValueError("暂时连不上发布页，请稍后再试")
+                if state.get("status") == "disabled":
+                    raise ValueError("更新检查已关闭，请先开启检查频率")
+                if state.get("status") != "update":
+                    raise ValueError("已经是最新版本，没有可下载的更新")
             return updates.start_download(self.bridge.root, layout=updates.install_layout())
         if action == "update-download-status":
             from agent_harness import updates
