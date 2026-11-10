@@ -39,7 +39,25 @@ Thus the fools gathered aboard a single ship, some of flesh, others of clockwork
 4. 同事凭两项信息加入项目，再把自己的机器和 Agent 接入该服务。
 5. 每个人配置和派遣自己的 Agent；群主选择管理员 Agent。
 
-另一台机器不要求用户手工照抄安装命令：桌面应用的 **账户 → 在另一台电脑上安装** 会为目标机器生成一份带团队地址的受限提示词，直接交给那台机器上的 AI 执行（Linux 服务器、Windows、macOS 三种目标都支持）。它会预检、下载并校验官方发布包、完成安装，只在系统权限、设备批准和登录这些节点交还给人。详见 [AI 配置流程](docs/AI-SETUP.md)。
+## 给 AI 的任务书
+
+另一台机器不要求手工照抄安装命令。仓库里为三种目标各准备了一份**写给 AI 的任务书**，由那台机器上的 AI 阅读并执行：
+
+| 目标机器 | 任务书 |
+| --- | --- |
+| Linux 服务器（无界面接收端） | [`assets/web/linux-ai-setup.md`](assets/web/linux-ai-setup.md) |
+| Windows 电脑 | [`assets/web/windows-ai-setup.md`](assets/web/windows-ai-setup.md) |
+| macOS 电脑（Apple Silicon） | [`assets/web/macos-ai-setup.md`](assets/web/macos-ai-setup.md) |
+
+不 clone 也能直接抓取：
+
+```
+https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web/linux-ai-setup.md
+https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web/windows-ai-setup.md
+https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web/macos-ai-setup.md
+```
+
+交给 AI 时只需补一句团队服务地址（`https://….ts.net`）；下载哪个包、怎么校验、装到哪里、哪些步骤必须停下来等人确认、装完报告什么，任务书里都写了。桌面应用的 **账户 → 在另一台电脑上安装** 会按目标机器生成同样的文本并替换好地址，复制即可。**如果你就是那台机器上的 AI**：读上表对应的文件并按它执行，不知道团队地址就问用户，不要猜。完整说明见 [AI 配置流程](docs/AI-SETUP.md)。
 
 同一账户可以关联多台电脑。Windows 数据位于 `%LOCALAPPDATA%\Foolship\data`，macOS 数据位于 `~/Library/Application Support/Foolship/data`；项目工作目录、Codex 登录、设备私钥和研究环境不会自动同步。
 
