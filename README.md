@@ -39,9 +39,11 @@ Thus the fools gathered aboard a single ship, some of flesh, others of clockwork
 4. 同事凭两项信息加入项目，再把自己的机器和 Agent 接入该服务。
 5. 每个人配置和派遣自己的 Agent；群主选择管理员 Agent。
 
-## 给 AI 的任务书
+同一账户可以关联多台电脑。Windows 数据位于 `%LOCALAPPDATA%\Foolship\data`，macOS 数据位于 `~/Library/Application Support/Foolship/data`；项目工作目录、Codex 登录、设备私钥和研究环境不会自动同步。
 
-另一台机器不要求手工照抄安装命令。仓库里为三种目标各准备了一份**写给 AI 的任务书**，由那台机器上的 AI 阅读并执行：
+## 让另一台机器上的 AI 完成安装
+
+另一台机器不需要手工照抄安装命令。仓库为三种目标各准备了一份任务书，交给那台机器上的 AI（Codex 或 DeepSeek Harness）执行即可：
 
 | 目标机器 | 任务书 |
 | --- | --- |
@@ -49,7 +51,7 @@ Thus the fools gathered aboard a single ship, some of flesh, others of clockwork
 | Windows 电脑 | [`assets/web/windows-ai-setup.md`](assets/web/windows-ai-setup.md) |
 | macOS 电脑（Apple Silicon） | [`assets/web/macos-ai-setup.md`](assets/web/macos-ai-setup.md) |
 
-不 clone 也能直接抓取：
+任务书里已经写明下载哪个包、如何校验、装到哪里、哪些步骤必须停下来等人确认、装完如何报告；唯一需要人工补充的是团队服务地址（`https://….ts.net`）。无需克隆仓库即可取用：
 
 ```
 https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web/linux-ai-setup.md
@@ -57,9 +59,7 @@ https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web
 https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web/macos-ai-setup.md
 ```
 
-交给 AI 时只需补一句团队服务地址（`https://….ts.net`）；下载哪个包、怎么校验、装到哪里、哪些步骤必须停下来等人确认、装完报告什么，任务书里都写了。桌面应用的 **账户 → 在另一台电脑上安装** 会按目标机器生成同样的文本并替换好地址，复制即可。**如果你就是那台机器上的 AI**：读上表对应的文件并按它执行，不知道团队地址就问用户，不要猜。完整说明见 [AI 配置流程](docs/AI-SETUP.md)。
-
-同一账户可以关联多台电脑。Windows 数据位于 `%LOCALAPPDATA%\Foolship\data`，macOS 数据位于 `~/Library/Application Support/Foolship/data`；项目工作目录、Codex 登录、设备私钥和研究环境不会自动同步。
+在应用里也可以直接生成：**账户 → 在另一台电脑上安装** 选择目标机器后，会得到同一份文本，并已按所选协作服务替换好地址，复制给那台机器的 AI 即可。完整说明见 [AI 配置流程](docs/AI-SETUP.md)。
 
 ## 本机执行器：Codex 或 DeepSeek Harness
 
