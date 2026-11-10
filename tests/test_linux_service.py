@@ -1,4 +1,4 @@
-import tempfile
+﻿import tempfile
 import unittest
 import os
 from pathlib import Path
@@ -9,7 +9,7 @@ from agent_harness.linux_service import ServiceManager, build_unit, unit_path
 
 class LinuxServiceTests(unittest.TestCase):
     def test_standalone_unit_uses_binary_directly(self):
-        content = build_unit("/opt/Foolship/harness", None, "/srv/harness data")
+        content = build_unit("/opt/Foolship/foolship", None, "/srv/harness data")
         self.assertIn("ExecStart=", content)
         self.assertIn(" --root ", content)
         self.assertIn(" run\n", content)
