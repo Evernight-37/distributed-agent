@@ -423,5 +423,56 @@ class PullWorkerTests(unittest.TestCase):
         self.assertTrue(project["local_control"])
 
 
+class ExecutorHealthTests(unittest.TestCase):
+    """The heartbeat must describe the CLI the model table actually uses."""
+
+    def connector(self, root):
+        connector = Connector.__new__(Connector)
+        connector.root = root
+        return connector
+
+    def executor_component(self, health):
+        return next(item for item in health["components"] if item["id"] == "executor")
+
+    def test_a_dsh_only_machine_is_not_reported_as_codex(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(root / "executor.json", {"models": [{"name": "deepseek-flash", "executor": "dsh"}]})
+            with patch("agent_harness.executors.status_of", return_value={"found": True}) as probe:
+                component = self.executor_component(self.connector(root)._health())
+            self.assertEqual(component["state"], "healthy")
+            self.assertEqual(component["message"], "已找到 DeepSeek Harness")
+            self.assertEqual(probe.call_args[0][1], "dsh")
+
+    def test_an_auto_detected_binary_counts_as_configured(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(root / "executor.json", {"models": [{"name": "gpt-5", "executor": "codex"}]})
+            with patch("agent_harness.executors.status_of", return_value={"found": True, "configured": False}):
+                component = self.executor_component(self.connector(root)._health())
+            self.assertEqual(component["state"], "healthy")
+            self.assertEqual(component["message"], "已找到 Codex")
+
+    def test_a_missing_cli_is_named_in_the_message(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(root / "executor.json", {"models": [{"name": "gpt-5", "executor": "codex"}]})
+            with patch("agent_harness.executors.status_of", return_value={"found": False}):
+                component = self.executor_component(self.connector(root)._health())
+            self.assertEqual(component["state"], "degraded")
+            self.assertEqual(component["code"], "CLI_NOT_FOUND")
+            self.assertIn("未找到 Codex CLI", component["message"])
+
+    def test_the_probe_is_cached_between_heartbeats(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(root / "executor.json", {"models": [{"name": "gpt-5", "executor": "codex"}]})
+            connector = self.connector(root)
+            with patch("agent_harness.executors.status_of", return_value={"found": True}) as probe:
+                connector._health()
+                connector._health()
+            self.assertEqual(probe.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

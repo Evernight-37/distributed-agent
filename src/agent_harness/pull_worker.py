@@ -839,18 +839,49 @@ class Connector:
     def _health(self):
         """Build a privacy-bounded heartbeat; paths and exception text stay local."""
         components = [component("receiver", "healthy", HealthCode.OK, "接收端运行正常")]
-        # The worker reads the receiver-local executor.json, so the heartbeat must
-        # read the same file; the desktop-side codex-cli.json cache never lands here.
-        setting = read_json(self.root / "executor.json", {})
-        if not isinstance(setting, dict):
-            setting = {}
-        label = "DeepSeek Harness" if setting.get("executor") == "dsh" else "Codex"
-        selected = setting.get("cli_path")
-        if isinstance(selected, str) and selected and Path(selected).is_file():
-            components.append(component("codex", "healthy", HealthCode.OK, label + " 已配置"))
-        else:
-            components.append(component("codex", "degraded", HealthCode.NOT_CONFIGURED, "尚未配置 " + label))
+        components.append(self._executor_health())
         return report(components)
+
+    def _executor_health(self):
+        """Report the CLIs this machine is actually set up to run.
+
+        The old check looked for a manually saved path, so a machine that found
+        its CLI automatically reported "not configured" forever, and it always
+        named Codex even when the model table only lists DeepSeek Harness.
+        """
+        from agent_harness import executors
+
+        record = self.root / "executor.json"
+        try:
+            stamp = record.stat().st_mtime
+        except OSError:
+            stamp = 0.0
+        cached = getattr(self, "_executor_health_cache", None)
+        if cached and cached[0] == stamp and time.monotonic() - cached[1] < 120:
+            return cached[2]
+        labels = {"codex": "Codex", "dsh": "DeepSeek Harness"}
+        try:
+            kinds = sorted({item["executor"] for item in executors.models(self.root)})
+        except (OSError, ValueError):
+            kinds = [executors.CODEX]
+        found, missing = [], []
+        for kind in kinds:
+            try:
+                state = executors.status_of(self.root, kind)
+            except (OSError, ValueError):
+                state = {"found": False}
+            (found if state.get("found") else missing).append(labels.get(kind, kind))
+        if missing:
+            entry = component(
+                "executor",
+                "degraded",
+                HealthCode.CLI_NOT_FOUND,
+                "未找到 " + "、".join(missing) + " CLI",
+            )
+        else:
+            entry = component("executor", "healthy", HealthCode.OK, "已找到 " + "、".join(found))
+        self._executor_health_cache = (stamp, time.monotonic(), entry)
+        return entry
 
 
 def main():
