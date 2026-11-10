@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.11.0 - 2026-11-11
+
+- **设置页不再按"每台机器一个执行器"组织**。派发早就按模型决定用哪个 CLI，但设置页还有三处按旧字段判断，结果是模型表里有 DeepSeek Harness 模型时，DeepSeek Harness 的协作入口根本不显示。
+  - Codex 与 DeepSeek Harness 各自一张 CLI 卡和一张协作卡；`codex-cli-*` 动作按 `kind` 取缓存，手动指定的程序存为 `executor.json` 的 `cli_paths`（每种 CLI 一条），探测一个 CLI 不再依赖机器默认执行器。
+  - 代理只剩一栏"本机代理端口"，旁边说明每个 Agent 在"模型请求代理"里各自选择跟随本机、直连或自定义端口；原来的复选框暗示了一个并不存在的全局开关。
+  - "本机接收任务"改为"本机状态"：显示每个已接入服务的接收服务是否运行、是否在线，按钮按状态禁用。`settings-get` 新增 `receivers` 字段。
+- 构建产物 `src/foolship.egg-info/` 不再进版本库。
+
 ## 2.10.2 - 2026-11-11
 
 - **修正执行器的说明**：README 把它写成"每个机器二选一"，并指向已经不存在的设置项。实际是按模型分派——`设置 → 本机可用模型` 维护一张模型到 CLI 的表，同一台机器可以同时跑 Codex 和 DeepSeek Harness，员工的模型从表里选，派发时按模型决定。同一条旧说法在 `dashboard.js` 的提示和两条报错文案里也已改掉；`ARCHITECTURE.md` 与 `LINUX.md` 同步更新，并说明无界面端的 `foolship executor set` 写的是机器级默认，和桌面那张表不是同一份配置。
