@@ -1,10 +1,8 @@
-﻿# Foolship
+# Foolship
 
 Foolship 是面向小型可信团队的分布式 Agent 协作应用。每个人管理自己电脑上的 Codex 或 DeepSeek Harness、模型、目录和执行权限；项目服务负责成员、会话、共享记忆与任务路由。
 
-## 愚人船 · Foolship
-
-### 中文｜愚人船
+## 一则寓言
 
 『智识以已知丈量寰宇，却唯有未知，能为其疆界赋予意义。倘若最后一道命题终获证明，试问，那将是真理的凯旋，还是求知的葬礼？』
 
@@ -12,7 +10,7 @@ Foolship 是面向小型可信团队的分布式 Agent 协作应用。每个人�
 
 『哎呀，何必说得那般庄严？咱们不过是想给那颗机器头，讲个祂还没听过的笑话罢了！』
 
-### English｜Foolship
+---
 
 “Erudition charts the cosmos by what is known, yet only the unknown lends meaning to its horizons. Should the final proposition ever be proven, would it herald the triumph of truth—or the death of inquiry?”
 
