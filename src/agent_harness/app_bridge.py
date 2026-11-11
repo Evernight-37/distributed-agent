@@ -103,6 +103,7 @@ class AppBridge:
             ),
         )
         self.allow_window_close = False
+        self.on_background = None
         self.broker_proxy = read_json(self.root / "broker-network.json", {}).get("proxy")
 
     def _profiles(self):

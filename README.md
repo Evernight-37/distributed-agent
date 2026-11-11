@@ -20,17 +20,17 @@ Thus the fools gathered aboard a single ship, some of flesh, others of clockwork
 
 ## 安装
 
-当前稳定版为 **2.11.5**，有两种装法：
+当前稳定版为 **2.11.6**，有两种装法：
 
 - **自己装**：从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases/latest) 下载与系统和 CPU 架构相符的发布包。
 - **让那台机器上的 AI 装**：把对应的任务书交给它，由它下载、校验、安装（见下）。
 
 | 使用环境 | 下载文件 | 使用方法 |
 | --- | --- | --- |
-| Windows x64（推荐） | `Foolship-2.11.5-windows-x64-setup.exe` | 双击按向导安装，从开始菜单启动 |
-| Windows x64（便携） | `Foolship-2.11.5-windows-x64.zip` | 完整解压到独立目录，运行其中的 `Foolship.exe`；不要只复制 EXE |
-| macOS Apple Silicon | `Foolship-2.11.5-macos-arm64.zip` | 解压后把 `Foolship.app` 放进“应用程序”打开；未做 Apple 签名，系统可能要求在隐私与安全性中确认 |
-| Linux x64 / ARM64 | `Foolship-2.11.5-linux-x64.tar.gz` 或 `Foolship-2.11.5-linux-arm64.tar.gz` | 无界面接收端，见 [Linux 说明](docs/LINUX.md) |
+| Windows x64（推荐） | `Foolship-2.11.6-windows-x64-setup.exe` | 双击按向导安装，从开始菜单启动 |
+| Windows x64（便携） | `Foolship-2.11.6-windows-x64.zip` | 完整解压到独立目录，运行其中的 `Foolship.exe`；不要只复制 EXE |
+| macOS Apple Silicon | `Foolship-2.11.6-macos-arm64.zip` | 解压后把 `Foolship.app` 放进“应用程序”打开；未做 Apple 签名，系统可能要求在隐私与安全性中确认 |
+| Linux x64 / ARM64 | `Foolship-2.11.6-linux-x64.tar.gz` 或 `Foolship-2.11.6-linux-arm64.tar.gz` | 无界面接收端，见 [Linux 说明](docs/LINUX.md) |
 
 发布包自带运行时，不需要另行安装 Python、pip 或 venv。Windows 需要 Edge WebView2；每台实际执行 Agent 的机器仍需安装并登录 Codex 或 DeepSeek Harness。升级只替换程序文件，不动账户数据。
 

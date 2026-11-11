@@ -92,6 +92,8 @@ def main(output_root=None):
             "clr_loader",
             "--collect-all",
             "cryptography",
+            "--collect-submodules",
+            "pystray",
             "--hidden-import",
             "webview.platforms.edgechromium",
             "--hidden-import",

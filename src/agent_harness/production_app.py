@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from agent_harness.desktop_runtime import web_assets
 from agent_harness.app_bridge import AppBridge
+from agent_harness.instance import Instance
+from agent_harness import tray as tray_module
 
 
 def request_close_dialog(window, bridge):
@@ -49,6 +51,18 @@ def main():
     import webview
 
     bridge = AppBridge(args.data)
+    holder = {}
+
+    def raise_window():
+        window = holder.get("window")
+        if window is not None:
+            window.show()
+
+    instance = Instance(bridge.root)
+    if not instance.claim(on_show=raise_window):
+        # Another process owns this data directory and has been asked to show
+        # itself; starting a second window would fight over the same ports.
+        return 0
     diagnostic_path = bridge.root / "app-errors.log"
     diagnostic_handler = RotatingFileHandler(
         diagnostic_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
@@ -76,6 +90,17 @@ def main():
         min_size=(800, 600),
     )
     bridge.window = window
+    holder["window"] = window
+
+    tray = None
+    if tray_module.available():
+        # Hiding the window only makes sense when a tray icon can bring it back.
+        def quit_from_tray():
+            threading.Thread(target=lambda: bridge.invoke("app-exit", {}), daemon=True).start()
+
+        tray = tray_module.Tray("Foolship", window.show, quit_from_tray)
+        tray.start()
+        bridge.on_background = window.hide
 
     def closing():
         if bridge.allow_window_close or args.smoke_report:
@@ -86,7 +111,14 @@ def main():
         return False
 
     window.events.closing += closing
-    window.events.closed += bridge.close
+
+    def closed():
+        if tray is not None:
+            tray.stop()
+        instance.release()
+        bridge.close()
+
+    window.events.closed += closed
 
     def loaded():
         if args.smoke_report:

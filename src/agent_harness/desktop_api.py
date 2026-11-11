@@ -79,6 +79,12 @@ class DesktopSessionActions:
 
                 result = Lifecycle(self.bridge.root, host_root=self.bridge._host_state_root()).stop()
             else:
+                hide = getattr(self.bridge, "on_background", None)
+                if hide is not None:
+                    # A tray icon is the way back, so the window is hidden rather
+                    # than destroyed and the services keep running.
+                    hide()
+                    return {"background": True}
                 result = {"background": True}
             self.bridge.allow_window_close = True
             if self.bridge.window:
