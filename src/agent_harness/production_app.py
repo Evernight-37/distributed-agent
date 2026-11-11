@@ -101,6 +101,9 @@ def main():
         tray = tray_module.Tray("Foolship", window.show, quit_from_tray)
         tray.start()
         bridge.on_background = window.hide
+    elif sys.platform == "darwin":
+        # No tray on macOS, but a minimised window is restored from the Dock.
+        bridge.on_background = window.minimize
 
     def closing():
         if bridge.allow_window_close or args.smoke_report:

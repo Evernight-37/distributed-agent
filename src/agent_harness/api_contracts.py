@@ -236,6 +236,7 @@ DESKTOP_CONTROL = BoundaryContract(
     frozenset(
         {
             "app-background",
+            "app-capabilities",
             "app-exit",
             "app-services",
             "approve-execution",

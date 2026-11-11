@@ -40,6 +40,7 @@ class DesktopSessionActions:
 
     actions = frozenset(
         {
+            "app-capabilities",
             "app-services",
             "app-exit",
             "app-background",
@@ -54,6 +55,10 @@ class DesktopSessionActions:
         self.bridge = bridge
 
     def invoke(self, action, payload):
+        if action == "app-capabilities":
+            # Background mode is only offered where the window can be brought
+            # back: a tray icon on Windows, the Dock on macOS.
+            return {"background": callable(getattr(self.bridge, "on_background", None))}
         if action in {"app-services", "health-status"}:
             from agent_harness.app_lifecycle import Lifecycle
 

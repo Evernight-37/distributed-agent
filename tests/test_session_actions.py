@@ -42,6 +42,19 @@ class BackgroundTests(unittest.TestCase):
             self.assertEqual(result, {"background": True})
             self.assertTrue(bridge.allow_window_close)
 
+    def test_capabilities_follow_the_shell(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bridge = self.bridge(Path(folder))
+            self.assertEqual(
+                DesktopSessionActions(bridge).invoke("app-capabilities", {}),
+                {"background": False},
+            )
+            bridge.on_background = lambda: None
+            self.assertEqual(
+                DesktopSessionActions(bridge).invoke("app-capabilities", {}),
+                {"background": True},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

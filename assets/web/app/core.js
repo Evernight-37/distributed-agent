@@ -172,6 +172,12 @@ async function requestAppClose() {
   const state = { busy: false };
   quitDialog = state;
   clearTimeout(teamTimer);
+  let canBackground = false;
+  try {
+    canBackground = !!(await api("app-capabilities"))?.background;
+  } catch {
+    canBackground = false;
+  }
   modal("退出协作工作台", (body, actions) => {
     body.append(
       el(
@@ -182,24 +188,27 @@ async function requestAppClose() {
     );
     note(
       body,
-      "如果本机正在提供协作服务，其他成员会暂时无法连接。账户、项目和文件会保留；已启动的独立作业不会被取消。选择后台运行时窗口会隐藏，从系统托盘图标可以再打开。",
+      canBackground
+        ? "如果本机正在提供协作服务，其他成员会暂时无法连接。账户、项目和文件会保留；已启动的独立作业不会被取消。选择后台运行时窗口会收起到系统托盘或程序坞，任务接收服务继续运行。"
+        : "如果本机正在提供协作服务，其他成员会暂时无法连接。账户、项目和文件会保留；已启动的独立作业不会被取消。这个平台没有托盘图标，关闭窗口即完全退出。",
     );
     const detail = el("p", "muted small", "正在检查本机服务…"),
       progress = el("p", "muted small");
     body.append(detail, progress);
     const cancel = button("取消", closeModal),
-      background = button("继续后台运行"),
+      background = canBackground ? button("继续后台运行") : null,
       exit = button("完全退出", null, "primary");
-    background.onclick = () => finish("app-background");
+    if (background) background.onclick = () => finish("app-background");
     exit.onclick = () => finish("app-exit");
-    actions.append(cancel, background, exit);
+    actions.append(cancel, ...(background ? [background] : []), exit);
     cancel.focus();
+    const stopButtons = [cancel, background, exit, $("closeModal")].filter(
+      Boolean,
+    );
     async function finish(action) {
       if (state.busy || quitDialog !== state) return;
       state.busy = true;
-      [cancel, background, exit, $("closeModal")].forEach(
-        (b) => (b.disabled = true),
-      );
+      stopButtons.forEach((b) => (b.disabled = true));
       progress.className = "muted small";
       progress.textContent =
         action === "app-exit"
@@ -209,9 +218,7 @@ async function requestAppClose() {
         await api(action);
       } catch (e) {
         state.busy = false;
-        [cancel, background, exit, $("closeModal")].forEach(
-          (b) => (b.disabled = false),
-        );
+        stopButtons.forEach((b) => (b.disabled = false));
         progress.className = "error";
         progress.textContent =
           "未能完成退出：" + e.message + "。窗口已保留，请重试。";
