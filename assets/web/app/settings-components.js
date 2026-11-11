@@ -299,7 +299,7 @@ function executorCard(current) {
               (status?.error || "请检查安装"),
             true,
           );
-        await refresh(true);
+        await refresh();
       } catch (error) {
         notify("保存失败：" + error.message, true);
       }
@@ -391,7 +391,7 @@ function proxySettingsCard(current) {
     await api("proxy-save", { enabled: value !== null, port: value });
     saved = value ?? "";
     notify(value === null ? "已清除本机代理端口" : "已保存端口 " + value);
-    await refresh(true);
+    await refresh();
   };
   port.onblur = apply;
   port.onkeydown = (event) => {
@@ -419,7 +419,7 @@ function idleSettingsCard(seconds) {
   choice.onchange = async () => {
     await api("warm-idle-save", { seconds: Number(choice.value) });
     notify("已保存");
-    await refresh(true);
+    await refresh();
   };
   return card;
 }
@@ -441,20 +441,24 @@ function codexCliCard(kind) {
   path.placeholder = dsh
     ? "选择 dsh（Mac/Linux）或 dsh.cmd（Windows）"
     : "选择 codex（Mac）或 codex.exe / codex.cmd（Windows）";
-  const browse = button("浏览…", async () => {
-    const r = await api("codex-cli-choose");
-    if (r?.path) path.value = r.path;
-  });
-  const detect = button("重新检测", async () => {
-    await load(true);
-  });
-  path.onblur = async () => {
+  async function savePath() {
     const value = path.value.trim();
     const r = await api("codex-cli-save", { path: value, kind });
     path.value = value ? r?.path || value : "";
     notify(value ? label + " 路径已保存。" : "已恢复自动检测。");
     await load();
-  };
+  }
+  const browse = button("浏览…", async () => {
+    const r = await api("codex-cli-choose");
+    if (r?.path) {
+      path.value = r.path;
+      await savePath();
+    }
+  });
+  const detect = button("重新检测", async () => {
+    await load(true);
+  });
+  path.onblur = savePath;
   controls.append(detect, browse);
   card.append(controls);
   async function load(force = false) {
