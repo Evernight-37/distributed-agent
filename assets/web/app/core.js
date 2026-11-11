@@ -216,6 +216,13 @@ async function requestAppClose() {
           : "正在关闭窗口，后台服务继续运行…";
       try {
         await api(action);
+        if (action === "app-background") {
+          // The window is only hidden, so this dialog would otherwise survive
+          // the trip to the tray and sit there with every button disabled.
+          state.busy = false;
+          quitDialog = null;
+          closeModal();
+        }
       } catch (e) {
         state.busy = false;
         stopButtons.forEach((b) => (b.disabled = false));
