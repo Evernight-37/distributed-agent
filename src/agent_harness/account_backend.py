@@ -528,6 +528,13 @@ class AccountBackend:
                     employee["pending"] = pending
                     employee["online"] = device_map.get(employee["node"], {}).get("online", False)
                     employee["health"] = device_map.get(employee["node"], {}).get("health")
+                    if employee["node"] not in device_map:
+                        # The machine that hosted this employee was removed or was
+                        # re-associated with a new identity; its queued commands
+                        # can never be delivered.
+                        employee["status"] = "orphaned"
+                        employee["status_code"] = HealthCode.NOT_CONFIGURED
+                        continue
                     health = employee["health"]
                     health_code = None
                     if isinstance(health, dict):

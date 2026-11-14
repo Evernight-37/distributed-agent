@@ -67,12 +67,19 @@ function renderDashboard() {
       el("strong", "", a.name),
       el(
         "div",
-        a.pending?.length > 0 ? "pending small" : "muted small",
-        a.pending?.length > 0
-          ? a.online
-            ? "等待目标设备确认"
-            : "目标设备离线，指令待送达"
-          : a.last_error || healthIssue?.message || statusLabel(a) || "待配置",
+        a.status === "orphaned" || a.pending?.length > 0
+          ? "pending small"
+          : "muted small",
+        a.status === "orphaned"
+          ? "目标设备已不在账户中，请重新派遣或删除"
+          : a.pending?.length > 0
+            ? a.online
+              ? "等待目标设备确认"
+              : "目标设备离线，指令待送达"
+            : a.last_error ||
+              healthIssue?.message ||
+              statusLabel(a) ||
+              "待配置",
       ),
     );
     i.append(el("span", "bot", "◇"), text);
