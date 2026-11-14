@@ -1,4 +1,16 @@
 "use strict";
+function statusLabel(employee) {
+  const labels = {
+    idle: "空闲",
+    running: "执行中",
+    offline: "设备离线",
+    error: "执行出错",
+    degraded: "受限运行",
+    disabled: "未启用",
+  };
+  return labels[employee.status] || "";
+}
+
 function renderDashboard() {
   S.epoch++;
   nav("dashboard");
@@ -57,8 +69,10 @@ function renderDashboard() {
         "div",
         a.pending?.length > 0 ? "pending small" : "muted small",
         a.pending?.length > 0
-          ? "等待目标设备确认"
-          : a.last_error || healthIssue?.message || a.status || "待配置",
+          ? a.online
+            ? "等待目标设备确认"
+            : "目标设备离线，指令待送达"
+          : a.last_error || healthIssue?.message || statusLabel(a) || "待配置",
       ),
     );
     i.append(el("span", "bot", "◇"), text);

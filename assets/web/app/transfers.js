@@ -3,6 +3,7 @@
 let transferPolling = false;
 let transferPending = false;
 let transferSignature = "";
+let transferSnapshot = null;
 
 function transfersHeading() {
   const title = head("文件速传", "独立于项目和 Agent 的机器间大文件通道");
@@ -30,28 +31,26 @@ function directStateLabel(item) {
 
 function transferSettings(view) {
   const section = el("section", "panel transfer-settings");
-  section.append(
-    el("h2", "", "接收设置"),
-    el(
-      "p",
-      "muted",
-      view.settings?.receive_folder_configured
-        ? "同账户的其他机器发来文件时，会自动保存到本机默认接收目录。"
-        : "请先设置本机默认接收目录；没有目录时收到文件只会显示待确认，不会落地。",
-    ),
-    button(
-      view.settings?.receive_folder_configured
-        ? "更换默认接收目录"
-        : "设置默认接收目录",
-      async () => {
-        const result = await api("file-transfer-receive-folder");
-        if (result.configured) {
-          notify("默认接收目录已保存，仅保存在本机。");
-          await renderTransfers("action");
-        }
-      },
-    ),
+  const configured = !!view.settings?.receive_folder_configured;
+  section.append(el("h2", "", "接收设置"));
+  note(
+    section,
+    configured
+      ? "同账户的机器发来文件时自动收下，保存到本机默认接收目录；其他账户第一次发来需要你在这里确认一次，之后记住该账户。"
+      : "还没有设置本机默认接收目录：即使同账户的机器发来文件，也只会停在列表里等确认，不会自动落地。",
   );
+  const local = el("div", "setting-row");
+  local.append(
+    el("div", "", "本机默认接收目录" + (configured ? "" : " · 未设置")),
+    button(configured ? "更换目录" : "设置目录", async () => {
+      const result = await api("file-transfer-receive-folder");
+      if (result.configured) {
+        notify("默认接收目录已保存，仅保存在本机。");
+        await renderTransfers("action");
+      }
+    }),
+  );
+  section.append(local);
   const remoteDevices = (view.devices || []).filter(
     (device) =>
       !(S.dash?.devices || []).some(
@@ -62,22 +61,25 @@ function transferSettings(view) {
       ),
   );
   if (remoteDevices.length) {
-    section.append(el("h3", "", "其他机器的接收目录"));
+    section.append(el("h3", "", "其他机器"));
     note(
       section,
-      "同账户传输和你批准给远程机器的文件会使用目标机器自己的接收目录。Linux 路径由 Linux 本机验证并保存。",
+      "账户里的其他机器收到文件时，各自保存到自己的接收目录。这里只转交设置，目录不存在时由目标机器创建。",
     );
     remoteDevices.forEach((device) => {
       const row = el("div", "setting-row");
-      row.append(
+      const label = el("div", "", device.name);
+      label.append(
         el(
           "span",
-          "",
-          device.name +
-            " · " +
+          "muted small",
+          " · " +
             serviceName(device.server) +
-            (device.online ? "" : " · 离线"),
+            (device.online ? " · 在线" : " · 离线"),
         ),
+      );
+      row.append(
+        label,
         button("设置接收目录", () => {
           modal("设置 " + device.name + " 的接收目录", (body, actions) => {
             const destination = field(body, "目标机器上的绝对路径", "");
@@ -85,7 +87,7 @@ function transferSettings(view) {
               "例如 /home/user/Downloads/Foolship 或 D:\\Transfers";
             note(
               body,
-              "路径会随签名控制指令经过当前可信协作服务，并在目标机器处理后从服务记录中删除。目标机器必须在线，且该目录必须已经存在。",
+              "目标机器在线时这条指令会被送达并保存；目录不存在会自动创建。路径随签名控制指令经过当前可信协作服务，目标机器处理后从服务记录中删除。",
             );
             actions.append(
               button("取消", closeModal),
@@ -99,7 +101,7 @@ function transferSettings(view) {
                   });
                   if (result.pending) {
                     closeModal();
-                    notify("设置指令已发送；目标机器在线后会验证并保存目录。");
+                    notify("设置指令已发送；目标机器在线后会创建并保存目录。");
                   }
                 },
                 "primary",
@@ -112,6 +114,22 @@ function transferSettings(view) {
     });
   }
   return section;
+}
+
+function paintTransfers(content, view) {
+  content.replaceChildren(transfersHeading());
+  if (view.unavailable_services?.length)
+    content.append(
+      el(
+        "div",
+        "panel error",
+        "部分协作服务暂时离线，对应联系人和传输恢复后会继续显示。",
+      ),
+    );
+  content.append(transferSettings(view));
+  const direct = transferDirect(view);
+  if (direct) content.append(direct);
+  content.append(transferSend(view));
 }
 
 function transferDirect(view) {
@@ -251,8 +269,11 @@ async function renderTransfers(reason) {
   // The marker lives in the DOM, so returning from another page always rebuilds.
   const mounted = !!content.querySelector("[data-transfer-root]");
   if (!mounted) {
-    content.replaceChildren(transfersHeading());
-    content.append(el("div", "panel", "正在读取传输状态…"));
+    if (transferSnapshot) paintTransfers(content, transferSnapshot);
+    else {
+      content.replaceChildren(transfersHeading());
+      content.append(el("div", "panel", "正在读取传输状态…"));
+    }
   }
   try {
     const view = await api("file-transfer-dashboard");
@@ -262,23 +283,12 @@ async function renderTransfers(reason) {
     const signature = JSON.stringify(view);
     if (mounted && signature === transferSignature) return;
     transferSignature = signature;
-    content.replaceChildren(transfersHeading());
-    if (view.unavailable_services?.length)
-      content.append(
-        el(
-          "div",
-          "panel error",
-          "部分协作服务暂时离线，对应联系人和传输恢复后会继续显示。",
-        ),
-      );
-    content.append(transferSettings(view));
-    const direct = transferDirect(view);
-    if (direct) content.append(direct);
-    content.append(transferSend(view));
+    transferSnapshot = view;
+    paintTransfers(content, view);
   } catch (error) {
     // A failed poll keeps the last good page; only a fresh mount has nothing to
     // keep and must show the failure.
-    if (!mounted) {
+    if (!mounted && !transferSnapshot) {
       content.replaceChildren(transfersHeading());
       content.append(el("div", "panel error", error.message));
     }

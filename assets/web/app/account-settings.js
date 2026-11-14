@@ -247,7 +247,11 @@ async function renderSettings() {
     notify("接收服务已停止；已启动的作业独立运行。");
     await refresh(true);
   });
-  controls.append(startReceiver, stopReceiver);
+  controls.append(
+    startReceiver,
+    stopReceiver,
+    button("账户与设备", () => renderAccount()),
+  );
   machine.append(controls, button("完全退出", requestAppClose));
   const attached = services.filter((service) => service.attached);
   startReceiver.disabled =

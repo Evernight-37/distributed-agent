@@ -304,7 +304,13 @@ function deviceName(node, server) {
       (d.node || d.id) === node &&
       (!server || d.server === server || (!d.server && server === S.server)),
   );
-  return d?.name || node;
+  return (
+    d?.name ||
+    "设备 " +
+      String(node || "")
+        .replace(/^device-/, "")
+        .slice(0, 8)
+  );
 }
 function authHeader(title, subtitle) {
   const root = $("login");

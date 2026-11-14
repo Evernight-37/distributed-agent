@@ -244,13 +244,19 @@ class OwnerControl:
 
         remote = data.get("path")
         if not isinstance(remote, str) or not 1 <= len(remote) <= 4096 or "\0" in remote:
-            raise ValueError("Choose an existing absolute directory")
+            raise ValueError("Choose an absolute directory")
         path = Path(remote)
-        if not path.is_absolute() or path.is_symlink() or not path.is_dir():
-            raise ValueError("Choose an existing absolute directory, not a symbolic link")
+        if not path.is_absolute() or path.is_symlink():
+            raise ValueError("Choose an absolute directory, not a symbolic link")
+        # A receiver usually receives into a folder it creates for the user: an
+        # owner naming a new directory should not have to create it by hand first.
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+        if not path.is_dir():
+            raise ValueError("The chosen path is not a directory")
         resolved = path.resolve()
         if resolved == Path(resolved.anchor):
-            raise ValueError("Choose an existing absolute directory, not a filesystem root")
+            raise ValueError("Choose a directory, not a filesystem root")
         settings = self.root / "file-transfer-settings.json"
         write_json(
             settings,

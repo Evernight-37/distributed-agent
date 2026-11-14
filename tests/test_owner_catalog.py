@@ -498,17 +498,22 @@ class OwnerTests(unittest.TestCase):
         self.assertIn("[redacted]", row["envelope"])
         self.assertEqual(workspace_count, 0)
 
-    def test_receive_directory_rejects_unsafe_or_missing_paths(self):
+    def test_receive_directory_rejects_unsafe_paths_and_creates_missing_ones(self):
         missing = self.root / "missing"
         regular_file = self.root / "file.txt"
         regular_file.write_text("not a directory")
-        for index, candidate in enumerate(("relative/path", Path(self.root.anchor), missing, regular_file)):
+        for index, candidate in enumerate(("relative/path", Path(self.root.anchor), regular_file)):
             with self.subTest(candidate=candidate):
                 response = self.configure_receive_directory(
                     candidate,
                     cid=f"invalid-receive-{index}",
                 )
                 self.assertEqual(response["state"], "failed")
+        # A directory the owner names does not have to exist yet: the receiver
+        # creates it instead of refusing the setting.
+        response = self.configure_receive_directory(missing, cid="created-receive")
+        self.assertEqual(response["state"], "applied")
+        self.assertTrue(missing.is_dir())
         target = self.root / "real-receive"
         target.mkdir()
         symlink = self.root / "receive-link"
