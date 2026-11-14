@@ -79,7 +79,6 @@ async function boot() {
     const status = await api("local-status");
     S.profiles = status.profiles || [];
     S.server = status.server || "";
-    S.dataRoot = status.data_root || "";
     if (status.unlocked) await enter();
     else renderAuth("home");
   } catch (e) {
