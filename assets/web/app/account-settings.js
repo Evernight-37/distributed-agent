@@ -23,6 +23,34 @@ function renderAccount() {
             " · " +
             (d.online ? "在线" : "离线"),
         ),
+        button("重命名", () =>
+          modal("重命名设备", (b, a) => {
+            const input = field(b, "显示名称", d.name);
+            note(
+              b,
+              "只改这台机器在账户里的显示名称，不影响密钥、设备标识或权限。",
+            );
+            a.append(
+              button("取消", closeModal),
+              button(
+                "保存",
+                async () => {
+                  const value = input.value.trim();
+                  if (!value) throw new Error("名称不能为空");
+                  await api("device-rename", {
+                    id: d.id || d.node,
+                    name: value,
+                    server: d.server || S.server,
+                  });
+                  closeModal();
+                  notify("设备名称已更新");
+                  await refresh(true);
+                },
+                "primary",
+              ),
+            );
+          }),
+        ),
         button("移除设备", () =>
           modal("移除设备", (b, a) => {
             note(b, "将撤销 " + d.name + " 的账户接入权限。");
@@ -247,11 +275,7 @@ async function renderSettings() {
     notify("接收服务已停止；已启动的作业独立运行。");
     await refresh(true);
   });
-  controls.append(
-    startReceiver,
-    stopReceiver,
-    button("账户与设备", () => renderAccount()),
-  );
+  controls.append(startReceiver, stopReceiver);
   machine.append(controls, button("完全退出", requestAppClose));
   const attached = services.filter((service) => service.attached);
   startReceiver.disabled =

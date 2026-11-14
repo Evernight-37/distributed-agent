@@ -113,6 +113,13 @@ h3 {
   padding: 28px 20px;
   display: flex;
   flex-direction: column;
+  /* Keep the account avatar inside the viewport: a tall page must not stretch
+     the sidebar so far that "margin-top: auto" pushes it below the fold. */
+  align-self: flex-start;
+  position: sticky;
+  top: 35px;
+  height: calc(100vh - 35px);
+  overflow-y: auto;
 }
 .logo {
   display: flex;

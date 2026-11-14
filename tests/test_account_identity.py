@@ -285,6 +285,23 @@ class IdentityTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.call(child, "activate-device", {"device_name": "Desktop"}, "activate-device")
 
+    def test_a_device_display_name_can_be_changed(self):
+        self.register()
+        child = generate_identity()
+        request = self.api.api({"action": "request-device", "public_key": child["public_key"], "name": "Desktop"})
+        self.call(
+            self.root,
+            "approve-device",
+            {"request_id": request["request_id"], "chain": approve_certificate(self.root, child["public_key"])},
+        )
+        claim = self.api.api({"action": "claim-device", **request})
+        child.update(account_id=claim["account_id"], chain=claim["chain"])
+        self.call(self.root, "rename-device", {"id": claim["node"], "name": "工作台"})
+        names = {device["name"] for device in self.call(self.root, "dashboard", {})["devices"]}
+        self.assertIn("工作台", names)
+        with self.assertRaises(PermissionError):
+            self.call(self.root, "rename-device", {"id": "device-unknown", "name": "x"})
+
     def test_a_revoked_device_can_be_associated_again(self):
         """Revoking keeps the row for audit; re-associating must reactivate it."""
         self.register()

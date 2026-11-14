@@ -389,8 +389,10 @@ function renderAuth(mode = "home") {
         form,
         "这台电脑还没有账户。返回后选择“创建账户”，或“关联我的另一台电脑”。",
       );
-  } else if (mode === "register") user = field(form, "账户名称");
-  else if (mode === "device") name = field(form, "这台机器的名称");
+  } else if (mode === "register") {
+    user = field(form, "账户名称");
+    name = field(form, "这台机器的名称（留空用系统主机名）");
+  } else if (mode === "device") name = field(form, "这台机器的名称");
   else recoveryPassword = field(form, "恢复包密码", "", null, "password");
   password = field(
     form,
@@ -482,7 +484,13 @@ function renderAuth(mode = "home") {
       await api(mode, {
         ...(mode === "login"
           ? { profile: profile.value }
-          : { username: user.value, server: server.value }),
+          : {
+              username: user.value,
+              server: server.value,
+              ...(mode === "register" && name?.value.trim()
+                ? { device_name: name.value.trim() }
+                : {}),
+            }),
         password: password.value,
       });
       password.value = "";

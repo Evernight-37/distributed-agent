@@ -874,6 +874,31 @@ class AccountBackend:
                     (user, json.dumps(chain), row["id"]),
                 )
             return {"approved": True, "request_id": row["id"]}
+        if op == "rename-device":
+            # Display name only: the device is identified by its public key, so a
+            # rename never changes what the machine is or what it may do.
+            target = p.get("id") or p.get("public_key")
+            name = self._name(p.get("name"))
+            with self.store.connect() as db:
+                rows = db.execute(
+                    "SELECT public_key FROM account_devices WHERE account_id=? AND revoked=0",
+                    (user,),
+                ).fetchall()
+                match = next(
+                    (
+                        row["public_key"]
+                        for row in rows
+                        if target in {row["public_key"], device_node(row["public_key"])}
+                    ),
+                    None,
+                )
+                if match is None:
+                    raise PermissionError("Unknown device")
+                db.execute(
+                    "UPDATE account_devices SET name=? WHERE public_key=?",
+                    (name, match),
+                )
+            return {"renamed": True, "name": name}
         if op == "revoke-device":
             with self.store.connect() as db:
                 target = p.get("public_key")

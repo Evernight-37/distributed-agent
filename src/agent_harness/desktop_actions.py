@@ -161,7 +161,7 @@ class DesktopIdentityActions:
                 "operation": "register",
                 "payload": {
                     "name": data["username"],
-                    "device_name": socket.gethostname(),
+                    "device_name": (data.get("device_name") or socket.gethostname()),
                 },
             }
             bridge._post(
@@ -290,6 +290,7 @@ class DesktopOwnerActions:
             "device-inspect",
             "device-approve",
             "device-revoke",
+            "device-rename",
             "employee-create",
             "employee-delete",
             "employee-delete-preview",
@@ -326,6 +327,15 @@ class DesktopOwnerActions:
             if server not in bridge._services():
                 raise ValueError("未知服务")
             return bridge._rpc("revoke-device", data, server=server)
+        if action == "device-rename":
+            server = data.get("server") or bridge.profile["server"]
+            if server not in bridge._services():
+                raise ValueError("未知服务")
+            return bridge._rpc(
+                "rename-device",
+                {"id": data.get("id"), "name": data.get("name")},
+                server=server,
+            )
         if action == "employee-create":
             server = data.get("server") or bridge.profile["server"]
             if server not in bridge._services():
