@@ -340,6 +340,18 @@ function renderAuth(mode = "home") {
     const guide = el("a", "auth-guide", "第一次使用？打开新手教程 →");
     guide.href = "guide.html";
     root.append(choices, guide);
+    if (S.dataRoot)
+      root.append(
+        el(
+          "p",
+          "muted small",
+          "本机账户数据目录：" +
+            S.dataRoot +
+            "（" +
+            S.profiles.length +
+            " 个账户）",
+        ),
+      );
     return;
   }
   const root = authHeader(

@@ -102,6 +102,9 @@ class DesktopSessionActions:
                 ],
                 "unlocked": bool(self.bridge.identity),
                 "server": (self.bridge.profile or {}).get("server", "http://127.0.0.1:8765"),
+                # The login screen shows this, so a user who "lost" an account can
+                # see which directory this copy is actually reading.
+                "data_root": str(self.bridge.root),
             }
         self.bridge.identity = None
         self.bridge.profile = None
