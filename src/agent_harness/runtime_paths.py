@@ -60,20 +60,38 @@ def beside_app_data():
     return root / "data"
 
 
+def has_profiles(directory):
+    """Whether an account is stored under this data directory."""
+    try:
+        return any((Path(directory) / "profiles").glob("*.json"))
+    except OSError:
+        return False
+
+
 def data_home():
     """Resolve the data directory.
 
-    ``FOOLSHIP_STATE`` wins; otherwise a portable or installed copy keeps its
-    data beside the application, and macOS (a sealed .app bundle) uses the
-    platform location.
+    ``FOOLSHIP_STATE`` wins. Otherwise data lives beside a portable or installed
+    copy, and macOS keeps the platform location because a .app bundle is sealed.
+
+    A copy in a directory that is *not* writable falls back to the platform
+    location. That fallback must also apply the other way round: a fresh copy in
+    a writable directory must not hide the account that already lives in the
+    platform directory, or moving or re-extracting the app looks like the account
+    disappeared.
     """
     override = os.environ.get("FOOLSHIP_STATE")
     if override:
         return Path(override)
     beside = beside_app_data()
+    platform = application_home() / "data"
+    if beside is not None and has_profiles(beside):
+        return beside
+    if has_profiles(platform):
+        return platform
     if beside is not None:
         return beside
-    return application_home() / "data"
+    return platform
 
 
 def default_state():

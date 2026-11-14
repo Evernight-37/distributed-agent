@@ -173,6 +173,13 @@ async function renderSettings() {
     "接收服务在这台机器上后台运行：领取派给这台机器的任务，也接收发来的文件。登录时自动启动；停止它不会退出应用，但任务会停在服务端等你重新启动。",
   );
   const receivers = Array.isArray(settings.receivers) ? settings.receivers : [];
+  if (settings.data_root) {
+    const pathRow = el("div", "setting-row");
+    pathRow.append(
+      el("div", "muted small", "账户数据 · " + settings.data_root),
+    );
+    machine.append(pathRow);
+  }
   const services = settings.services || [
     { server: settings.server, primary: true, attached: true },
   ];

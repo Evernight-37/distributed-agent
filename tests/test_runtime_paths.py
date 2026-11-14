@@ -63,6 +63,21 @@ class DataHomeTests(unittest.TestCase):
         with mock.patch.object(runtime_paths, "bundled_root", lambda: None):
             self.assertEqual(runtime_paths.data_home(), self.platform / "data")
 
+    def test_a_fresh_copy_finds_the_account_in_the_platform_directory(self):
+        """Re-extracting the app elsewhere must not hide an existing account."""
+        self.app.mkdir(parents=True)
+        (self.platform / "data" / "profiles").mkdir(parents=True)
+        (self.platform / "data" / "profiles" / "account.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(runtime_paths.data_home(), self.platform / "data")
+
+    def test_data_beside_the_app_wins_when_it_holds_the_account(self):
+        self.app.mkdir(parents=True)
+        (self.app / "data" / "profiles").mkdir(parents=True)
+        (self.app / "data" / "profiles" / "account.json").write_text("{}", encoding="utf-8")
+        (self.platform / "data" / "profiles").mkdir(parents=True)
+        (self.platform / "data" / "profiles" / "other.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(runtime_paths.data_home(), self.app / "data")
+
     def test_the_default_state_is_the_data_home(self):
         os.environ["FOOLSHIP_STATE"] = str(self.root / "custom")
         self.assertEqual(runtime_paths.default_state(), self.root / "custom")
