@@ -285,6 +285,63 @@ class IdentityTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.call(child, "activate-device", {"device_name": "Desktop"}, "activate-device")
 
+    def test_a_revoked_device_can_be_associated_again(self):
+        """Revoking keeps the row for audit; re-associating must reactivate it."""
+        self.register()
+        child = generate_identity()
+        first = self.api.api({"action": "request-device", "public_key": child["public_key"], "name": "Desktop"})
+        self.api.api({"action": "claim-device", **first})
+        self.call(
+            self.root,
+            "approve-device",
+            {"request_id": first["request_id"], "chain": approve_certificate(self.root, child["public_key"])},
+        )
+        claim = self.api.api({"action": "claim-device", **first})
+        child.update(account_id=claim["account_id"], chain=claim["chain"])
+        self.call(self.root, "revoke-device", {"public_key": child["public_key"]})
+
+        second = self.api.api({"action": "request-device", "public_key": child["public_key"], "name": "Desktop again"})
+        self.api.api({"action": "claim-device", **second})
+        self.call(
+            self.root,
+            "approve-device",
+            {"request_id": second["request_id"], "chain": approve_certificate(self.root, child["public_key"])},
+        )
+        again = self.api.api({"action": "claim-device", **second})
+        self.assertEqual(again["state"], "approved")
+        with self.store.connect() as db:
+            rows = db.execute(
+                "SELECT name, revoked FROM account_devices WHERE public_key=?",
+                (child["public_key"],),
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["revoked"], 0)
+        self.assertEqual(rows[0]["name"], "Desktop again")
+
+    def test_a_used_code_says_it_was_used(self):
+        self.register()
+        child = generate_identity()
+        request = self.api.api({"action": "request-device", "public_key": child["public_key"], "name": "Desktop"})
+        self.call(
+            self.root,
+            "approve-device",
+            {"request_id": request["request_id"], "chain": approve_certificate(self.root, child["public_key"])},
+        )
+        with self.assertRaisesRegex(PermissionError, "使用过"):
+            self.call(self.root, "inspect-device", {"code": request["code"]})
+
+    def test_an_expired_code_says_it_expired(self):
+        self.register()
+        child = generate_identity()
+        request = self.api.api({"action": "request-device", "public_key": child["public_key"], "name": "Desktop"})
+        with self.store.connect() as db:
+            db.execute(
+                "UPDATE account_requests SET expires=? WHERE id=?",
+                (time.time() - 1, request["request_id"]),
+            )
+        with self.assertRaisesRegex(PermissionError, "过期"):
+            self.call(self.root, "inspect-device", {"code": request["code"]})
+
     def test_scoped_codex_delegate_can_collaborate_but_not_administer(self):
         self.register()
         project = self.call(self.root, "create-project", {"name": "MCP project"})["id"]

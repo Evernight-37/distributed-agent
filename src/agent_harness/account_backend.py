@@ -146,11 +146,15 @@ class AccountBackend:
             with self.store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
-                    "SELECT * FROM account_requests WHERE id=? AND code_hash=? AND expires>? AND claimed=0",
-                    (data["request_id"], digest(data["code"]), time.time()),
+                    "SELECT * FROM account_requests WHERE id=? AND code_hash=?",
+                    (data["request_id"], digest(data["code"])),
                 ).fetchone()
                 if not row:
-                    raise PermissionError("Device request unavailable")
+                    raise PermissionError("关联码无效或已过期（10 分钟有效）：请重新生成")
+                if row["claimed"]:
+                    raise PermissionError("这个关联码已经被使用过了：请重新生成")
+                if row["expires"] <= time.time():
+                    raise PermissionError("关联码已过期（10 分钟有效）：请重新生成")
                 if not row["account_id"]:
                     return {"state": "pending", "status": "pending"}
                 device = db.execute(
@@ -158,7 +162,7 @@ class AccountBackend:
                     (row["public_key"],),
                 ).fetchone()
                 if not device or device["revoked"]:
-                    raise PermissionError("Device approval revoked")
+                    raise PermissionError("关联已被撤销：请重新生成关联码")
                 db.execute("UPDATE account_requests SET claimed=1 WHERE id=?", (row["id"],))
                 return {
                     "state": "approved",
@@ -805,11 +809,17 @@ class AccountBackend:
         if op in {"device-request", "inspect-device"}:
             with self.store.connect() as db:
                 row = db.execute(
-                    "SELECT id,public_key,name,account_id,expires FROM account_requests WHERE code_hash=? AND expires>? AND claimed=0",
-                    (digest(p["code"]), time.time()),
+                    "SELECT id,public_key,name,account_id,expires,claimed FROM account_requests WHERE code_hash=?",
+                    (digest(p["code"]),),
                 ).fetchone()
-                if not row or row["account_id"]:
-                    raise PermissionError("Device request unavailable")
+                if not row:
+                    raise PermissionError("关联码无效或已过期（10 分钟有效）：请在那台机器上重新生成")
+                if row["account_id"]:
+                    raise PermissionError("这个关联码已经被使用过了：请在那台机器上重新生成")
+                if row["expires"] <= time.time():
+                    raise PermissionError("关联码已过期（10 分钟有效）：请在那台机器上重新生成")
+                if row["claimed"]:
+                    raise PermissionError("这台设备已经认领过该关联码：请在那台机器上重新生成")
                 return dict(row, request_id=row["id"])
         if op == "approve-device":
             code = p.get("code")
@@ -817,21 +827,40 @@ class AccountBackend:
             with self.store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
-                    "SELECT * FROM account_requests WHERE "
-                    + ("id=?" if rid else "code_hash=?")
-                    + " AND expires>? AND claimed=0",
-                    (rid or digest(code or ""), time.time()),
+                    "SELECT * FROM account_requests WHERE " + ("id=?" if rid else "code_hash=?") + "",
+                    (rid or digest(code or ""),),
                 ).fetchone()
-                if not row or row["account_id"]:
-                    raise PermissionError("Device request unavailable")
+                if not row:
+                    raise PermissionError("关联码无效或已过期（10 分钟有效）：请在那台机器上重新生成")
+                if row["account_id"]:
+                    raise PermissionError("这个关联码已经被使用过了：请在那台机器上重新生成")
+                if row["expires"] <= time.time():
+                    raise PermissionError("关联码已过期（10 分钟有效）：请在那台机器上重新生成")
+                if row["claimed"]:
+                    raise PermissionError("这台设备已经认领过该关联码：请在那台机器上重新生成")
                 chain = p["chain"]
                 # Child proof is not available to approving device. Verify certificates via
                 # their parent signatures separately, using certificate helper below.
                 self._verify_chain(chain, user, row["public_key"], public)
-                db.execute(
-                    "INSERT INTO account_devices VALUES(?,?,?,?,0)",
-                    (row["public_key"], user, row["name"], json.dumps(chain)),
-                )
+                existing = db.execute(
+                    "SELECT revoked FROM account_devices WHERE public_key=?",
+                    (row["public_key"],),
+                ).fetchone()
+                if existing and not existing["revoked"]:
+                    raise ValueError("这台设备已经关联过了，无需再次关联")
+                if existing:
+                    # Revoked rows are kept for the audit trail; approving the same
+                    # machine again must reactivate it instead of failing the
+                    # primary key or adding a second row for one device.
+                    db.execute(
+                        "UPDATE account_devices SET account_id=?,name=?,chain=?,revoked=0 WHERE public_key=?",
+                        (user, row["name"], json.dumps(chain), row["public_key"]),
+                    )
+                else:
+                    db.execute(
+                        "INSERT INTO account_devices VALUES(?,?,?,?,0)",
+                        (row["public_key"], user, row["name"], json.dumps(chain)),
+                    )
                 self._node(db, row["public_key"], user)
                 db.execute(
                     "UPDATE account_requests SET account_id=?,chain=? WHERE id=?",

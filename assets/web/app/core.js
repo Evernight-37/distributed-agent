@@ -387,7 +387,16 @@ function renderAuth(mode = "home") {
     const connection = el(mode === "device" ? "div" : "details");
     if (mode === "register")
       connection.append(el("summary", "label", "连接设置"));
-    server = field(connection, "协作服务地址", S.server);
+    server = field(
+      connection,
+      "协作服务地址",
+      mode === "device" ? "" : S.server,
+    );
+    if (mode === "device") {
+      server.placeholder = "https://电脑名.xxxx.ts.net";
+      server.autocapitalize = "off";
+      server.spellcheck = false;
+    }
     note(
       connection,
       mode === "device"
@@ -414,8 +423,21 @@ function renderAuth(mode = "home") {
     e.preventDefault();
     run(async () => {
       if (mode === "device") {
+        const address = server.value.trim();
+        if (!address)
+          throw new Error(
+            "请填写已有电脑的团队地址，例如 https://电脑名.xxxx.ts.net",
+          );
+        if (
+          /^(https?:\/\/)?(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/i.test(
+            address,
+          )
+        )
+          throw new Error(
+            "127.0.0.1 指的是当前这台电脑自己，另一台电脑找不到它；请填写已有电脑的团队地址（https://…）",
+          );
         const r = await api("device-request", {
-          server: server.value,
+          server: address,
           name: name.value,
           password: password.value,
         });

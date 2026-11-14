@@ -750,6 +750,36 @@ def dismiss_apply(root):
     return {"dismissed": True}
 
 
+def snapshot_before_update(root, to_version):
+    """Keep a copy of the account material before the program files change.
+
+    Updates replace program files only, but a user who loses their profile during
+    an update has nothing left to recover from. The snapshot is small (profiles
+    plus one database copy) and lives under the data root, which updates never
+    touch.
+    """
+    import shutil
+
+    source = Path(root)
+    profiles = source / "profiles"
+    if not profiles.is_dir():
+        return None
+    destination = source / "backups" / ("pre-update-" + application_version() + "-to-" + str(to_version))
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        for path in profiles.glob("*.json"):
+            if path.is_file():
+                shutil.copy2(path, destination / path.name)
+        database = source / "team-service" / "collaboration.sqlite3"
+        if database.is_file():
+            from agent_harness.storage import create_database_backup
+
+            create_database_backup(database, destination / "collaboration.sqlite3")
+    except Exception:
+        return None
+    return destination
+
+
 def apply(root, installer=None, version=None, target=None, pid=None, force=False, busy=None, spawn=None):
     """Launch the helper that installs a verified artifact after this exits."""
     import os
@@ -770,6 +800,7 @@ def apply(root, installer=None, version=None, target=None, pid=None, force=False
         if active and not force:
             raise ValueError("正在进行的任务会中断：" + "、".join(active[:3]))
     to_version = str(version or record.get("version") or "").lstrip("v")
+    snapshot = snapshot_before_update(root, to_version)
     target, launcher = apply_target(target)
     layout = install_layout(target)
     pid = pid or os.getpid()
@@ -791,6 +822,7 @@ def apply(root, installer=None, version=None, target=None, pid=None, force=False
             "helper": str(script),
             "target": str(target),
             "layout": layout,
+            "snapshot": str(snapshot) if snapshot else None,
             "requested_at": time.time(),
         },
     )
