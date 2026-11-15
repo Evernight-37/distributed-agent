@@ -97,6 +97,10 @@ class Store:
                 (account, cursor - MAX_EVENTS_PER_ACCOUNT),
             )
 
+    def emit_account_event(self, db, accounts, kind, project="account"):
+        """Wake an account for changes that are not tied to one project."""
+        return self._emit_accounts(db, accounts, project, kind)
+
     def emit_project_event(self, db, project, kind):
         accounts = [
             row[0]

@@ -5,6 +5,12 @@ import hashlib
 import time
 from agent_harness.account_identity import verify_owner_command
 
+
+def device_node(public):
+    """Node address derived from a device public key."""
+    return "device-" + hashlib.sha256(public.encode()).hexdigest()[:24]
+
+
 ACTIONS = {
     "create",
     "configure",
@@ -121,11 +127,58 @@ class OwnerBackend:
                             raise ValueError("员工有未完成执行，请等待执行结束后再删除")
                 if action in {"dispatch", "withdraw"}:
                     self.store.require_member(db, data.get("project_id"), user)
+                if action == "delete" and not self._live_node(db, user, target):
+                    # That machine is no longer an active device, so no command can
+                    # ever be delivered; waiting for its acknowledgement is what
+                    # kept such an employee undeletable.
+                    self._apply_delete(db, employee, user, target)
+                    db.execute(
+                        "DELETE FROM owner_commands WHERE owner_id=? AND node=? AND state IN ('queued','claimed')",
+                        (user, target),
+                    )
+                    self.store.emit_account_event(db, [user], "owner-command")
+                    return {"id": None, "state": "applied", "applied": True}
             db.execute(
                 "INSERT INTO owner_commands VALUES(?,?,?,?,?,?,?)",
                 (cid, user, target, encoded, "queued", None, time.time()),
             )
+            self.store.emit_account_event(db, [user], "owner-command")
             return {"id": cid, "state": "queued"}
+
+    def _live_node(self, db, owner, node):
+        """Whether a command to this node can still be delivered.
+
+        A re-associated machine keeps nothing of its old identity: the old node is
+        still a row in ``nodes`` but its device entry is revoked, so the queue has
+        nowhere to go.
+        """
+        if not db.execute(
+            "SELECT 1 FROM nodes WHERE name=? AND owner_id=?",
+            (node, owner),
+        ).fetchone():
+            return False
+        for row in db.execute(
+            "SELECT public_key, revoked FROM account_devices WHERE account_id=?",
+            (owner,),
+        ):
+            if device_node(row["public_key"]) == node:
+                return not row["revoked"]
+        return True
+
+    def _apply_delete(self, db, employee, owner, node):
+        for agent in self._employee_agents(db, employee, owner, node):
+            db.execute(
+                "UPDATE agents SET enabled=0,configuring=0 WHERE id=?",
+                (agent["id"],),
+            )
+            db.execute(
+                "UPDATE projects SET admin_agent_id=NULL WHERE admin_agent_id=?",
+                (agent["id"],),
+            )
+        db.execute(
+            "UPDATE employees SET status='deleted',revision=revision+1 WHERE id=?",
+            (employee,),
+        )
 
     def _employee_agents(self, db, employee, owner, node):
         return [
@@ -191,19 +244,7 @@ class OwnerBackend:
                     (data["project_id"], row["owner_id"], row["node"], "ready", "single_writer", time.time()),
                 )
             elif state == "applied" and action == "delete":
-                for agent in self._employee_agents(db, data["id"], row["owner_id"], row["node"]):
-                    db.execute(
-                        "UPDATE agents SET enabled=0,configuring=0 WHERE id=?",
-                        (agent["id"],),
-                    )
-                    db.execute(
-                        "UPDATE projects SET admin_agent_id=NULL WHERE admin_agent_id=?",
-                        (agent["id"],),
-                    )
-                db.execute(
-                    "UPDATE employees SET status='deleted',revision=revision+1 WHERE id=?",
-                    (data["id"],),
-                )
+                self._apply_delete(db, data["id"], row["owner_id"], row["node"])
             elif state == "applied" and action in {"create", "configure"}:
                 settings = result.get("settings", {})
                 if not isinstance(settings, dict):
@@ -238,4 +279,5 @@ class OwnerBackend:
                 "UPDATE owner_commands SET state=?,result=? WHERE id=?",
                 (state, encoded, command_id),
             )
+        self.store.emit_account_event(db, [row["owner_id"]], "owner-command")
         return {"ok": True}

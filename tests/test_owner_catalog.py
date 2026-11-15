@@ -498,6 +498,35 @@ class OwnerTests(unittest.TestCase):
         self.assertIn("[redacted]", row["envelope"])
         self.assertEqual(workspace_count, 0)
 
+    def test_an_orphaned_employee_can_be_deleted(self):
+        """A machine that was re-associated keeps its old node but loses its device."""
+        node = backend.device_node("orphaned-public-key")
+        with self.store.connect() as db:
+            db.execute("INSERT INTO nodes VALUES(?,?)", (node, "u1"))
+            db.execute(
+                "INSERT INTO account_devices VALUES(?,?,?,?,1)",
+                ("orphaned-public-key", "u1", "Old machine", "[]"),
+            )
+        self.backend.enqueue(
+            "u1",
+            self.envelope("create", {"id": "e-orphan", "name": "斯科特"}, target=node),
+        )
+        result = self.backend.enqueue(
+            "u1",
+            self.envelope("delete", {"id": "e-orphan"}, target=node),
+        )
+        self.assertTrue(result["applied"])
+        self.assertEqual(self.backend.snapshot("u1")["employees"], [])
+        with self.store.connect() as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM owner_commands WHERE node=?",
+                    (node,),
+                ).fetchone()[0],
+                0,
+            )
+        self.assertTrue(self.store.events_wait("u1", 0, 0)["changed"])
+
     def test_receive_directory_rejects_unsafe_paths_and_creates_missing_ones(self):
         missing = self.root / "missing"
         regular_file = self.root / "file.txt"

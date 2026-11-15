@@ -370,9 +370,13 @@ function deleteEmployee(e) {
       const confirm = button(
         "确认删除员工",
         async () => {
-          await api("employee-delete", { id: e.id });
+          const result = await api("employee-delete", { id: e.id });
           closeModal();
-          notify("删除请求已提交，等待目标设备确认。");
+          notify(
+            result?.applied
+              ? "员工已删除"
+              : "删除请求已提交，目标设备上线后会应用。",
+          );
           await refresh(true);
         },
         "primary",
