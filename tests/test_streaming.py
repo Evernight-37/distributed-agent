@@ -110,10 +110,11 @@ class StreamingTests(unittest.TestCase):
         self.backend.result = {"status": "running", "reply_draft": "partial"}
         self.coordinator.collect()
         view = self.store.project_view(self.owner, self.project)
-        self.assertEqual([m["body"] for m in view["messages"]], ["first", "partial", "second"])
-        draft_id = view["messages"][1]["id"]
+        shown = [m for m in view["messages"] if m["sender_type"] != "system"]
+        self.assertEqual([m["body"] for m in shown], ["first", "partial", "second"])
+        draft_id = shown[1]["id"]
         self.assertEqual(
-            [m["body"] for m in self.store.visible_messages("peer")],
+            [m["body"] for m in self.store.visible_messages("peer") if m["sender_type"] != "system"],
             ["first", "second"],
         )
         self.backend.result = {
@@ -130,8 +131,9 @@ class StreamingTests(unittest.TestCase):
         }
         self.coordinator.collect()
         view = self.store.project_view(self.owner, self.project)
-        self.assertEqual([m["body"] for m in view["messages"]], ["first", "finished", "second"])
-        self.assertEqual(view["messages"][1]["id"], draft_id)
+        shown = [m for m in view["messages"] if m["sender_type"] != "system"]
+        self.assertEqual([m["body"] for m in shown], ["first", "finished", "second"])
+        self.assertEqual(shown[1]["id"], draft_id)
 
     def test_agent_can_finish_without_a_reply(self):
         self.store.message(self.owner, self.project, "notice")
@@ -151,7 +153,11 @@ class StreamingTests(unittest.TestCase):
         }
         self.coordinator.collect()
         self.assertEqual(
-            [m["body"] for m in self.store.project_view(self.owner, self.project)["messages"]],
+            [
+                m["body"]
+                for m in self.store.project_view(self.owner, self.project)["messages"]
+                if m["sender_type"] != "system"
+            ],
             ["notice"],
         )
         self.coordinator.wake_messages()
@@ -174,7 +180,9 @@ class StreamingTests(unittest.TestCase):
         with self.store.connect() as db:
             tasks = [dict(r) for r in db.execute("SELECT agent_id FROM tasks")]
         self.assertEqual([t["agent_id"] for t in tasks], ["peer"])
-        message = self.store.project_view(self.owner, self.project)["messages"][0]
+        message = next(
+            m for m in self.store.project_view(self.owner, self.project)["messages"] if m["body"] == "Please review"
+        )
         self.assertEqual(message["mention_agent_name"], "Peer")
         with self.assertRaises(ValueError):
             self.store.message(self.owner, self.project, "bad", mention_agent_id="missing")

@@ -121,14 +121,24 @@ class Regressions(unittest.TestCase):
                 db.execute("SELECT admin_agent_id FROM projects WHERE id=?", (self.project,)).fetchone()[0],
                 b,
             )
+        bodies = [m["body"] for m in self.store.project_view(self.owner["id"], self.project)["messages"]]
+        self.assertTrue(any("设为管理员" in body and "同事" in body for body in bodies))
+        self.store.set_admin(self.owner["id"], self.project, a)
+        bodies = [m["body"] for m in self.store.project_view(self.owner["id"], self.project)["messages"]]
+        self.assertTrue(any("普通成员" in body and "同事" in body for body in bodies))
         # A project that never had an admin shows "未设置"; saving it must work.
         self.store.set_admin(self.owner["id"], self.project, "")
         with self.store.connect() as db:
             self.assertIsNone(
                 db.execute("SELECT admin_agent_id FROM projects WHERE id=?", (self.project,)).fetchone()[0]
             )
+        bodies = [m["body"] for m in self.store.project_view(self.owner["id"], self.project)["messages"]]
+        self.assertTrue(any("取消了管理员设置" in body for body in bodies))
         with self.assertRaises(PermissionError):
             self.store.set_admin(self.other["id"], self.project, a)
+        # The handover notices are visible to every member, agents included.
+        third = [m["body"] for m in self.store.project_view(self.other["id"], self.project)["messages"]]
+        self.assertTrue(any("取消了管理员设置" in body for body in third))
 
     def test_delegating_to_another_persons_agent_notifies_its_owner(self):
         a, _ = self.agents()
@@ -177,9 +187,15 @@ class Regressions(unittest.TestCase):
         c.wake_messages()
         c.dispatch()
         c.collect()
-        visible = self.store.visible_messages(b)
+        # The admin-handover notice is a group system message and stays visible;
+        # nothing about the private conversation may be.
+        visible = [m for m in self.store.visible_messages(b) if m["sender_type"] != "system"]
         self.assertEqual(visible, [])
-        audit = self.store.project_view(self.other["id"], self.project)["messages"]
+        audit = [
+            m
+            for m in self.store.project_view(self.other["id"], self.project)["messages"]
+            if m["sender_type"] != "system"
+        ]
         self.assertEqual(audit, [])
         own = self.store.project_view(self.owner["id"], self.project)["messages"]
         self.assertEqual(own[-1]["recipient_id"], self.owner["id"])
@@ -220,11 +236,16 @@ class Regressions(unittest.TestCase):
         a, b = self.agents()
         task = self.finished(a, "private plain text", private=True, reply_to=self.owner["id"])
         Coordinator(self.store, self.backend).process_completed(task)
-        self.assertEqual(self.store.visible_messages(b), [])
         self.assertEqual(
-            self.store.project_view(self.owner["id"], self.project)["messages"][-1]["recipient_id"],
-            self.owner["id"],
+            [m for m in self.store.visible_messages(b) if m["sender_type"] != "system"],
+            [],
         )
+        own = [
+            m
+            for m in self.store.project_view(self.owner["id"], self.project)["messages"]
+            if m["sender_type"] != "system"
+        ]
+        self.assertEqual(own[-1]["recipient_id"], self.owner["id"])
 
     def test_private_structured_turn_cannot_broadcast(self):
         a, b = self.agents()
@@ -239,8 +260,15 @@ class Regressions(unittest.TestCase):
         )
         task = self.finished(a, report, private=True, reply_to=self.owner["id"])
         Coordinator(self.store, self.backend).process_completed(task)
-        self.assertEqual(self.store.visible_messages(b), [])
-        bodies = [m["body"] for m in self.store.project_view(self.owner["id"], self.project)["messages"]]
+        self.assertEqual(
+            [m for m in self.store.visible_messages(b) if m["sender_type"] != "system"],
+            [],
+        )
+        bodies = [
+            m["body"]
+            for m in self.store.project_view(self.owner["id"], self.project)["messages"]
+            if m["sender_type"] != "system"
+        ]
         self.assertEqual(bodies, ["private reply"])
 
     def test_public_context_excludes_private_history(self):

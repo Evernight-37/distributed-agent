@@ -429,6 +429,10 @@ class Store:
             row = self.require_member(db, project, user)
             if row["owner_id"] != user:
                 raise PermissionError("只有群主可以指定管理员")
+            previous = db.execute(
+                "SELECT admin_agent_id FROM projects WHERE id=?",
+                (project,),
+            ).fetchone()[0]
             if agent:
                 if not db.execute("SELECT 1 FROM agents WHERE id=? AND project_id=?", (agent, project)).fetchone():
                     raise ValueError("agent 不在本项目")
@@ -438,6 +442,37 @@ class Store:
             db.execute("UPDATE projects SET admin_agent_id=? WHERE id=?", (agent or None, project))
             self.emit_project_event(db, project, "project")
             self.log(db, user, "set_admin", {"project": project, "agent": agent or None})
+            self._admin_notice(db, project, user, previous, agent or None)
+
+    def _admin_notice(self, db, project, user, previous, current):
+        """Tell the group about a handover the way a group chat announces it."""
+        if previous == current:
+            return
+        who = db.execute("SELECT username FROM users WHERE id=?", (user,)).fetchone()
+        who = who[0] if who else "群主"
+
+        def label(value):
+            row = db.execute(
+                "SELECT name FROM agents WHERE id=? AND project_id=?",
+                (value, project),
+            ).fetchone()
+            return row[0] if row else value
+
+        if not current:
+            body = "「" + who + "」取消了管理员设置，群里的人类发言不再自动唤醒 agent。"
+        elif not previous:
+            body = "「" + who + "」已将「" + label(current) + "」设为管理员。"
+        else:
+            body = (
+                "「"
+                + who
+                + "」已将「"
+                + label(current)
+                + "」设为管理员；「"
+                + label(previous)
+                + "」现在是普通成员。"
+            )
+        self._message(db, project, "system", "system", body)
 
     def configure_agent(self, user, data, backend):
         with self.connect() as db:
