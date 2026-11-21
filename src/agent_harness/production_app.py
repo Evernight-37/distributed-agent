@@ -81,6 +81,9 @@ def main():
             logging.getLogger(__name__).info("Bridge response: %s ok=%s", action, result.get("ok"))
             return result
 
+    from agent_harness import brand
+
+    brand.refresh_shell_icons(bridge.root)
     window = webview.create_window(
         "Foolship · 协作工作台",
         url=str(web_assets() / "app.html"),
@@ -169,7 +172,11 @@ def main():
             window.destroy()
 
     window.events.loaded += loaded
-    webview.start(gui="cocoa" if sys.platform == "darwin" else "edgechromium", debug=False)
+    webview.start(
+        gui="cocoa" if sys.platform == "darwin" else "edgechromium",
+        debug=False,
+        icon=brand.window_icon(bridge.root),
+    )
 
 
 if __name__ == "__main__":

@@ -62,3 +62,53 @@ def write_icons(directory):
     else:
         produced["icns"] = icns
     return produced
+
+
+def window_icon(root):
+    """An .ico on disk for the native window, or None when Pillow is missing.
+
+    pywebview's WinForms backend extracts the icon from the executable when none
+    is given, and that fallback can leave the default form icon in the taskbar.
+    Writing the mark once per install makes the window icon explicit.
+    """
+    from pathlib import Path
+
+    try:
+        target = Path(root) / "window-icon.ico"
+        icon = draw(256)
+        if not target.is_file():
+            icon.save(target, format="ICO", sizes=[(size, size) for size in SIZES])
+        return str(target)
+    except Exception:
+        return None
+
+
+def refresh_shell_icons(root):
+    """Ask Explorer to rebuild its cached icon once per version.
+
+    Upgrades replace Foolship.exe in place, which no installer would do, so
+    Explorer keeps showing the previous (default) icon on shortcuts and in the
+    taskbar until its cache is rebuilt. The marker makes this a one-time cost per
+    version instead of a shell refresh on every launch.
+    """
+    import sys
+
+    if sys.platform != "win32":
+        return False
+    from pathlib import Path
+
+    from agent_harness.release_info import version
+
+    try:
+        marker = Path(root) / "icon-cache.version"
+        if marker.is_file() and marker.read_text(encoding="utf-8").strip() == version():
+            return False
+        import ctypes
+
+        # SHCNE_ASSOCCHANGED with SHCNF_IDLIST: the documented way to ask the
+        # shell to rebuild icons after an application changed.
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+        marker.write_text(version() + "\n", encoding="utf-8")
+        return True
+    except Exception:
+        return False

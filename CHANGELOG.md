@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.15.2 - 2026-11-21
+
+- **升级后 Windows 不会再显示旧图标**。我们的更新是直接覆盖 `Foolship.exe`，没有经过安装器，所以 Explorer 的图标缓存不会自己失效：快捷方式和任务栏继续显示升级前的默认图标。现在应用在版本变化后的第一次启动会调用 `SHChangeNotify(SHCNE_ASSOCCHANGED)` 通知外壳重建图标缓存，并用 `data/icon-cache.version` 记录，每个版本只做一次。
+- 同时给窗口显式传入图标文件（`data/window-icon.ico`），不再依赖 pywebview 从 exe 里提取的回退路径。
+
 ## 2.15.1 - 2026-11-21
 
 - **快捷方式和 exe 的图标改为托盘那个标记**。之前 Windows 构建没有传 `--icon`，PyInstaller 用的是它自己的默认图标，所以快捷方式看起来和托盘图标完全没关系。现在图标由 `agent_harness/brand.py` 一处绘制（深色圆底 + 帆 + 船体），托盘、exe、安装器共用：
