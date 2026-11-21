@@ -22,6 +22,9 @@ from build_desktop import (
 )
 from prepare_python_runtime import validate_runtime
 
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+
 
 def build(output_root, python_runtime):
     if sys.platform != "darwin":
@@ -36,6 +39,9 @@ def build(output_root, python_runtime):
     trust_data = []
     for certificate in sorted(Path(sysconfig.get_path("stdlib")).glob("*.pem")):
         trust_data.extend(["--add-data", f"{certificate}:."])
+    from agent_harness import brand
+
+    icons = brand.write_icons(PROJECT_ROOT / "build" / "brand")
     subprocess.run(
         [
             sys.executable,
@@ -45,6 +51,7 @@ def build(output_root, python_runtime):
             "--clean",
             "--windowed",
             "--onedir",
+            *(["--icon", str(icons["icns"])] if "icns" in icons else []),
             "--distpath",
             str(output_root),
             "--workpath",

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.15.1 - 2026-11-21
+
+- **快捷方式和 exe 的图标改为托盘那个标记**。之前 Windows 构建没有传 `--icon`，PyInstaller 用的是它自己的默认图标，所以快捷方式看起来和托盘图标完全没关系。现在图标由 `agent_harness/brand.py` 一处绘制（深色圆底 + 帆 + 船体），托盘、exe、安装器共用：
+  - 构建时生成 `build/brand/foolship.ico`（16–256 共 9 个尺寸，8 倍超采样后降采样，小尺寸不发毛）；
+  - PyInstaller 用 `--icon` 嵌进 `Foolship.exe`，安装器 `SetupIconFile` 用同一个文件；
+  - macOS 构建生成 `.icns` 并传给 PyInstaller；
+  - 托盘改为调用同一份绘制代码，不再自己画一份。
+  
+  已有的桌面快捷方式要等重新安装/重建，或让 Windows 刷新图标缓存（`ie4uinit.exe -show`）才会换掉。
+
 ## 2.15.0 - 2026-11-21
 
 - **Codex / DSH 通过 MCP 发的消息，身份完全等同于本人**：同一个人、同样的可见范围、同样会唤醒 Agent；区别只是来源标记——Codex 标 `· Codex`，DSH 标 `· DSH`（此前 DSH 的消息也被标成 Codex）。

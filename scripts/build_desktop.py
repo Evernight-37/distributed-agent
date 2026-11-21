@@ -22,6 +22,10 @@ SHA256 = "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15"
 # omitted by one platform's hand-maintained allowlist.
 CLIENT_FILES = tuple(item.name for item in sorted(APP_SOURCE.glob("*.py")) if item.name != "__init__.py")
 CRYPTOGRAPHY_VERSION = "50.0.2"
+# The icon is generated from agent_harness.brand; import it from the tree even
+# when this checkout is not pip-installed.
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 
 def application_version(source=PROJECT_ROOT):
@@ -71,6 +75,9 @@ def main(output_root=None):
             archive.write_bytes(response.read())
     if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
         raise RuntimeError("Python runtime checksum mismatch")
+    from agent_harness import brand
+
+    icons = brand.write_icons(PROJECT_ROOT / "build" / "brand")
     subprocess.run(
         [
             sys.executable,
@@ -80,6 +87,8 @@ def main(output_root=None):
             "--clean",
             "--windowed",
             "--onedir",
+            "--icon",
+            str(icons["ico"]),
             "--distpath",
             str(output_root),
             "--paths",

@@ -24,16 +24,9 @@ def available():
 
 
 def _image():
-    from PIL import Image, ImageDraw
+    from agent_harness import brand
 
-    size = 64
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    draw.ellipse((2, 2, size - 2, size - 2), fill=(28, 36, 48, 255))
-    # A sail over a hull: the mark the window uses for the ship, at tray size.
-    draw.polygon([(32, 12), (46, 37), (32, 37)], fill=(238, 238, 238, 255))
-    draw.polygon([(14, 43), (50, 43), (43, 52), (21, 52)], fill=(238, 238, 238, 255))
-    return image
+    return brand.tray_image()
 
 
 class Tray:
