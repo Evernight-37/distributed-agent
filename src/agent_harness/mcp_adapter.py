@@ -218,7 +218,7 @@ class FoolshipMcpBackend:
             },
             {
                 "name": "harness_task_assign",
-                "description": "给当前账户拥有且已派入项目的 Agent 创建异步任务。立即返回任务编号；不要在本次调用中等待模型完成。",
+                "description": "给当前账户拥有且已派入项目的 Agent 创建异步任务。立即返回任务编号；不要在本次调用中等待模型完成。任务结果会发到这个项目的群聊，不回到当前对话；需要非公开的结果就改用群聊外的沟通方式。",
                 "inputSchema": dict(
                     obj,
                     properties={
