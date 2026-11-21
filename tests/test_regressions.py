@@ -113,6 +113,23 @@ class Regressions(unittest.TestCase):
         self.assertIn("ONE", bodies)
         self.assertNotIn("TWO", bodies)
 
+    def test_the_admin_can_be_replaced_or_cleared(self):
+        a, b = self.agents()
+        self.store.set_admin(self.owner["id"], self.project, b)
+        with self.store.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT admin_agent_id FROM projects WHERE id=?", (self.project,)).fetchone()[0],
+                b,
+            )
+        # A project that never had an admin shows "未设置"; saving it must work.
+        self.store.set_admin(self.owner["id"], self.project, "")
+        with self.store.connect() as db:
+            self.assertIsNone(
+                db.execute("SELECT admin_agent_id FROM projects WHERE id=?", (self.project,)).fetchone()[0]
+            )
+        with self.assertRaises(PermissionError):
+            self.store.set_admin(self.other["id"], self.project, a)
+
     def test_delegating_to_another_persons_agent_notifies_its_owner(self):
         a, _ = self.agents()
         from agent_harness.broker import PullBackend

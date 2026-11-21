@@ -429,11 +429,15 @@ class Store:
             row = self.require_member(db, project, user)
             if row["owner_id"] != user:
                 raise PermissionError("只有群主可以指定管理员")
-            if not db.execute("SELECT 1 FROM agents WHERE id=? AND project_id=?", (agent, project)).fetchone():
-                raise ValueError("agent 不在本项目")
-            db.execute("UPDATE projects SET admin_agent_id=? WHERE id=?", (agent, project))
+            if agent:
+                if not db.execute("SELECT 1 FROM agents WHERE id=? AND project_id=?", (agent, project)).fetchone():
+                    raise ValueError("agent 不在本项目")
+            # An empty choice means "no coordinator": group posts then wake nobody
+            # until a human mentions an agent. It must not be an error, because the
+            # picker offers that state for projects that never had an admin.
+            db.execute("UPDATE projects SET admin_agent_id=? WHERE id=?", (agent or None, project))
             self.emit_project_event(db, project, "project")
-            self.log(db, user, "set_admin", {"project": project, "agent": agent})
+            self.log(db, user, "set_admin", {"project": project, "agent": agent or None})
 
     def configure_agent(self, user, data, backend):
         with self.connect() as db:
