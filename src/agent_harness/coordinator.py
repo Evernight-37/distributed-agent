@@ -12,6 +12,11 @@ from agent_harness.project_memory import ProjectMemory
 
 TERMINAL = {"needs_review", "failed", "cancelled", "timed_out", "interrupted"}
 
+# Who may read the result of a task delegated by an agent. "delegator" keeps the
+# existing private behaviour; "group" publishes the report to the project group;
+# "owner" delivers it to the executing agent's own owner.
+AUDIENCES = {"delegator", "group", "owner"}
+
 # How many agent-initiated wakes one conversation may chain before automatic
 # scheduling stops and a human has to take over.
 AGENT_WAKE_LIMIT = 12
@@ -140,9 +145,10 @@ class Coordinator:
                 "visible_messages": visible,
                 "project_memory": shared_memory,
                 "task": contract,
-                "protocol": """Respond as one JSON object with reply:string, attachments:[{path:project-relative file path}], messages:[{recipient:null or agent ID,body:string}], tasks:[{agent:ID,title,instructions,stage,allowed_files,acceptance,validation}], executions:[{template:string}], memory_notes:[string], done:boolean.
+                "protocol": """Respond as one JSON object with reply:string, attachments:[{path:project-relative file path}], messages:[{recipient:null or agent ID,body:string}], tasks:[{agent:ID,title,instructions,stage,allowed_files,acceptance,validation,audience:'delegator'|'group'|'owner'}], executions:[{template:string}], memory_notes:[string], done:boolean.
 When a relevant existing project file would help the current conversation, you may put it in attachments. Each file must be at most 5 MB, and at most five may be sent. The receiver applies the machine owner's attachment policy before uploading them to this reply; do not emit server-local links as substitutes. Use attachments:[] when no file helps.
-Only the designated admin can delegate tasks. Peers can send public/direct messages and recommend changes with evidence.
+Only the designated admin can delegate tasks, including inside a private conversation. Peers can send public/direct messages and recommend changes with evidence.
+A delegated task carries an audience: delegator (default, the report returns privately to you), group (the report is published to the project group) or owner (the report goes to the executing agent's own owner). Choose group only when the result is meant for everyone; the task text itself is never posted.
 The reply field is the one human-facing answer for this turn. Use messages only for distinct, deliberate follow-up to another participant or the group; do not repeat reply or publish internal progress notes.
 Do not emit [CHECKPOINT]. Use [BLOCKED] or [DISAGREEMENT] only when a real blocker or disagreement requires attention.
 Human-agent and human-human private messages are visible only to their participants. Agent-agent direct messages are visible to project humans. Never reveal a private human message in group chat, another private chat, or shared project memory without that human's explicit permission.
@@ -384,6 +390,15 @@ Use only authorized conversation context and local project evidence; you cannot 
             original = json.loads(task["contract"])
             reply_to = original.get("reply_to")
             private = bool(original.get("private_turn"))
+            # Where this turn's final report lands. A task delegated by an agent
+            # comes back to the delegator by default; the task itself may ask for
+            # the report to go to the group or to the executing agent's owner.
+            audience = original.get("audience") if original.get("audience") in AUDIENCES else "delegator"
+            if private and audience == "group":
+                reply_to = None
+            elif private and audience == "owner":
+                reply_to = agent["owner_id"]
+            group_posts = 0
             if task["state"] != "needs_review":
                 answer = None
                 try:
@@ -497,23 +512,31 @@ Use only authorized conversation context and local project evidence; you cannot 
                 if not isinstance(message, dict):
                     continue
                 try:
-                    if private and message.get("recipient") not in {
-                        reply_to,
-                        agent["id"],
-                    }:
-                        raise ValueError("Private turn cannot broadcast or forward to other agents")
+                    recipient = message.get("recipient")
+                    if private:
+                        # The delegator and the executing agent's own owner stay
+                        # reachable; anything wider must be granted by the task.
+                        allowed = {original.get("reply_to"), agent["id"], agent["owner_id"]}
+                        if audience == "group":
+                            allowed.add(None)
+                        if recipient not in allowed:
+                            raise ValueError("Private turn cannot broadcast or forward to other agents")
+                        if recipient is None and group_posts >= 1:
+                            raise ValueError("One group message per task")
                     self.store._message(
                         db,
                         project["id"],
                         agent["id"],
                         "agent",
                         message["body"],
-                        message.get("recipient"),
+                        recipient,
                         task_id,
                     )
+                    if recipient is None and private:
+                        group_posts += 1
                 except (ValueError, KeyError, TypeError):
                     self.store.log(db, "scheduler", "rejected_message", {"task": task_id})
-            if project["admin_agent_id"] == agent["id"] and not private:
+            if project["admin_agent_id"] == agent["id"]:
                 for assignment in answer.get("tasks", []):
                     db.execute("SAVEPOINT delegation")
                     try:
@@ -529,6 +552,10 @@ Use only authorized conversation context and local project evidence; you cannot 
                         same_agent = target["id"] == agent["id"]
                         assignment["reply_to"] = None if same_agent else agent["id"]
                         assignment["private_turn"] = not same_agent
+                        # A task handed to another person's machine runs on their
+                        # hardware and their CLI account; the owner is told that a
+                        # task exists, not what it says.
+                        borrowed = (not same_agent) and target["owner_id"] != agent["owner_id"]
                         if not same_agent:
                             self.store._message(
                                 db,
@@ -552,6 +579,26 @@ Use only authorized conversation context and local project evidence; you cannot 
                             agent["id"],
                         )
                         db.execute("RELEASE delegation")
+                        if borrowed:
+                            # Only the borrowed agent can talk to its own owner:
+                            # a human may read human_agent conversations of the
+                            # agents they own, and nobody else's.
+                            requester = db.execute(
+                                "SELECT username FROM users WHERE id=?",
+                                (agent["owner_id"],),
+                            ).fetchone()
+                            self.store._message(
+                                db,
+                                project["id"],
+                                target["id"],
+                                "agent",
+                                "我接到一项任务："
+                                + assignment["title"]
+                                + ("（派活人：" + requester[0] + "）" if requester else "")
+                                + "。任务细节只对派活人和我可见，结果会回到派活人。",
+                                target["owner_id"],
+                                task_id,
+                            )
                     except Exception as exc:
                         db.execute("ROLLBACK TO delegation")
                         db.execute("RELEASE delegation")

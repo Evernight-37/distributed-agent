@@ -16,7 +16,7 @@ class Regressions(unittest.TestCase):
         self.store.set_admin(self.owner["id"], self.project, a)
         return a, b
 
-    def finished(self, agent, report, state="needs_review", private=False, reply_to=None):
+    def finished(self, agent, report, state="needs_review", private=False, reply_to=None, **extra):
         data = {
             "project": self.project,
             "agent": agent,
@@ -28,11 +28,130 @@ class Regressions(unittest.TestCase):
             "validation": "复核",
             "private_turn": private,
             "reply_to": reply_to,
+            **extra,
         }
         task = self.store.task(self.owner["id"], data)["id"]
         with self.store.connect() as db:
             db.execute("UPDATE tasks SET state=?,report=? WHERE id=?", (state, report, task))
         return task
+
+    def test_private_conversation_can_delegate_a_task(self):
+        """A human DM to the admin must be able to hand work out privately."""
+        a, b = self.agents()
+        delegation = {
+            "agent": b,
+            "title": "复核泄漏",
+            "instructions": "只给 b 看的内容",
+            "stage": "discuss",
+            "allowed_files": "只读",
+            "acceptance": "给出结论",
+            "validation": "复核",
+        }
+        task = self.finished(
+            a,
+            json.dumps({"reply": "已安排", "tasks": [delegation]}),
+            private=True,
+            reply_to=self.owner["id"],
+        )
+        Coordinator(self.store, self.backend).process_completed(task)
+        with self.store.connect() as db:
+            delegated = db.execute("SELECT * FROM tasks WHERE agent_id=?", (b,)).fetchone()
+        self.assertIsNotNone(delegated)
+        contract = json.loads(delegated["contract"])
+        self.assertTrue(contract["private_turn"])
+        self.assertEqual(contract["reply_to"], a)
+        # The contract text never reaches the group or the other human's view.
+        for user in (self.owner["id"], self.other["id"]):
+            bodies = [m["body"] for m in self.store.project_view(user, self.project)["messages"]]
+            self.assertFalse(any("只给 b 看的内容" in body for body in bodies))
+
+    def test_group_audience_publishes_the_report(self):
+        a, b = self.agents()
+        task = self.finished(
+            b,
+            json.dumps({"reply": "PUBLIC RESULT"}),
+            private=True,
+            reply_to=a,
+            audience="group",
+        )
+        Coordinator(self.store, self.backend).process_completed(task)
+        bodies = [m["body"] for m in self.store.project_view(self.other["id"], self.project)["messages"]]
+        self.assertIn("PUBLIC RESULT", bodies)
+
+    def test_owner_audience_reports_to_the_executing_owner(self):
+        a, b = self.agents()
+        task = self.finished(
+            b,
+            json.dumps({"reply": "OWNER REPORT"}),
+            private=True,
+            reply_to=a,
+            audience="owner",
+        )
+        Coordinator(self.store, self.backend).process_completed(task)
+        own = self.store.project_view(self.owner["id"], self.project)["messages"]
+        self.assertEqual(own[-1]["recipient_id"], self.owner["id"])
+        self.assertEqual(own[-1]["body"], "OWNER REPORT")
+        outsider = [m["body"] for m in self.store.project_view(self.other["id"], self.project)["messages"]]
+        self.assertNotIn("OWNER REPORT", outsider)
+
+    def test_group_audience_allows_one_group_message_and_no_more(self):
+        a, b = self.agents()
+        report = json.dumps(
+            {
+                "reply": "RESULT",
+                "messages": [
+                    {"recipient": None, "body": "ONE"},
+                    {"recipient": None, "body": "TWO"},
+                    {"recipient": b, "body": "SELF NOTE"},
+                ],
+            }
+        )
+        task = self.finished(b, report, private=True, reply_to=a, audience="group")
+        Coordinator(self.store, self.backend).process_completed(task)
+        bodies = [m["body"] for m in self.store.project_view(self.other["id"], self.project)["messages"]]
+        self.assertIn("RESULT", bodies)
+        self.assertIn("ONE", bodies)
+        self.assertNotIn("TWO", bodies)
+
+    def test_delegating_to_another_persons_agent_notifies_its_owner(self):
+        a, _ = self.agents()
+        from agent_harness.broker import PullBackend
+
+        PullBackend(self.store).create_pair(self.other["id"], "lab2")
+        self.backend.projects["backend-c"] = {"node": "lab2"}
+        borrowed = self.store.add_agent(
+            self.other["id"],
+            {
+                "project": self.project,
+                "name": "外来员工",
+                "node": "lab2",
+                "backend_project": "backend-c",
+                "model": "gpt-test",
+                "effort": "low",
+                "timeout": 30,
+            },
+            self.backend,
+        )["id"]
+        delegation = {
+            "agent": borrowed,
+            "title": "借用机器",
+            "instructions": "跑一次实验",
+            "stage": "discuss",
+            "allowed_files": "只读",
+            "acceptance": "结果",
+            "validation": "复核",
+        }
+        task = self.finished(a, json.dumps({"reply": "已安排", "tasks": [delegation]}))
+        Coordinator(self.store, self.backend).process_completed(task)
+        notices = [
+            m
+            for m in self.store.project_view(self.other["id"], self.project)["messages"]
+            if m["recipient_id"] == self.other["id"] and m["sender_id"] == borrowed
+        ]
+        self.assertTrue(notices)
+        self.assertIn("借用机器", notices[0]["body"])
+        # The owner is told a task exists, never what it says.
+        self.assertNotIn("跑一次实验", notices[0]["body"])
 
     def test_human_private_reply_stays_private_and_third_agent_cannot_read(self):
         a, b = self.agents()
