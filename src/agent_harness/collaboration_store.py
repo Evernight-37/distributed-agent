@@ -464,13 +464,7 @@ class Store:
             body = "「" + who + "」已将「" + label(current) + "」设为管理员。"
         else:
             body = (
-                "「"
-                + who
-                + "」已将「"
-                + label(current)
-                + "」设为管理员；「"
-                + label(previous)
-                + "」现在是普通成员。"
+                "「" + who + "」已将「" + label(current) + "」设为管理员；「" + label(previous) + "」现在是普通成员。"
             )
         self._message(db, project, "system", "system", body)
 
