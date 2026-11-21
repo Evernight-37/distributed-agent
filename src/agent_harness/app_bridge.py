@@ -538,6 +538,8 @@ class AppBridge:
             str(assets() / "mcp_adapter.py"),
             "--grant",
             str(self._mcp_grant_path()),
+            "--client",
+            "codex",
         ]
 
     def _mcp_launch(self):
@@ -733,6 +735,8 @@ class AppBridge:
             str(assets() / "mcp_adapter.py"),
             "--grant",
             str(self._mcp_grant_path()),
+            "--client",
+            "dsh",
         ]
 
     def _dsh_mcp_launcher_path(self):

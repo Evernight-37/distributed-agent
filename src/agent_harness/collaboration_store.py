@@ -736,6 +736,15 @@ class Store:
             agent = self.require_agent_owner(db, data["agent"], user)
             if agent["project_id"] != data["project"] or not agent["enabled"]:
                 raise ValueError("请选择可用的项目 agent")
+            audience = data.get("audience")
+            if audience not in (None, "group", "private", "owner"):
+                raise ValueError("audience 只能是 group、private 或 owner")
+            if audience in {"private", "owner"}:
+                # The report goes to this person's private conversation with the
+                # agent instead of the project group; the identity stays the same.
+                # "owner" and "private" coincide here because the caller must own
+                # the agent, but both spellings reach this method.
+                data = {**data, "private_turn": True, "reply_to": user}
             return self._task(db, project, agent, data, user)
 
     def _task(self, db, project, agent, data, actor):

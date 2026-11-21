@@ -23,8 +23,11 @@ from agent_harness.protocol import ensure_hub_compatible
 
 
 class FoolshipMcpBackend:
-    def __init__(self, grant_path, network_path=None):
+    def __init__(self, grant_path, network_path=None, client="codex"):
         self.grant_path = Path(grant_path).expanduser().resolve()
+        # Codex and DeepSeek Harness share this adapter; the label only records
+        # which client sent the message, never a different identity.
+        self.client = client if client in {"codex", "dsh"} else "codex"
         self.grant = self._load_grant()
         network_path = (
             Path(network_path).expanduser().resolve()
@@ -202,7 +205,7 @@ class FoolshipMcpBackend:
             },
             {
                 "name": "harness_message_send",
-                "description": "以“当前账户 · Codex”来源向项目群聊、自己的 Agent 私聊或另一位人类私聊发送消息。群聊可点名一个 Agent。",
+                "description": "向项目群聊、自己的 Agent 私聊或另一位人类私聊发送消息，群聊可点名一个 Agent。这条消息与账户主人亲自发送完全等价：同一个身份、同样的可见范围、同样会唤醒 Agent，只是来源标记为 Codex 或 DSH。返回的 conversation_id 与 id 用于后续用 harness_project_read 读取回复。",
                 "inputSchema": dict(
                     obj,
                     properties={
@@ -218,7 +221,7 @@ class FoolshipMcpBackend:
             },
             {
                 "name": "harness_task_assign",
-                "description": "给当前账户拥有且已派入项目的 Agent 创建异步任务。立即返回任务编号；不要在本次调用中等待模型完成。任务结果会发到这个项目的群聊，不回到当前对话；需要非公开的结果就改用群聊外的沟通方式。",
+                "description": "给当前账户拥有且已派入项目的 Agent 创建异步任务。立即返回任务编号；不要在本次调用中等待模型完成。audience 决定结果去哪：group（默认）发到项目群聊；private 只发到你和该 Agent 的私信，需要非公开结果时用它。两种结果都可以用 harness_project_read 读回。",
                 "inputSchema": dict(
                     obj,
                     properties={
@@ -229,6 +232,11 @@ class FoolshipMcpBackend:
                         "stage": {
                             "type": "string",
                             "enum": ["discuss", "review", "implement"],
+                        },
+                        "audience": {
+                            "type": "string",
+                            "enum": ["group", "private"],
+                            "description": "group 把结果发到项目群聊（默认）；private 只发到你和该 Agent 的私信。",
                         },
                         "allowed_files": {
                             "type": "string",
@@ -328,6 +336,7 @@ class FoolshipMcpBackend:
             except (ValueError, TypeError, AttributeError):
                 raise ValueError("client_message_id 必须是 UUID") from None
             payload["client_message_id"] = message_id
+            payload["client"] = self.client
             result = self._rpc(self._project_server(project), "message", payload)
             return {"project": project, "client_message_id": message_id, **result}
         if name == "harness_task_assign":
@@ -335,6 +344,7 @@ class FoolshipMcpBackend:
             payload = dict(arguments)
             payload.setdefault("stage", "discuss")
             payload.setdefault("allowed_files", "只讨论，不修改文件")
+            payload["client"] = self.client
             result = self._rpc(self._project_server(project), "task", payload)
             return {"project": project, **result}
         if name == "harness_task_get":
@@ -351,8 +361,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--grant", required=True)
     parser.add_argument("--network")
+    parser.add_argument("--client", default="codex", choices=("codex", "dsh"))
     args = parser.parse_args(argv)
-    run_stdio(FoolshipMcpBackend(args.grant, args.network))
+    run_stdio(FoolshipMcpBackend(args.grant, args.network, args.client))
 
 
 if __name__ == "__main__":

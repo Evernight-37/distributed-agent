@@ -29,6 +29,16 @@ def device_node(public):
     return "device-" + hashlib.sha256(public.encode()).hexdigest()[:24]
 
 
+# Which client a delegate speaks through. Messages keep the human's identity; the
+# label only records the origin, so a reply from Codex and one typed by the person
+# are the same principal.
+DELEGATE_CLIENTS = {"codex": "codex", "dsh": "dsh"}
+
+
+def client_label(value):
+    return DELEGATE_CLIENTS.get(value) if isinstance(value, str) else None
+
+
 class AccountBackend:
     def __init__(self, store, backend):
         self.store, self.backend = store, backend
@@ -632,7 +642,7 @@ class AccountBackend:
                 p.get("mention_agent_id"),
                 p.get("conversation_id"),
                 p.get("client_message_id"),
-                "codex" if delegate_scopes is not None else None,
+                (client_label(p.get("client")) or "codex") if delegate_scopes is not None else None,
                 p.get("attachment_ids"),
             )
         if op in {"attachment-upload", "attachment-get"}:
@@ -694,7 +704,7 @@ class AccountBackend:
             return self.store.mark_conversation_read(user, p["project"], p["conversation_id"])
         if op == "task":
             if delegate_scopes is not None:
-                p = {**p, "requested_via": "codex"}
+                p = {**p, "requested_via": client_label(p.get("client")) or "codex"}
             return self.store.task(user, p)
         if op == "task-status":
             with self.store.connect() as db:

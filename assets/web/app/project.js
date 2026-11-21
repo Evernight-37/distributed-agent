@@ -309,7 +309,8 @@ function renderProject() {
     empty(msgs, isGroup ? "在项目大群开始讨论。" : "这段会话还没有消息。");
   visible.forEach((m) => {
     const baseSender = m.sender_name || m.sender_username || m.sender_id || "?",
-      sender = baseSender + (m.sender_client === "codex" ? " · Codex" : ""),
+      clientLabel = { codex: "Codex", dsh: "DSH" }[m.sender_client],
+      sender = baseSender + (clientLabel ? " · " + clientLabel : ""),
       row = el("div", "message"),
       bubble = el("div", "bubble"),
       name = el("div", "name", sender);

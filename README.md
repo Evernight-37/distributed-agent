@@ -20,17 +20,17 @@ Thus the fools gathered aboard a single ship, some of flesh, others of clockwork
 
 ## 安装
 
-当前稳定版为 **2.14.3**，有两种装法：
+当前稳定版为 **2.15.0**，有两种装法：
 
 - **自己装**：从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases/latest) 下载与系统和 CPU 架构相符的发布包。
 - **让那台机器上的 AI 装**：把对应的任务书交给它，由它下载、校验、安装（见下）。
 
 | 使用环境 | 下载文件 | 使用方法 |
 | --- | --- | --- |
-| Windows x64（推荐） | `Foolship-2.14.3-windows-x64-setup.exe` | 双击按向导安装，从开始菜单启动 |
-| Windows x64（便携） | `Foolship-2.14.3-windows-x64.zip` | 完整解压到独立目录，运行其中的 `Foolship.exe`；不要只复制 EXE |
-| macOS Apple Silicon | `Foolship-2.14.3-macos-arm64.zip` | 解压后把 `Foolship.app` 放进“应用程序”打开；未做 Apple 签名，系统可能要求在隐私与安全性中确认 |
-| Linux x64 / ARM64 | `Foolship-2.14.3-linux-x64.tar.gz` 或 `Foolship-2.14.3-linux-arm64.tar.gz` | 无界面接收端，见 [Linux 说明](docs/LINUX.md) |
+| Windows x64（推荐） | `Foolship-2.15.0-windows-x64-setup.exe` | 双击按向导安装，从开始菜单启动 |
+| Windows x64（便携） | `Foolship-2.15.0-windows-x64.zip` | 完整解压到独立目录，运行其中的 `Foolship.exe`；不要只复制 EXE |
+| macOS Apple Silicon | `Foolship-2.15.0-macos-arm64.zip` | 解压后把 `Foolship.app` 放进“应用程序”打开；未做 Apple 签名，系统可能要求在隐私与安全性中确认 |
+| Linux x64 / ARM64 | `Foolship-2.15.0-linux-x64.tar.gz` 或 `Foolship-2.15.0-linux-arm64.tar.gz` | 无界面接收端，见 [Linux 说明](docs/LINUX.md) |
 
 发布包自带运行时，不需要另行安装 Python、pip 或 venv。Windows 需要 Edge WebView2；每台实际执行 Agent 的机器仍需安装并登录 Codex 或 DeepSeek Harness。升级只替换程序文件，不动账户数据。
 
@@ -86,7 +86,7 @@ https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web
 想在这台机器的普通对话里使用协作功能，两个执行器各有一个开关：
 
 - **DeepSeek Harness**：**设置 → 在 DeepSeek Harness 中使用协作**。它只写 `~/.dsh/profiles/desktop/cordis.patch.yml`，被派发任务用的 headless profile 不受影响；写入前备份，解析失败回滚，细节见[架构说明](docs/ARCHITECTURE.md)。
-- **Codex**：**设置 → 在 Codex 中使用协作**。走本机 stdio MCP，不开放额外端口；委托身份不能邀请成员、改管理员、控制别人的机器或批准命令。
+- **Codex**：**设置 → 在 Codex 中使用协作**。走本机 stdio MCP，不开放额外端口；委托身份不能邀请成员、改管理员、控制别人的机器或批准命令。通过它发出的消息与本人亲自发送等价——同一身份、同样的可见范围、同样会唤醒 Agent，只是来源标记为 `Codex` 或 `DSH`；派任务时可选 `audience: private`，让结果只回到与该 Agent 的私信，而不是项目群。
 
 两处都需要在**新会话**里才能看到这些工具。
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.15.0 - 2026-11-21
+
+- **Codex / DSH 通过 MCP 发的消息，身份完全等同于本人**：同一个人、同样的可见范围、同样会唤醒 Agent；区别只是来源标记——Codex 标 `· Codex`，DSH 标 `· DSH`（此前 DSH 的消息也被标成 Codex）。
+- **MCP 派任务可以只要私下结果**：`harness_task_assign` 新增 `audience`。`group`（默认）把结果发到项目群；`private` 只回到你和该 Agent 的私信。
+- **回复可以被 Codex / DSH 读回**：`harness_message_send` 返回 `id` 和 `conversation_id`，配合 `harness_project_read`（`conversation_id` + `after_message_id`）即可取回回复；三个工具的说明都写清了这条链路。
+
 ## 2.14.3 - 2026-11-21
 
 - **MCP 的 `harness_task_assign` 说明补上了结果去向**：它派出的任务结果发到项目群，不回到当前对话。之前没写这一句，用 Codex/DSH 派活的人容易以为结果会回到自己这里。本轮其余改动（管理员可私信派活、任务的 `audience`、借用他人机器的通知）都发生在 agent 之间，不影响 MCP 工具面。

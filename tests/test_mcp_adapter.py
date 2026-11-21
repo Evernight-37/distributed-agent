@@ -109,6 +109,85 @@ class McpAdapterTests(unittest.TestCase):
         self.assertEqual(state["state"], "queued")
         self.assertEqual(__import__("json").loads(state["contract"])["requested_via"], "codex")
 
+    def test_private_audience_routes_the_result_to_this_person(self):
+        account = self.bridge.identity["account_id"]
+        node = self.bridge.profile["node"]
+        with Store(self.state).connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    "agent-private",
+                    self.project,
+                    "Private worker",
+                    account,
+                    node,
+                    "backend-private",
+                    "model",
+                    "medium",
+                    120,
+                ),
+            )
+        task = self.backend.call(
+            "harness_task_assign",
+            {
+                "project": self.project,
+                "agent": "agent-private",
+                "title": "Private review",
+                "instructions": "Only for me",
+                "stage": "review",
+                "acceptance": "Report",
+                "validation": "Inspect",
+                "audience": "private",
+            },
+        )
+        contract = __import__("json").loads(
+            self.backend.call("harness_task_get", {"project": self.project, "task": task["id"]})["contract"]
+        )
+        self.assertTrue(contract["private_turn"])
+        self.assertEqual(contract["reply_to"], account)
+
+    def test_a_dsh_delegate_is_labelled_as_dsh_but_stays_the_same_person(self):
+        dsh = FoolshipMcpBackend(self.grant, client="dsh")
+        sent = dsh.call(
+            "harness_message_send",
+            {"project": self.project, "body": "From DSH"},
+        )
+        view = dsh.call("harness_project_read", {"project": self.project, "after_message_id": 0})
+        message = next(item for item in view["messages"] if item["id"] == sent["id"])
+        self.assertEqual(message["sender_client"], "dsh")
+        self.assertEqual(message["sender_id"], self.bridge.identity["account_id"])
+        with Store(self.state).connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    "agent-dsh",
+                    self.project,
+                    "DSH worker",
+                    self.bridge.identity["account_id"],
+                    self.bridge.profile["node"],
+                    "backend-dsh",
+                    "model",
+                    "medium",
+                    120,
+                ),
+            )
+        task = dsh.call(
+            "harness_task_assign",
+            {
+                "project": self.project,
+                "agent": "agent-dsh",
+                "title": "From DSH",
+                "instructions": "x",
+                "stage": "discuss",
+                "acceptance": "y",
+                "validation": "z",
+            },
+        )
+        contract = __import__("json").loads(
+            dsh.call("harness_task_get", {"project": self.project, "task": task["id"]})["contract"]
+        )
+        self.assertEqual(contract["requested_via"], "dsh")
+
     def test_unknown_project_and_invalid_message_id_fail_closed(self):
         with self.assertRaises(ValueError):
             self.backend.call("harness_project_read", {"project": "missing"})
