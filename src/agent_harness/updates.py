@@ -778,6 +778,21 @@ def mark_running(root):
     return {"confirmed": False, "expected": record.get("to_version"), "running": application_version()}
 
 
+def helper_log_tail(root, lines=3):
+    """The last lines the updater helper wrote, for a failed apply.
+
+    A helper runs without a console, so this file is the only account of why an
+    update did not finish (gave up waiting, installer error, and so on).
+    """
+    path = pending_dir(root) / "apply-helper.log"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    tail = [line for line in text.splitlines() if line.strip()][-lines:]
+    return {"path": str(path), "lines": tail} if tail else {"path": str(path), "lines": []}
+
+
 def dismiss_apply(root):
     """Forget a failed apply after the user has decided what to do about it."""
     apply_marker_path(root).unlink(missing_ok=True)

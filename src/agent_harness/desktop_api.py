@@ -403,6 +403,8 @@ class DesktopSettingsActions:
             confirmed = updates.mark_running(self.bridge.root)
             state = updates.status(self.bridge.root, force=bool(data.get("force")))
             state["apply"] = confirmed or updates.apply_state(self.bridge.root)
+            if state["apply"] and not (confirmed or {}).get("confirmed"):
+                state["apply_log"] = updates.helper_log_tail(self.bridge.root)
             return state
         if action == "update-download":
             from agent_harness import updates

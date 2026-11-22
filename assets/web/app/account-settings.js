@@ -623,6 +623,18 @@ function updateCard() {
         s.apply.running +
         "。可以回到之前的版本。";
       rollback.classList.remove("hidden");
+      if (s.apply_log?.path) {
+        const log = el("p", "muted small");
+        log.append(
+          el("div", "", "更新助手日志：" + s.apply_log.path),
+          el(
+            "div",
+            "",
+            (s.apply_log.lines || []).join(" / ") || "（尚未写入）",
+          ),
+        );
+        card.append(log);
+      }
     } else if (s.apply && s.apply.confirmed === true) {
       statusLine.className = "muted small";
       statusLine.textContent = "已更新到 " + s.apply.version + "。";
