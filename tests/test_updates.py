@@ -385,6 +385,7 @@ class HelperTests(unittest.TestCase):
         # hides a failed exit behind a spinning process.
         self.assertLessEqual(updates.WAIT_LIMIT, 300)
 
+    @unittest.skipUnless(os.name == "nt", "only the Windows helper records a log")
     def test_the_helper_log_directory_exists_before_the_helper_runs(self):
         with tempfile.TemporaryDirectory() as folder:
             path = updates.write_helper(folder, "2.2.0", "setup.exe", "app", 7)
