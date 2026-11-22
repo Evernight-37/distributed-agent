@@ -1,5 +1,6 @@
 """Desktop control boundary independent from the native UI implementation."""
 
+import os
 import re
 import secrets
 import threading
@@ -93,7 +94,19 @@ class DesktopSessionActions:
                 result = {"background": True}
             self.bridge.allow_window_close = True
             if self.bridge.window:
-                threading.Timer(0.3, self.bridge.window.destroy).start()
+
+                def finish():
+                    try:
+                        self.bridge.window.destroy()
+                    except Exception:
+                        pass
+                    # Destroying a WinForms window from a worker thread does not
+                    # always end its message loop, and the updater helper waits for
+                    # this process to disappear before replacing files. Exit for
+                    # real; services were already stopped above.
+                    os._exit(0)
+
+                threading.Timer(0.3, finish).start()
             return result
         if action == "local-status":
             return {

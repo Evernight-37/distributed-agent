@@ -489,7 +489,7 @@ APPLY_MARKER = "applied.json"
 # How long the launcher waits for the application to exit, in seconds. A PID can
 # be reused by the system, so an unbounded wait can spin forever on an unrelated
 # process; giving up is safer than leaving a hidden watcher behind.
-WAIT_LIMIT = 600
+WAIT_LIMIT = 120
 # Directories a release owns. Anything else in the installation directory is
 # either user data or generated, and is never deleted by an update.
 OWNED_TOP = ("client", "runtime", "_internal")
@@ -552,7 +552,7 @@ def helper_path(root, version):
     return Path(root) / PENDING_DIR / ("apply-" + str(version).lstrip("v") + suffix)
 
 
-def windows_helper(installer, target, pid, directory=None):
+def windows_helper(installer, target, pid, directory=None, log=""):
     """A .cmd that waits for the caller, installs silently, then relaunches.
 
     ``/DIR`` pins the silent install to the directory that is already in use: the
@@ -569,6 +569,7 @@ def windows_helper(installer, target, pid, directory=None):
                 "@echo off",
                 "setlocal",
                 "set tries=0",
+                'echo [%date% %time%] waiting for {pid} >> "{log}"',
                 ":wait_for_exit",
                 'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
                 "if errorlevel 1 goto run_install",
@@ -577,18 +578,27 @@ def windows_helper(installer, target, pid, directory=None):
                 "ping -n 2 127.0.0.1 >nul",
                 "goto wait_for_exit",
                 ":run_install",
+                'echo [%date% %time%] installing {installer} >> "{log}"',
                 command,
+                'echo [%date% %time%] installer exit %errorlevel% >> "{log}"',
                 'start "" "{target}"',
                 "exit /b 0",
                 ":give_up",
+                'echo [%date% %time%] gave up waiting for {pid} >> "{log}"',
                 "exit /b 1",
             ]
         )
         + newline
-    ).format(pid=int(pid), installer=installer, target=target, directory=directory or "")
+    ).format(
+        pid=int(pid),
+        installer=installer,
+        target=target,
+        directory=directory or "",
+        log=log,
+    )
 
 
-def windows_zip_helper(archive, target, launcher, pid, prune=None):
+def windows_zip_helper(archive, target, launcher, pid, prune=None, log=""):
     """Windows portable layout: unpack the zip over the directory, then relaunch.
 
     The release archive keeps everything under a single top-level directory, so
@@ -623,6 +633,7 @@ def windows_zip_helper(archive, target, launcher, pid, prune=None):
         "@echo off",
         "setlocal",
         "set tries=0",
+        'echo [%date% %time%] waiting for {pid} >> "{log}"',
         ":wait_for_exit",
         'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
     ]
@@ -637,9 +648,21 @@ def windows_zip_helper(archive, target, launcher, pid, prune=None):
     ]
     if prune:
         steps.append(pruning)
-    steps += ['start "" "{launcher}"', "exit /b 0", ":give_up", "exit /b 1"]
+    steps += [
+        'echo [%date% %time%] unpacked over {target} >> "{log}"',
+        'start "" "{launcher}"',
+        "exit /b 0",
+        ":give_up",
+        'echo [%date% %time%] gave up waiting for {pid} >> "{log}"',
+        "exit /b 1",
+    ]
     return (newline.join(steps) + newline).format(
-        pid=int(pid), archive=archive, target=target, launcher=launcher, prune=prune or ""
+        pid=int(pid),
+        archive=archive,
+        target=target,
+        launcher=launcher,
+        prune=prune or "",
+        log=log,
     )
 
 
@@ -705,12 +728,20 @@ def write_helper(root, version, installer, target, pid, layout=None, launcher=No
     layout = layout or install_layout(target)
     launcher = launcher or target
     _prune_helpers(root)
+    log = pending_dir(root) / "apply-helper.log"
     path = helper_path(root, version)
     path.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt" and layout == "installed":
-        text = windows_helper(str(installer), str(launcher), pid, str(target))
+        text = windows_helper(str(installer), str(launcher), pid, str(target), str(log))
     elif os.name == "nt":
-        text = windows_zip_helper(str(installer), str(target), str(launcher), pid, str(prune) if prune else None)
+        text = windows_zip_helper(
+            str(installer),
+            str(target),
+            str(launcher),
+            pid,
+            str(prune) if prune else None,
+            str(log),
+        )
     else:
         text = unix_helper(str(installer), str(target), pid)
     path.write_text(text, encoding="utf-8", newline="")
@@ -828,7 +859,10 @@ def apply(root, installer=None, version=None, target=None, pid=None, force=False
     )
     if spawn is None:
         if os.name == "nt":
-            flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_GROUP | NO_WINDOW
+            # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP. DETACHED_PROCESS was
+            # also here and it makes cmd.exe allocate a console window, which is
+            # exactly the stray black window a person sees during an update.
+            flags = 0x00000200 | 0x08000000
             command = ["cmd.exe", "/c", str(script)]
             spawn = lambda: subprocess.Popen(  # noqa: E731
                 command,

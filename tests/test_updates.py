@@ -370,6 +370,21 @@ class HelperTests(unittest.TestCase):
         self.assertIn("tries=$((tries + 1))", unix)
         self.assertIn("-ge " + str(updates.WAIT_LIMIT), unix)
 
+    def test_the_launcher_can_explain_what_it_did(self):
+        """A detached helper has no console, so it records progress in a file."""
+        for text in (
+            updates.windows_helper(r"C:\data\setup.exe", r"C:\app\Foolship.exe", 4321, log=r"C:\log.txt"),
+            updates.windows_zip_helper(r"C:\d\u.zip", r"C:\app", r"C:\app\Foolship.exe", 4321, None, r"C:\log.txt"),
+        ):
+            self.assertIn(r'>> "C:\log.txt"', text)
+            self.assertIn("waiting for 4321", text)
+            self.assertIn("gave up waiting for 4321", text)
+
+    def test_the_wait_is_bounded_to_a_couple_of_minutes(self):
+        # The application exits right after spawning the helper; a long limit only
+        # hides a failed exit behind a spinning process.
+        self.assertLessEqual(updates.WAIT_LIMIT, 300)
+
     def test_previous_launchers_are_pruned(self):
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder) / "updates" / "pending"
