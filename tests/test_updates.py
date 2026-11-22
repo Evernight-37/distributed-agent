@@ -252,11 +252,12 @@ class AssetTests(unittest.TestCase):
 
 class DownloadTests(unittest.TestCase):
     def _download(self, folder, data, digest, **kwargs):
-        name = updates.asset_name("v2.2.0", "win32", "AMD64")
+        tag = str(kwargs.pop("tag", "v2.2.0"))
+        name = updates.asset_name(tag, "win32", "AMD64")
         release = release_for(name, data, digest=digest, **kwargs)
         return updates.download(
             folder,
-            tag="v2.2.0",
+            tag=tag,
             fetch=lambda tag: release,
             opener=opener_for(data),
             # The mechanics under test are platform independent; per-platform
@@ -325,15 +326,48 @@ class DownloadTests(unittest.TestCase):
             self.assertFalse((updates.pending_dir(folder) / record["file"]).exists())
             self.assertIsNone(updates.staged(folder))
 
-    def test_status_reports_the_staged_package(self):
+    def test_status_reports_the_staged_package_while_it_is_still_an_upgrade(self):
+        import hashlib
+
+        data = b"installer-bytes"
+        digest = hashlib.sha256(data).hexdigest()
+        tag = next_version()
+        with tempfile.TemporaryDirectory() as folder:
+            self._download(folder, data, digest, tag=tag)
+            state = updates.status(folder, force=True, fetch=lambda **k: {"tag": tag, "url": ""})
+            self.assertEqual(state["staged"]["version"], tag.lstrip("v"))
+
+    def test_a_staged_package_for_the_running_version_is_not_offered(self):
         import hashlib
 
         data = b"installer-bytes"
         digest = hashlib.sha256(data).hexdigest()
         with tempfile.TemporaryDirectory() as folder:
-            self._download(folder, data, digest)
-            state = updates.status(folder, force=True, fetch=lambda **k: {"tag": "v2.2.0", "url": ""})
-            self.assertEqual(state["staged"]["version"], "2.2.0")
+            record = self._download(folder, data, digest, tag="v" + running_version())
+            self.assertIsNotNone(updates.staged(folder))
+            state = updates.status(folder, force=True, fetch=lambda **k: {"tag": "v" + running_version(), "url": ""})
+            self.assertIsNone(state["staged"])
+            # The leftover archive is cleaned up rather than left as an offer.
+            self.assertFalse((updates.pending_dir(folder) / record["file"]).exists())
+
+    def test_a_confirmed_apply_drops_the_downloaded_archive(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = updates.pending_dir(folder)
+            directory.mkdir(parents=True)
+            (directory / "new.zip").write_bytes(b"x")
+            write_json(
+                directory / "meta.json",
+                {"file": "new.zip", "version": next_version(), "size": 1, "sha256": "0" * 64},
+            )
+            write_json(
+                updates.apply_marker_path(folder),
+                {"from_version": "1.0", "to_version": running_version()},
+            )
+            result = updates.mark_running(folder)
+            self.assertTrue(result["confirmed"])
+            # Nothing is left to "install again": this version is the running one.
+            self.assertFalse((directory / "meta.json").exists())
+            self.assertFalse((directory / "new.zip").exists())
 
     def test_a_staged_package_is_reverified_before_use(self):
         import hashlib

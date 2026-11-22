@@ -135,7 +135,7 @@ def status(root, force=False, fetch=None, now=None):
         "latest": document.get("latest_version"),
         "url": document.get("url") or RELEASES_PAGE,
         "checked_at": document.get("last_checked"),
-        "staged": staged(root),
+        "staged": offered_staged(root, current),
     }
     if document["schedule"] == "never":
         return {**result, "status": "disabled"}
@@ -313,6 +313,32 @@ def staged(root):
     if not record.get("file") or not path.is_file():
         return None
     return record
+
+
+def offered_staged(root, current=None):
+    """The staged artifact only while it is still an upgrade.
+
+    After a successful update the downloaded archive is still on disk, but the
+    version it installs is the one already running. Reporting it made the settings
+    page offer "install and restart" for the version in front of the user.
+    """
+    record = staged(root)
+    if not record:
+        return None
+    current = current or application_version()
+    if not is_newer(str(record.get("version") or ""), current):
+        _forget_staged(root)
+        return None
+    return record
+
+
+def _forget_staged(root):
+    """Drop the downloaded artifact and its metadata; other files stay."""
+    directory = pending_dir(root)
+    record = read_json(directory / "meta.json", None)
+    if isinstance(record, dict) and record.get("file"):
+        (directory / str(record["file"])).unlink(missing_ok=True)
+    (directory / "meta.json").unlink(missing_ok=True)
 
 
 def _sha256_file(path):
@@ -774,6 +800,8 @@ def mark_running(root):
         return None
     if str(record.get("to_version")).lstrip("v") == str(application_version()).lstrip("v"):
         apply_marker_path(root).unlink(missing_ok=True)
+        # The installed artifact is no longer an offer: it is this version.
+        _forget_staged(root)
         return {"confirmed": True, "version": record.get("to_version")}
     return {"confirmed": False, "expected": record.get("to_version"), "running": application_version()}
 

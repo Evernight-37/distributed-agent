@@ -470,6 +470,7 @@ function updateCard() {
   });
   const discard = button("删除已下载的更新", async () => {
     await api("update-discard");
+    base = { ...base, staged: null };
     paintDownload({ status: "idle" });
     notify("已删除下载的安装包。");
   });
@@ -523,19 +524,70 @@ function updateCard() {
 
   let latest = "";
   let poller = null;
+  let base = {};
+  let live = null;
 
   function megabytes(bytes) {
     return (Number(bytes || 0) / 1048576).toFixed(1) + " MB";
   }
 
-  function paintDownload(state) {
-    const d = state || {};
-    const running = d.status === "downloading" || d.status === "verifying";
-    fetchButton.classList.toggle("hidden", running || d.status === "ready");
-    fetchButton.disabled = running;
-    discard.classList.toggle("hidden", d.status !== "ready");
-    open.classList.remove("hidden");
-    if (running) {
+  function hideActions() {
+    for (const item of [
+      fetchButton,
+      install,
+      installAnyway,
+      rollback,
+      discard,
+      open,
+    ])
+      item.classList.add("hidden");
+  }
+
+  // One situation, one line, one primary action. Three independent facts feed
+  // this card — the release check, the downloaded artifact, the last apply — and
+  // they are ranked instead of painted over each other:
+  //
+  //   last apply failed   -> why it failed + rollback
+  //   downloading         -> progress, nothing else
+  //   download failed     -> the error + retry
+  //   downloaded (newer)  -> install + delete
+  //   apply just confirmed-> "updated to X", nothing else
+  //   release is newer    -> "new version X" + download + release page
+  //   up to date          -> current version, no action
+  //   offline / disabled  -> the reason, check is still available
+  //   not due yet         -> current version and when it was last checked
+  function render() {
+    const s = base || {};
+    const d = live || {};
+    const staged = s.staged && s.staged.version ? s.staged : null;
+    const downloading = d.status === "downloading" || d.status === "verifying";
+    const ready = !downloading && (d.status === "ready" || Boolean(staged));
+    const version = (staged && staged.version) || d.version || s.latest || "";
+    const size = (staged && staged.size) || d.total;
+    hideActions();
+    check.disabled = downloading;
+    statusLine.className = "muted small";
+
+    if (s.apply && s.apply.confirmed === false) {
+      statusLine.className = "error small";
+      statusLine.textContent =
+        "上次更新没有生效：期望运行 " +
+        s.apply.expected +
+        "，当前是 " +
+        s.apply.running +
+        "。可以回到之前的版本。";
+      rollback.classList.remove("hidden");
+      if (s.apply_log?.path) {
+        statusLine.textContent +=
+          " 更新助手日志：" +
+          s.apply_log.path +
+          "（" +
+          ((s.apply_log.lines || []).slice(-1)[0] || "尚未写入") +
+          "）";
+      }
+      return;
+    }
+    if (downloading) {
       const total = d.total ? megabytes(d.total) : "未知大小";
       const percent = d.total
         ? Math.min(100, Math.round((Number(d.received || 0) / d.total) * 100))
@@ -547,32 +599,90 @@ function updateCard() {
         " / " +
         total +
         (percent === null ? "" : "（" + percent + "%）") +
-        "；安装仍需你确认，不会自动替换。";
-    } else if (d.status === "ready") {
-      statusLine.className = "small";
-      statusLine.textContent =
-        "已下载 v" +
-        (d.version || latest) +
-        "（" +
-        megabytes(d.total) +
-        "），SHA-256 已校验。安装会先退出应用，替换完成后自动重启。";
-      fetchButton.classList.add("hidden");
-      install.classList.remove("hidden");
-      discard.classList.remove("hidden");
-      if (poller) {
-        clearInterval(poller);
-        poller = null;
-      }
-    } else if (d.status === "failed") {
+        "；安装仍需你确认。";
+      return;
+    }
+    if (d.status === "failed") {
       statusLine.className = "error small";
       statusLine.textContent = "下载失败：" + (d.error || "未知错误");
       fetchButton.classList.remove("hidden");
-      fetchButton.disabled = false;
+      return;
+    }
+    if (ready) {
+      statusLine.className = "small";
+      statusLine.textContent =
+        "已下载 v" +
+        version +
+        "（" +
+        megabytes(size) +
+        "），SHA-256 已校验。安装会先退出应用，替换完成后自动重启。";
+      // The download can lag behind the release page; say so instead of letting
+      // the older artifact look like the newest one.
+      if (
+        s.status === "update" &&
+        s.latest &&
+        String(s.latest).replace(/^v/, "") !== String(version)
+      ) {
+        statusLine.textContent +=
+          " 发布页已有 " + s.latest + "：先删除已下载的包，再重新下载。";
+      }
+      install.classList.remove("hidden");
+      discard.classList.remove("hidden");
+      return;
+    }
+    if (s.apply && s.apply.confirmed === true) {
+      statusLine.textContent = "已更新到 v" + s.apply.version + "。";
+      return;
+    }
+    if (s.status === "update") {
+      statusLine.className = "small";
+      statusLine.textContent =
+        "有新版本 " +
+        (s.latest || "") +
+        "（当前 " +
+        (s.current || "未知") +
+        "）。";
+      fetchButton.classList.remove("hidden");
+      open.classList.remove("hidden");
+      return;
+    }
+    if (s.status === "current") {
+      statusLine.textContent = "已是最新版本 " + (s.current || "未知") + "。";
+      return;
+    }
+    if (s.status === "offline") {
+      statusLine.textContent = "暂时连不上发布页，稍后会自动重试。";
+      return;
+    }
+    if (s.status === "disabled") {
+      statusLine.textContent = "已关闭自动检查；仍可点“立即检查”。";
+      return;
+    }
+    statusLine.textContent =
+      "当前版本 " + (s.current || "未知") + "；尚未到检查时间。";
+  }
+
+  function paint(state) {
+    base = state || {};
+    live = null;
+    latest = base.latest || latest;
+    if (base.schedule) schedule.value = base.schedule;
+    render();
+  }
+
+  function paintDownload(state) {
+    live = state || {};
+    if (
+      live.status === "ready" ||
+      live.status === "failed" ||
+      live.status === "idle"
+    ) {
       if (poller) {
         clearInterval(poller);
         poller = null;
       }
     }
+    render();
   }
 
   function pollDownload() {
@@ -585,67 +695,6 @@ function updateCard() {
         poller = null;
       }
     }, 1000);
-  }
-
-  function paint(state) {
-    const s = state || {};
-    if (s.schedule) schedule.value = s.schedule;
-    latest = s.latest || latest;
-    open.classList.toggle("hidden", s.status !== "update");
-    if (s.status === "update") {
-      statusLine.className = "small";
-      statusLine.textContent =
-        "有新版本 " + (s.latest || "") + "（当前 " + s.current + "）。";
-      fetchButton.classList.remove("hidden");
-    } else if (s.status === "current") {
-      statusLine.className = "muted small";
-      statusLine.textContent = "已是最新版本 " + s.current + "。";
-      fetchButton.classList.add("hidden");
-    } else if (s.status === "offline") {
-      statusLine.className = "muted small";
-      statusLine.textContent = "暂时连不上 GitHub；稍后会自动再试。";
-    } else if (s.status === "disabled") {
-      statusLine.className = "muted small";
-      statusLine.textContent = "已关闭自动检查。仍然可以点“立即检查”。";
-    } else {
-      statusLine.className = "muted small";
-      statusLine.textContent =
-        "当前版本 " + (s.current || "未知") + "；尚未到检查时间。";
-    }
-    // A marker left by the previous apply is only reported when the version it
-    // installed is not the one now running.
-    if (s.apply && s.apply.confirmed === false) {
-      statusLine.className = "error small";
-      statusLine.textContent =
-        "上次更新没有生效：期望运行 " +
-        s.apply.expected +
-        "，当前是 " +
-        s.apply.running +
-        "。可以回到之前的版本。";
-      rollback.classList.remove("hidden");
-      if (s.apply_log?.path) {
-        const log = el("p", "muted small");
-        log.append(
-          el("div", "", "更新助手日志：" + s.apply_log.path),
-          el(
-            "div",
-            "",
-            (s.apply_log.lines || []).join(" / ") || "（尚未写入）",
-          ),
-        );
-        card.append(log);
-      }
-    } else if (s.apply && s.apply.confirmed === true) {
-      statusLine.className = "muted small";
-      statusLine.textContent = "已更新到 " + s.apply.version + "。";
-    }
-    if (s.staged) {
-      paintDownload({
-        status: "ready",
-        version: s.staged.version,
-        total: s.staged.size,
-      });
-    }
   }
 
   schedule.onchange = async () => {
