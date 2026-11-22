@@ -385,6 +385,36 @@ class HelperTests(unittest.TestCase):
         # hides a failed exit behind a spinning process.
         self.assertLessEqual(updates.WAIT_LIMIT, 300)
 
+    def test_the_helper_log_directory_exists_before_the_helper_runs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = updates.write_helper(folder, "2.2.0", "setup.exe", "app", 7)
+            log = updates.pending_dir(folder) / "apply-helper.log"
+            self.assertIn(str(log), path.read_text(encoding="utf-8"))
+            self.assertTrue(log.parent.is_dir())
+
+    def test_apply_creates_the_pending_directory_when_it_is_missing(self):
+        # apply() is also called with an explicitly supplied archive, where nothing
+        # has created the pending directory beforehand.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            target = root / "app"
+            target.mkdir()
+            (target / "Foolship.exe").write_text("old", encoding="utf-8")
+            archive = root / "new.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("Foolship/Foolship.exe", "new")
+            self.assertFalse(updates.pending_dir(root).is_dir())
+            result = updates.apply(
+                root / "data",
+                version="9.9.9",
+                installer=archive,
+                target=target,
+                pid=1,
+                spawn=lambda: mock.Mock(pid=2),
+            )
+            self.assertTrue(result["started"])
+            self.assertTrue(Path(result["helper"]).parent.is_dir())
+
     def test_previous_launchers_are_pruned(self):
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder) / "updates" / "pending"

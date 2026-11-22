@@ -729,6 +729,9 @@ def write_helper(root, version, installer, target, pid, layout=None, launcher=No
     launcher = launcher or target
     _prune_helpers(root)
     log = pending_dir(root) / "apply-helper.log"
+    # The helper appends to this file; a missing directory would make every echo
+    # fail silently and leave the next failure undiagnosable.
+    log.parent.mkdir(parents=True, exist_ok=True)
     path = helper_path(root, version)
     path.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt" and layout == "installed":
@@ -839,6 +842,9 @@ def apply(root, installer=None, version=None, target=None, pid=None, force=False
     if layout == "portable" and installer_path.suffix.lower() == ".zip":
         stale = plan_stale_files(target, installer_path)
         if stale:
+            # The directory exists when download() ran, but apply() is also called
+            # with an explicitly supplied archive (rollback, tests, tooling).
+            pending_dir(root).mkdir(parents=True, exist_ok=True)
             prune_file = pending_dir(root) / ("prune-" + to_version + ".txt")
             prune_file.write_text("\n".join(stale) + "\n", encoding="utf-8", newline="\n")
     script = write_helper(
