@@ -483,6 +483,11 @@ function renderAuth(mode = "home") {
     const box = el("input");
     box.type = "checkbox";
     box.checked = !!(profile.value && S.autologin === profile.value);
+    // Inline layout: the card's stylesheet fights a class here, and the checkbox
+    // must sit on the left edge of the field column, next to its label.
+    row.style.cssText =
+      "display:flex;align-items:center;justify-content:flex-start;gap:8px;width:100%;margin:10px 0 4px;font-size:13px;color:var(--muted);white-space:nowrap;cursor:pointer";
+    box.style.cssText = "margin:0;flex:none";
     row.append(box, el("span", "", "下次自动登录"));
     form.append(row);
     profile.onchange = () => {
