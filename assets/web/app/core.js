@@ -104,6 +104,45 @@ function decodeBase64Text(base64) {
   return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
 }
 
+const ATTACHMENT_DATA = new Map();
+
+/* One fetch per attachment for the whole session.
+
+   Re-rendering the conversation creates new cards constantly; setting `src` from
+   a fresh request each time made an image alternate between the broken-image
+   icon and the real picture. The promise is cached by project and id, and the
+   <img> is only created once a data URL exists.
+ */
+function attachmentData(project, id) {
+  const key = project + ":" + id;
+  if (!ATTACHMENT_DATA.has(key)) {
+    ATTACHMENT_DATA.set(
+      key,
+      api("attachment-get", { project, id }).then(
+        (result) => "data:" + result.mime + ";base64," + result.base64,
+      ),
+    );
+  }
+  return ATTACHMENT_DATA.get(key);
+}
+
+function attachmentImage(src, file) {
+  const image = el("img", "attachment-thumb");
+  image.alt = file.name || "附件";
+  image.title = "点击查看大图";
+  image.loading = "lazy";
+  image.src = src;
+  image.addEventListener("click", () => {
+    modal(file.name || "附件", (body) => {
+      const large = el("img", "attachment-preview-image");
+      large.alt = file.name || "附件";
+      large.src = src;
+      body.append(large);
+    });
+  });
+  return image;
+}
+
 /* A file under a message: preview when the browser can show it, save otherwise.
  *
  * Images are loaded as data URLs (the app's CSP allows `data:` and nothing
@@ -129,24 +168,19 @@ function attachmentCard(file, project) {
   };
 
   if (kind === "image") {
-    const thumb = el("img", "attachment-thumb");
-    thumb.alt = file.name || "附件";
-    thumb.loading = "lazy";
-    thumb.title = "点击查看大图";
-    card.append(thumb);
-    load()
-      .then((result) => {
-        thumb.src = "data:" + result.mime + ";base64," + result.base64;
+    const slot = el("div", "attachment-slot");
+    slot.append(el("div", "attachment-skeleton"));
+    card.append(slot);
+    attachmentData(project, file.id)
+      .then((src) => {
+        if (slot.isConnected) slot.replaceChildren(attachmentImage(src, file));
       })
-      .catch(() => thumb.remove());
-    thumb.addEventListener("click", () =>
-      preview((body, result) => {
-        const image = el("img", "attachment-preview-image");
-        image.alt = file.name || "附件";
-        image.src = "data:" + result.mime + ";base64," + result.base64;
-        body.append(image);
-      }).catch((error) => notify(error.message || "无法打开附件")),
-    );
+      .catch(() => {
+        if (slot.isConnected)
+          slot.replaceChildren(
+            el("span", "muted small", "预览不可用，可下载后查看"),
+          );
+      });
   }
 
   const actions = el("div", "attachment-actions");

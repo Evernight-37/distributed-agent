@@ -1362,3 +1362,114 @@ button.primary:hover {
   display: block;
   margin: 0 auto;
 }
+
+/* Conversation layout: a transcript rather than chat bubbles, and one
+   borderless composer whose only affordances are the keyboard and drag-drop. */
+.chat {
+  display: flex;
+  flex-direction: column;
+  height: min(660px, calc(100vh - 210px));
+}
+.chat-head {
+  padding: 13px 18px;
+  background: #fff;
+}
+.messages {
+  flex: 1;
+  height: auto;
+  padding: 16px 18px;
+  background: #fff;
+}
+.message {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 17px;
+}
+.message .avatar {
+  width: 26px;
+  height: 26px;
+  font-size: 11px;
+}
+.bubble {
+  max-width: none;
+  min-width: 0;
+}
+.bubble .name {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 3px;
+  font-size: 12px;
+}
+.bubble > .muted.small {
+  font-size: 11px;
+  margin-top: 4px;
+}
+.message-text {
+  font-size: 13px;
+  line-height: 1.58;
+}
+.composer {
+  display: block;
+  padding: 11px 16px 13px;
+  background: #fff;
+}
+.composer select {
+  width: auto;
+  max-width: 220px;
+  border: 1px solid transparent;
+  background: #f3f4f8;
+  border-radius: 7px;
+  font-size: 12px;
+  padding: 4px 8px;
+  margin-bottom: 7px;
+  color: var(--ink);
+}
+.composer textarea {
+  width: 100%;
+  min-height: 40px;
+  max-height: 168px;
+  resize: none;
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.submit-hidden {
+  display: none;
+}
+.attachment-draft {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+.attachment-draft .small {
+  background: #f3f4f8;
+  border-radius: 7px;
+  padding: 2px 8px;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.attachment-slot {
+  min-height: 0;
+}
+.attachment-skeleton {
+  width: 180px;
+  height: 110px;
+  border-radius: 7px;
+  background: linear-gradient(90deg, #f1f2f6, #e7e9f0, #f1f2f6);
+  background-size: 200% 100%;
+  animation: attachment-pulse 1.1s linear infinite;
+}
+@keyframes attachment-pulse {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}

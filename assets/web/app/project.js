@@ -367,8 +367,8 @@ function renderProject() {
     text.value = draft.body;
     text.rows = 2;
     text.placeholder = isGroup
-      ? "发送到项目大群；可选择呼叫指定 Agent…"
-      : "发送私聊消息…";
+      ? "发送到项目大群，Enter 发送 · Shift+Enter 换行 · 可拖入或粘贴图片"
+      : "发送私聊消息，Enter 发送 · Shift+Enter 换行";
     const save = () => {
       const mentionValue = isGroup ? mention.value : "";
       const previous = S.drafts.get(draftKey);
@@ -384,10 +384,18 @@ function renderProject() {
             : messageId(),
       });
     };
-    text.oninput = save;
+    text.oninput = () => {
+      save();
+      // Grow with the text, up to six lines, then scroll.
+      text.style.height = "auto";
+      text.style.height = Math.min(text.scrollHeight, 168) + "px";
+    };
     if (isGroup) mention.onchange = save;
-    const send = button("发送", null, "primary");
+    // Enter sends and Shift+Enter breaks the line; a visible send button is noise.
+    const send = button("", null, "submit-hidden");
     send.type = "submit";
+    send.tabIndex = -1;
+    send.setAttribute("aria-hidden", "true");
     composer.append(text, send);
     if ((v.capabilities || []).includes("chat_attachments_v1")) {
       const picker = el("input"),
@@ -469,16 +477,9 @@ function renderProject() {
         const incoming = Array.from(e.dataTransfer?.files || []);
         if (incoming.length) run(() => addFiles(incoming));
       };
-      composer.append(
-        button("添加文件 / 图片", () => picker.click()),
-        picker,
-        files,
-        el(
-          "div",
-          "muted small",
-          "可拖入文件或粘贴截图；每个最大 5 MB，每条最多 5 个。",
-        ),
-      );
+      // Attachments arrive by drag and drop or paste; no button competes with the
+      // text field.
+      composer.append(picker, files);
       redrawFiles();
     } else {
       composer.append(
