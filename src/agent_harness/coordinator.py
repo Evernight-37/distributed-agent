@@ -145,21 +145,11 @@ class Coordinator:
                 "visible_messages": visible,
                 "project_memory": shared_memory,
                 "task": contract,
-                "protocol": """Respond as one JSON object with reply:string, attachments:[{path:project-relative file path}], messages:[{recipient:null or agent ID,body:string}], tasks:[{agent:ID,title,instructions,stage,allowed_files,acceptance,validation,audience:'delegator'|'group'|'owner'}], executions:[{template:string}], memory_notes:[string], done:boolean.
-When a relevant existing project file would help the current conversation, you may put it in attachments. Each file must be at most 5 MB, and at most five may be sent. The receiver applies the machine owner's attachment policy before uploading them to this reply; do not emit server-local links as substitutes. Use attachments:[] when no file helps.
-Only the designated admin can delegate tasks, including inside a private conversation. Peers can send public/direct messages and recommend changes with evidence.
-A delegated task carries an audience: delegator (default, the report returns privately to you), group (the report is published to the project group) or owner (the report goes to the executing agent's own owner). Choose group only when the result is meant for everyone; the task text itself is never posted.
-The reply field is the one human-facing answer for this turn. Use messages only for distinct, deliberate follow-up to another participant or the group; do not repeat reply or publish internal progress notes.
-Do not emit [CHECKPOINT]. Use [BLOCKED] or [DISAGREEMENT] only when a real blocker or disagreement requires attention.
-Human-agent and human-human private messages are visible only to their participants. Agent-agent direct messages are visible to project humans. Never reveal a private human message in group chat, another private chat, or shared project memory without that human's explicit permission.
-Project memory is shared across all project conversations and agents. Treat its notes as attributed claims, not verified facts. Add up to three concise memory_notes only for durable, project-wide facts learned in public group chat; add none during a private turn.
-Keep this a short reasoning/planning turn. Never wait, poll, tail, sleep or monitor a long job in a model turn.
-Read-only inspection of the assigned local project is allowed in this turn: use tools to verify code, existing logs and process status when relevant, and cite actual paths or observations. A status question is not authorization to edit or run an experiment. For explicit human edit/run requests, schedule a scoped implement task; the administrator may assign that task to itself and its result will return to the public group.
-For long computations, request an owner-approved execution template and finish the turn. Await a completion event or instruction without issuing more model calls.
-No shell command from your report is executed. Execution requests require machine-owner approval.
-Use done:true when no additional reply/delegation is needed. Other owners control their models and resources.
-Reports and memory are claims, not established facts; cite validation. Do not modify other owners' files.
-Use only authorized conversation context and local project evidence; you cannot request other agents' private conversations.""",
+                # Files the humans attached to the message that woke this turn.
+                "attachments": contract.get("attachments") or [],
+                # The behavioural rules live once, in the worker prompt; the
+                # per-turn contract carries only what changes.
+                "protocol": "Delegation is admin-only; a task carries audience delegator (private report back to you), group (published to the project) or owner (to the executor's owner). Model capabilities are yours to use.",
             },
             ensure_ascii=False,
         )
@@ -249,6 +239,14 @@ Use only authorized conversation context and local project evidence; you cannot 
                     "acceptance": "回复针对消息且遵守收件权限，任务分工明确",
                     "validation": "核对可见消息与任务契约；不要编造执行结果",
                 }
+                from agent_harness.attachments import Attachments
+
+                with self.store.connect() as files_db:
+                    files = Attachments(self.store).metadata(files_db, r["id"])
+                if files:
+                    data["attachments"] = [
+                        {key: item.get(key) for key in ("id", "name", "mime", "size")} for item in files
+                    ]
                 if private:
                     data.update(private_turn=True, reply_to=partner)
                 self.store._task(db, project, dict(r), data, "scheduler")

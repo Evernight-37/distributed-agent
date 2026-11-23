@@ -1,5 +1,6 @@
 """Detached Codex worker with a small local JSON-RPC surface."""
 
+import base64
 import ctypes
 import json
 import os
@@ -772,19 +773,12 @@ Your final report awaits independent review; you cannot approve your own work.
 """
 
 GROUP_RULES = """You are an agent in a human-owned project group. Use the visible messages, shared project memory, the task contract and the assigned local project directory.
-Reply with one JSON object and nothing else:
-{"reply": "...", "messages": [], "attachments": [], "memory_notes": [], "tasks": [], "executions": [], "done": false}
-- reply: the human-facing answer. No private reasoning, progress logs or [CHECKPOINT] notes.
-- messages: only for distinct public or direct follow-ups that are not the reply. Do not repeat reply.
-- attachments: project-relative paths of files worth sending, at most 5, each at most 5 MB. Only existing ordinary files inside the assigned project; never hidden files, credentials, links or paths outside it. Report a size limit clearly instead of substituting a server path.
-- memory_notes: concise durable facts for the public project group; an empty array in a private turn.
-- tasks: delegation you want the coordinator to schedule, each with title, instructions, stage, allowed_files, acceptance, validation.
-Use the tools your executor provides. The stage states what the humans expect (discuss, review, implement) but does not restrict your tools.
-You may spawn your own sub-agents when that helps; you remain responsible for the combined result you report.
-If the sandbox denies something you need, ask for it in reply (what you need, why, and what it unblocks) instead of treating the failure as final.
-Human-agent private messages belong only to that human and agent; never reveal them in group chat or shared memory without explicit permission. Agent-agent internal messages are visible to project humans.
-Do not read credentials or contact outside parties unless this task explicitly authorizes it.
-Treat reports and memory as claims requiring evidence. Keep the final answer concise and useful to the human participants.
+Reply with one JSON object: {"reply": str, "messages": [{recipient, body}], "attachments": [{path}], "tasks": [...], "executions": [...], "memory_notes": [str], "done": bool}.
+- reply is the human-facing answer, without private reasoning or progress logs. messages are for distinct follow-ups only and never repeat reply.
+- attachments are project-relative paths: existing ordinary files inside the project, at most five, each at most 5 MB; never hidden files, credentials or paths outside it.
+- memory_notes only for durable facts from the public group; empty in a private turn.
+Use the tools your executor gives you; the stage names the humans' intent, not a limit. You may spawn your own sub-agents and remain responsible for the combined result. If something you need is denied, say what and why in reply.
+Never reveal a human's private message outside its conversation. Do not read credentials or contact outside parties unless the task says so.
 """
 
 # Every resumed turn still needs the reply contract, even though the full rules
@@ -866,6 +860,39 @@ def reply_schema():
     )
 
 
+def materialize_inbound(config, remote):
+    """Copy the conversation's attachments into the agent's project directory.
+
+    The bytes live on the hub; a sandboxed agent cannot read them from there, so
+    each turn writes the files it was given into ``.foolship/inbound`` and lists
+    them in the prompt. Nothing is written when the turn carried no attachments.
+    """
+    try:
+        spec = json.loads(config.get("prompt") or "{}")
+    except ValueError:
+        return []
+    wanted = [
+        item for item in spec.get("attachments") or [] if isinstance(item, dict) and isinstance(item.get("id"), str)
+    ]
+    ids = [item["id"] for item in wanted][:5]
+    if not ids:
+        return []
+    from agent_harness.pull_worker import api
+
+    answer = api(config, "task-inbound", {"ids": ids})
+    from agent_harness.attachments import safe_name
+
+    target = Path(remote) / ".foolship" / "inbound"
+    target.mkdir(parents=True, exist_ok=True)
+    written = []
+    for item in answer.get("files") or []:
+        name = safe_name(str(item.get("name") or "attachment"))
+        path = target / name
+        path.write_bytes(base64.b64decode(str(item.get("base64") or "")))
+        written.append(path.relative_to(Path(remote)).as_posix())
+    return written
+
+
 def run(job):
     path = job_dir(job)
     directory = None
@@ -905,6 +932,15 @@ def run(job):
         # only the reply contract has to stay in front of the model each time.
         first_turn = not config.get("thread_id")
         sections = [rules if first_turn else REPLY_REMINDER]
+        try:
+            inbound = materialize_inbound(config, config["project"]["remote_path"])
+        except Exception:
+            inbound = []
+        if inbound:
+            sections += [
+                "ATTACHMENTS FROM THE CONVERSATION (inside the project directory):",
+                "\n".join(inbound),
+            ]
         sections += [
             "ASSIGNED LOCAL PROJECT DIRECTORY:",
             config["project"]["remote_path"],

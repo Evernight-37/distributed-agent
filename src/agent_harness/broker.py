@@ -368,6 +368,29 @@ class PullBackend:
                     ),
                 )
                 return {"id": approval_id, "digest": digest_value, "state": "pending"}
+            if path == "/api/device/task-inbound":
+                from agent_harness.attachments import Attachments
+
+                ids = Attachments(self.store).ids(data.get("ids") or [])
+                files = []
+                for aid in ids:
+                    row = db.execute(
+                        "SELECT a.*, p.owner_id AS project_owner FROM attachments a "
+                        "JOIN projects p ON p.id=a.project_id WHERE a.id=?",
+                        (aid,),
+                    ).fetchone()
+                    if not row or row["project_owner"] != device["owner_id"]:
+                        raise PermissionError("附件不属于本账户的项目")
+                    files.append(
+                        {
+                            "id": aid,
+                            "name": row["name"],
+                            "mime": row["mime"],
+                            "size": row["size"],
+                            "base64": base64.b64encode(row["content"]).decode("ascii"),
+                        }
+                    )
+                return {"files": files}
             if path == "/api/device/task-attachment":
                 from agent_harness.attachments import Attachments
 

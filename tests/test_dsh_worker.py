@@ -212,6 +212,23 @@ class DshWorkerTurnTests(unittest.TestCase):
         self.assertTrue(resumed.startswith("Reply with one JSON object"), resumed[:80])
         self.assertIn("TASK CONTRACT:", resumed)
 
+    def test_conversation_attachments_land_inside_the_project(self):
+        job = self._job(channel="group")
+        request = read_json(job / "request.json")
+        contract = json.loads(request["prompt"])
+        contract["attachments"] = [{"id": "file-1", "name": "shot.png", "mime": "image/png", "size": 2}]
+        request["prompt"] = json.dumps(contract)
+        write_json(job / "request.json", request)
+        from agent_harness import pull_worker
+
+        answer = {"files": [{"id": "file-1", "name": "shot.png", "mime": "image/png", "base64": "aGk="}]}
+        with mock.patch.object(pull_worker, "api", return_value=answer):
+            worker.run("job1")
+        written = self.remote / ".foolship" / "inbound" / "shot.png"
+        self.assertEqual(written.read_bytes(), b"hi")
+        task = read_json(self.record)["task"]
+        self.assertIn(".foolship/inbound/shot.png", task)
+
     def test_every_stage_runs_with_write_access_to_its_workspace(self):
         self._job()
         worker.run("job1")
@@ -256,7 +273,7 @@ class DshWorkerTurnTests(unittest.TestCase):
         self.assertEqual(
             json.loads((job / "report.txt").read_text(encoding="utf-8"))["attachments"], [{"path": "report.txt"}]
         )
-        self.assertIn("attachments:", (job / "prompt.txt").read_text(encoding="utf-8"))
+        self.assertIn('"attachments": [{path}]', (job / "prompt.txt").read_text(encoding="utf-8"))
 
     def test_failed_turn_translates_the_provider_error(self):
         job = self._job()

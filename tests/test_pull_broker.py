@@ -177,6 +177,31 @@ class PullBrokerTests(unittest.TestCase):
         self.assertEqual(row["state"], "needs_review")
         self.assertIn("deepseek-flash", row["result"])
 
+    def test_a_device_can_fetch_a_conversation_attachment(self):
+        import base64
+
+        from agent_harness.attachments import Attachments
+
+        token, _ = self.enroll()
+        file = Attachments(self.store).upload(self.owner, self.project, "shot.png", base64.b64encode(b"hi").decode())
+        self.store.message(self.owner, self.project, "look", attachment_ids=[file["id"]])
+        answer = self.backend.device_api("/api/device/task-inbound", {"ids": [file["id"]]}, token)
+        self.assertEqual(answer["files"][0]["name"], "shot.png")
+        self.assertEqual(base64.b64decode(answer["files"][0]["base64"]), b"hi")
+
+    def test_another_account_cannot_fetch_that_attachment(self):
+        import base64
+
+        from agent_harness.attachments import Attachments
+
+        file = Attachments(self.store).upload(self.owner, self.project, "shot.png", base64.b64encode(b"hi").decode())
+        self.store.message(self.owner, self.project, "look", attachment_ids=[file["id"]])
+        invite = self.store.invite(self.owner, self.project)["invite"]
+        other = provision_account(self.store, "outsider", invite=invite)["id"]
+        token, _ = self.enroll("outsider-worker", other)
+        with self.assertRaises(PermissionError):
+            self.backend.device_api("/api/device/task-inbound", {"ids": [file["id"]]}, token)
+
     def test_a_corrupt_node_file_does_not_break_the_device_poll(self):
         """A crash can leave the node record full of zeros; polling must survive it."""
         token, pair = self.enroll()

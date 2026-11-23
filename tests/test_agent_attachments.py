@@ -31,7 +31,7 @@ class AgentAttachmentTests(unittest.TestCase):
         schema = reply_schema()
         self.assertIn("attachments", schema["required"])
         self.assertIn("attachments", schema["properties"])
-        self.assertIn("attachments:", GROUP_RULES)
+        self.assertIn('"attachments": [{path}]', GROUP_RULES)
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
