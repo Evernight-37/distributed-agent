@@ -451,6 +451,7 @@ class DshPatchJsonTests(unittest.TestCase):
                     "approval",
                     "permission",
                     "credentials",
+                    "sandbox-policy",
                 ],
             )
 

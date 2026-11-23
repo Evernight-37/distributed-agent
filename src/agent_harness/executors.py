@@ -497,7 +497,7 @@ def reasoning_effort(effort):
     return EFFORT_MAP.get(effort if isinstance(effort, str) else "", None)
 
 
-def _dsh_patch(root, model, effort=None, scratch=None):
+def _dsh_patch(root, model, effort=None, scratch=None, full_access=False):
     """The loader patch that pins DSH to this turn's model and permissions.
 
     Every entry replaces its config wholesale, so the permission presets are
@@ -531,6 +531,14 @@ def _dsh_patch(root, model, effort=None, scratch=None):
             },
             # Let a key stored by the DeepSeek Harness Models page reach headless runs.
             {"id": "credentials", "disabled": False},
+            # The deployment default mode is a config row, not an environment
+            # variable: the shell environment DSH builds for tool calls can drop
+            # inherited values, so the policy has to be stated here. Omitting
+            # workspaceRoot keeps the loader's process.cwd() fallback.
+            {
+                "id": "sandbox-policy",
+                "config": {"mode": "danger-full-access" if full_access else "workspace-write"},
+            },
         ]
     )
     if plugin is not None and plugin.is_file():
@@ -611,7 +619,10 @@ def dsh_command(root, exe, project, thread_id, scratch):
     scratch = Path(scratch)
     scratch.mkdir(parents=True, exist_ok=True)
     patch_path = scratch / "dsh-patch.json"
-    write_json(patch_path, _dsh_patch(root, model, project.get("effort"), scratch))
+    write_json(
+        patch_path,
+        _dsh_patch(root, model, project.get("effort"), scratch, bool(project.get("_full_access"))),
+    )
     args = [exe, "--profile", DSH_PROFILE, "--patch", str(patch_path), "--json"]
     if thread_id:
         args += ["--session-id", _dsh_session_id(thread_id)]

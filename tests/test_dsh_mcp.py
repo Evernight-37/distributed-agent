@@ -268,7 +268,7 @@ class TurnPatchTests(unittest.TestCase):
             # never sees it, so no per-turn disable is needed.
             self.assertEqual(
                 [item["id"] for item in patch],
-                ["agent-default-model", "approval", "permission", "credentials"],
+                ["agent-default-model", "approval", "permission", "credentials", "sandbox-policy"],
             )
 
 

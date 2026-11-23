@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.16.11 - 2026-11-23
+
+权限链路一共三处断点，这一版修掉前两处：
+
+- **授权在拼命令之后才算**：`full_access` 原本在 `executors.command()` 之后计算，而 DSH 的 patch 正是在 `command()` 里生成并写盘的——所以每个已授权的回合，patch 里仍写着 `workspace-write`。现在先算权限再拼命令。
+- **模式写进 patch，而不是只靠环境变量**：DSH 的 `sandbox-policy` 行 `mode` 来自它自己的配置，`DSH_PERMISSION_MODE` 只是这行的 `!!js` 默认值；工具子进程的环境还会被清理，agent 里 `echo $env:DSH_PERMISSION_MODE` 永远是空。现在 patch 直接给 `sandbox-policy` 行写 `mode`（`danger-full-access` / `workspace-write`），不依赖环境变量。
+- 会话会记录创建时的沙箱模式，且**记录的优先级高于部署默认**。所以授权后即便默认值变了，续接旧会话仍然按旧模式执行——现在模式一变（授权或撤销）就换新会话，并在项目目录留一个 `sandbox-mode.txt` 记录上次模式。
+
+验证到哪一步：patch 里已是 `"mode": "danger-full-access"`，但 DSH 的 pwsh 工具在 Windows 上仍然拒绝了 `C:\Users\vladi\Documents` 的写入。**这一处还没通**，下一步要单独验证 DSH 自己的执行层。
+
 ## 2.16.10 - 2026-11-23
 
 实测暴露的两个解析/传递错误，都修了：
