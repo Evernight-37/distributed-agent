@@ -20,17 +20,17 @@ Thus the fools gathered aboard a single ship, some of flesh, others of clockwork
 
 ## 安装
 
-当前稳定版为 **2.15.8**，有两种装法：
+当前稳定版为 **2.16.0**，有两种装法：
 
 - **自己装**：从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases/latest) 下载与系统和 CPU 架构相符的发布包。
 - **让那台机器上的 AI 装**：把对应的任务书交给它，由它下载、校验、安装（见下）。
 
 | 使用环境 | 下载文件 | 使用方法 |
 | --- | --- | --- |
-| Windows x64（推荐） | `Foolship-2.15.8-windows-x64-setup.exe` | 双击按向导安装，从开始菜单启动 |
-| Windows x64（便携） | `Foolship-2.15.8-windows-x64.zip` | 完整解压到独立目录，运行其中的 `Foolship.exe`；不要只复制 EXE |
-| macOS Apple Silicon | `Foolship-2.15.8-macos-arm64.zip` | 解压后把 `Foolship.app` 放进“应用程序”打开；未做 Apple 签名，系统可能要求在隐私与安全性中确认 |
-| Linux x64 / ARM64 | `Foolship-2.15.8-linux-x64.tar.gz` 或 `Foolship-2.15.8-linux-arm64.tar.gz` | 无界面接收端，见 [Linux 说明](docs/LINUX.md) |
+| Windows x64（推荐） | `Foolship-2.16.0-windows-x64-setup.exe` | 双击按向导安装，从开始菜单启动 |
+| Windows x64（便携） | `Foolship-2.16.0-windows-x64.zip` | 完整解压到独立目录，运行其中的 `Foolship.exe`；不要只复制 EXE |
+| macOS Apple Silicon | `Foolship-2.16.0-macos-arm64.zip` | 解压后把 `Foolship.app` 放进“应用程序”打开；未做 Apple 签名，系统可能要求在隐私与安全性中确认 |
+| Linux x64 / ARM64 | `Foolship-2.16.0-linux-x64.tar.gz` 或 `Foolship-2.16.0-linux-arm64.tar.gz` | 无界面接收端，见 [Linux 说明](docs/LINUX.md) |
 
 发布包自带运行时，不需要另行安装 Python、pip 或 venv。Windows 需要 Edge WebView2；每台实际执行 Agent 的机器仍需安装并登录 Codex 或 DeepSeek Harness。升级只替换程序文件，不动账户数据。
 
@@ -112,7 +112,7 @@ https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web
 
 ## 数据、备份与更新
 
-安装器是 per-user 的，默认装在 `%LOCALAPPDATA%\Foolship\app`；便携包解压到任意可写目录即可。程序、数据 `data\` 和后台运行时 `service-runtime\` 都在安装目录内，可以整体备份；升级只替换程序文件，不写入也不删除 `data\`。macOS 例外：`.app` 是封签目录，运行时和数据放在 `~/Library/Application Support/Foolship`（数据在其中的 `data/`）。
+安装器是 per-user 的，默认装在 `%LOCALAPPDATA%\Foolship\app`；便携包解压到任意可写目录即可。**安装目录里只有程序**——账户、团队数据库、接收设置和后台运行时都在 `%LOCALAPPDATA%\Foolship\` 下（`data\` 与 `service-runtime\`），所以拷贝、移动或重装程序都不会碰到用户数据；升级同样只替换程序文件。收到的文件默认放在 `%USERPROFILE%\Documents\Foolship\Received`，可在“文件速传 → 接收设置”更换。卸载时会**问你**是否同时删除 `%LOCALAPPDATA%\Foolship\data`（默认不删）。macOS 与 Linux 数据在 `~/Library/Application Support/Foolship/data`、`~/.local/share/Foolship/data`。
 
 需要把数据放到别处时，设置环境变量 `FOOLSHIP_STATE`。注意数据跟着安装目录走，手动删除应用文件夹会一并删除数据。
 

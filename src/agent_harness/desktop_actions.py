@@ -459,6 +459,7 @@ class DesktopTransferActions:
             "file-transfer-direct-send",
             "file-transfer-direct-cancel",
             "file-transfer-direct-respond",
+            "file-transfer-open-folder",
         }
     )
 
@@ -510,11 +511,18 @@ class DesktopTransferActions:
 
         direct, contacts, devices, unavailable = self._collect()
         self._name(direct, contacts, devices)
+        folder = direct_receive.receive_folder(self.bridge)
         return {
             "direct": direct,
             "contacts": contacts,
             "devices": devices,
-            "settings": {"receive_folder_configured": direct_receive.receive_folder(self.bridge) is not None},
+            "settings": {
+                "receive_folder": str(folder) if folder else None,
+                # Only a folder the user picked counts as configured; the built-in
+                # default exists so receiving works without any setup.
+                "receive_folder_configured": direct_receive.configured_folder(self.bridge) is not None,
+                "receive_folder_default": direct_receive.configured_folder(self.bridge) is None,
+            },
             "unavailable_services": unavailable,
         }
 
@@ -529,6 +537,24 @@ class DesktopTransferActions:
             direct_send.observe(bridge, server)
             direct_receive.consume_all(bridge)
             return self._dashboard()
+        if action == "file-transfer-open-folder":
+            import subprocess
+            import sys as _sys
+
+            from agent_harness import direct_receive
+
+            folder = direct_receive.receive_folder(bridge)
+            if folder is None:
+                raise ValueError("本机还没有接收目录")
+            if _sys.platform == "win32":
+                import os
+
+                os.startfile(str(folder))  # noqa: S606 - opening one known folder
+            elif _sys.platform == "darwin":
+                subprocess.Popen(["open", str(folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+            return {"opened": str(folder)}
         if action == "file-transfer-receive-folder":
             node = data.get("node") or bridge.profile["node"]
             server = data.get("server") or bridge.profile["server"]

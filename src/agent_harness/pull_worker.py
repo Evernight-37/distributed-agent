@@ -294,7 +294,9 @@ class Connector:
         folder = settings.get("receive_folder") if isinstance(settings, dict) else None
         if isinstance(folder, str) and folder.strip():
             return Path(folder)
-        return self.root / "received-files"
+        from agent_harness.runtime_paths import received_files_home
+
+        return received_files_home(self.root)
 
     def _pull_direct(self, url, keys, transfer_id, target, size):
         """Download, waiting for the sender to learn this device's key."""

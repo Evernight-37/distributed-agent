@@ -18,8 +18,14 @@ class WindowsInstallerPackagingTests(unittest.TestCase):
         self.assertNotIn("\\versions\\{#MyAppVersion}", script)
         self.assertNotIn("[UninstallDelete]", script)
         self.assertNotIn('filesandordirs; Name: "{app}"', script)
-        self.assertNotIn("[Code]", script)
         self.assertNotIn("InitializeSetup", script)
+        # Data now lives outside the install directory, so the uninstaller can
+        # offer to remove it — but only after asking, and never silently.
+        self.assertIn("[Code]", script)
+        self.assertIn("CurUninstallStepChanged", script)
+        self.assertIn("if UninstallSilent then", script)
+        self.assertIn("MB_DEFBUTTON2", script)
+        self.assertIn("DelTree(DataDir", script)
 
     def test_release_workflow_keeps_simple_unsigned_artifacts(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")

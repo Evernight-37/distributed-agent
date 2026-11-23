@@ -248,6 +248,7 @@ DESKTOP_CONTROL = BoundaryContract(
             "file-transfer-direct-send",
             "file-transfer-direct-cancel",
             "file-transfer-direct-respond",
+            "file-transfer-open-folder",
             "file-transfer-receive-folder",
             "codex-cli-choose",
             "codex-cli-redetect",

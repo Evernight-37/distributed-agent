@@ -170,12 +170,15 @@ class DesktopReceiveTests(unittest.TestCase):
         self.assertEqual(self.bridge.rows[self.transfer_id]["state"], "queued")
         self.assertFalse((self.inbox / "dump.bin").exists())
 
-    def test_without_a_receive_folder_nothing_is_accepted(self):
+    def test_without_a_chosen_folder_the_default_is_used(self):
         transfer_trust.remember(self.root, "account-other")
         (self.root / "file-transfer-settings.json").write_text("{}", encoding="utf-8")
         direct_receive.consume(self.bridge, "http://hub")
         time.sleep(0.3)
-        self.assertEqual(self.bridge.rows[self.transfer_id]["state"], "queued")
+        # A built-in default exists, so a fresh install receives without setup.
+        folder = direct_receive.receive_folder(self.bridge)
+        self.assertIsNotNone(folder)
+        self.assertNotEqual(self.bridge.rows[self.transfer_id]["state"], "queued")
 
 
 if __name__ == "__main__":  # pragma: no cover

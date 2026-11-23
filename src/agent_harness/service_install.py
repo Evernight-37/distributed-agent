@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 from agent_harness.common import lock
-from agent_harness.runtime_paths import installation_root
+from agent_harness.runtime_paths import application_home
 
 _installed = None
 
@@ -109,7 +109,7 @@ def _prune(destination, keep):
 def installed_bundle():
     global _installed
     if _installed is None:
-        home = installation_root() / "service-runtime"
+        home = application_home() / "service-runtime"
         _installed = install_bundle(application_bundle(), home)
         _prune(home, _installed)
     return _installed

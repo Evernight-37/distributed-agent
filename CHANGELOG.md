@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.16.0 - 2026-11-23
+
+- **程序与用户数据彻底分开**。安装目录里只有程序；账户、团队数据库、接收设置、MCP 授权、后台运行时都在平台目录：
+  - Windows `%LOCALAPPDATA%\Foolship\data` 与 `%LOCALAPPDATA%\Foolship\service-runtime`
+  - macOS `~/Library/Application Support/Foolship/…`
+  - Linux `~/.local/share/Foolship/…`
+  
+  于是"拷贝/移动/重装程序"不再影响账户——之前"把程序复制到别处就找不到账户"的根源就在这里。旧版本留在安装目录旁的 `data\` 会在**首次启动时自动迁移**：先停掉旧位置的后台服务，再复制到新位置；成功后把旧目录改名为 `data.migrated-<时间>`（不删除），失败则继续使用旧位置，不会启动成一个空账户。
+- **默认接收目录**：不再要求先手动设置。默认 `Documents\Foolship\Received`（Windows 走 known folder，能跟随 OneDrive 重定向），首次使用时自动创建；取不到或不可写时回退到 `data\received-files`。文件速传页现在显示**实际路径**并提供**打开目录**按钮；后台接收端用同一个默认值。
+- **卸载器会问是否删除本机数据**：卸载时弹一次确认（默认“否”），选“是”才会删除 `%LOCALAPPDATA%\Foolship\data` 与 `service-runtime`；静默卸载不弹窗、也不删除。这就是主流做法：卸载保留数据，重装后接着用。
+- 文档（README、Windows AI 任务书、架构说明、`开始使用.txt`）同步改成新位置。
+
 ## 2.15.8 - 2026-11-23
 
 - **"部分协作服务无法连接 / 检测连接 char 0" 的真正原因：一个节点记录文件被写坏了**。`data/team-service/nodes/device-9bf4….json`（这台机器自己的节点记录）当时是 **705 个 0x00 字节**——磁盘/断电级别的损坏，不是应用写的（`write_json` 是临时文件 + 原子替换）。而 `read_json` 只容忍"文件不存在"，读到坏内容会抛 `JSONDecodeError`：

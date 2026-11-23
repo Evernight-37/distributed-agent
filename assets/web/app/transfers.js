@@ -32,22 +32,36 @@ function directStateLabel(item) {
 function transferSettings(view) {
   const section = el("section", "panel transfer-settings");
   const configured = !!view.settings?.receive_folder_configured;
+  const folder = view.settings?.receive_folder || "";
   section.append(el("h2", "", "接收设置"));
   note(
     section,
-    configured
-      ? "同账户的机器发来文件时自动收下，保存到本机默认接收目录；其他账户第一次发来需要你在这里确认一次，之后记住该账户。"
-      : "还没有设置本机默认接收目录：即使同账户的机器发来文件，也只会停在列表里等确认，不会自动落地。",
+    "同账户的机器发来文件时自动收下，保存到下面的目录；其他账户第一次发来需要你确认一次，之后记住该账户。",
   );
   const local = el("div", "setting-row");
+  const where = el("div", "", "本机接收目录");
+  where.append(
+    el(
+      "div",
+      "muted small",
+      folder || "（默认目录不可用，请点“更换目录”选一个）",
+    ),
+    configured
+      ? el("span", "muted small", "你选择的位置")
+      : el("span", "muted small", "默认位置（文档 / Foolship / Received）"),
+  );
   local.append(
-    el("div", "", "本机默认接收目录" + (configured ? "" : " · 未设置")),
-    button(configured ? "更换目录" : "设置目录", async () => {
+    where,
+    button("更换目录", async () => {
       const result = await api("file-transfer-receive-folder");
       if (result.configured) {
-        notify("默认接收目录已保存，仅保存在本机。");
+        notify("接收目录已保存，仅保存在本机。");
         await renderTransfers("action");
       }
+    }),
+    button("打开目录", async () => {
+      const result = await api("file-transfer-open-folder");
+      if (result?.opened) notify("已打开：" + result.opened);
     }),
   );
   section.append(local);
@@ -141,7 +155,6 @@ function transferDirect(view) {
     section,
     "文件由对方的机器直接传到这台机器，协作服务不接触内容。跨账户第一次来件需要你确认，确认后会记住该发送账户。",
   );
-  const needsFolder = !view.settings?.receive_folder_configured;
   rows.forEach((item) => {
     const row = el("div", "transfer-row"),
       info = el("div", "transfer-info");
@@ -172,7 +185,6 @@ function transferDirect(view) {
         button(
           "确认接收",
           async () => {
-            if (needsFolder) throw new Error("请先设置默认接收目录");
             await api("file-transfer-direct-respond", {
               server: item.server,
               id: item.id,

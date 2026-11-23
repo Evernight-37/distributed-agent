@@ -66,10 +66,10 @@ class ReleaseMetadataTests(unittest.TestCase):
             self.assertRegex(manifest["python_runtime"], r"^3\.14\.")
             guide = getting_started_text(application_version(source))
             self.assertTrue(guide.startswith("Foolship 9.8.7\n"))
-            self.assertIn("这个目录下的 data\\", guide)
-            self.assertIn(r"%LOCALAPPDATA%\Foolship\data", guide)  # the fallback path
+            self.assertIn(r"%LOCALAPPDATA%\Foolship\data", guide)
+            self.assertIn("Documents\\Foolship\\Received", guide)
             self.assertIn("team-service", guide)
-            self.assertIn("升级或移动应用目录不会改变", guide)
+            self.assertIn("卸载时可以选择是否同时删除", guide)
             self.assertIn("在 Codex 中使用协作", guide)
             self.assertIn("受限身份", guide)
 

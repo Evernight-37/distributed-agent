@@ -52,3 +52,27 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "启动 {#AppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  DataDir, RuntimeDir: String;
+begin
+  if CurUninstallStep <> usPostUninstall then
+    exit;
+  // A silent uninstall must never block on a dialog.
+  if UninstallSilent then
+    exit;
+  DataDir := ExpandConstant('{localappdata}\Foolship\data');
+  RuntimeDir := ExpandConstant('{localappdata}\Foolship\service-runtime');
+  if not DirExists(DataDir) then
+    exit;
+  if MsgBox('是否同时删除本机数据？' + #13#10 + #13#10 +
+       '包含：账户与登录状态、团队数据库（项目/消息/任务）、接收设置、MCP 授权。' + #13#10 +
+       '不删除：' + DataDir + ' 之外的文件，以及 Documents\Foolship 里收到的文件。' + #13#10 + #13#10 +
+       '选择“是”会永久删除这些数据，且无法恢复。',
+       mbConfirmation, MB_YESNO or MB_DEFBUTTON2) <> IDYES then
+    exit;
+  DelTree(DataDir, True, True, True);
+  DelTree(RuntimeDir, True, True, True);
+end;

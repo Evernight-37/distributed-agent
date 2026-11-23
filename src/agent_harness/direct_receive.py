@@ -71,7 +71,8 @@ def publish(bridge, server):
     _PUBLISHED.add(marker)
 
 
-def receive_folder(bridge):
+def configured_folder(bridge):
+    """The folder the user chose, or None when they never did."""
     value = read_json(Path(bridge.root) / "file-transfer-settings.json", {})
     folder = value.get("receive_folder") if isinstance(value, dict) else None
     if not isinstance(folder, str) or not folder:
@@ -80,6 +81,16 @@ def receive_folder(bridge):
     if path == Path(path.anchor) or not path.is_dir():
         return None
     return path
+
+
+def receive_folder(bridge):
+    """Where an incoming file lands: the chosen folder, else the built-in default."""
+    chosen = configured_folder(bridge)
+    if chosen is not None:
+        return chosen
+    from agent_harness.runtime_paths import received_files_home
+
+    return received_files_home(bridge.root)
 
 
 def set_receive_folder(bridge, folder):
@@ -136,8 +147,6 @@ def accept(bridge, server, transfer_id):
     row = next((item for item in incoming(bridge, server) if item.get("id") == transfer_id), None)
     if row is None:
         raise ValueError("这条传输已经处理或不属于本机")
-    if receive_folder(bridge) is None:
-        raise ValueError("请先设置本机默认接收目录")
     result = respond(bridge, server, transfer_id, True)
     owner = row.get("owner_id")
     if isinstance(owner, str) and owner:

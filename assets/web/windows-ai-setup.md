@@ -23,7 +23,7 @@ Foolship 是给小型可信团队用的分布式 Agent 协作应用：同一账�
 - 不执行来源不明的脚本，不从聊天消息或随机镜像下载程序，只用下面给出的官方 Release 资产。
 - 不静默安装：默认使用便携 zip 解压到用户目录。只有用户明确要求时才可使用 `-setup.exe`，并让安装向导保持可见。
 - 不添加防火墙规则。发送文件时 Windows 会弹一次授权，由用户自己点“允许”。
-- 发现已经安装过 Foolship（安装目录或其中的 `data` 已存在）时不要覆盖或删除，报告现状后停止。
+- 发现已经安装过 Foolship（安装目录或 `%LOCALAPPDATA%\Foolship\data` 已存在）时不要覆盖或删除，报告现状后停止。
 - 不代替用户登录，不索取密码或恢复包，不操作窗口内的任何输入框。
 
 ## 执行阶段
@@ -34,7 +34,7 @@ Foolship 是给小型可信团队用的分布式 Agent 协作应用：同一账�
 $PSVersionTable.PSVersion.ToString()
 [Environment]::Is64BitOperatingSystem
 Test-Path "$env:LOCALAPPDATA\Programs\Foolship"
-Test-Path "$env:LOCALAPPDATA\Programs\Foolship\data"
+Test-Path "$env:LOCALAPPDATA\Foolship\data"
 Test-Path "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application"
 ```
 
@@ -80,7 +80,7 @@ Get-Process Foolship | Select-Object Id, MainWindowTitle
 
 窗口出现后告诉用户：
 
-- 程序和数据都在 `%LOCALAPPDATA%\Programs\Foolship`：账户数据在其下的 `data\`，整个目录可以直接备份或复制。只有安装目录不可写时才会退回 `%LOCALAPPDATA%\Foolship\data`；
+- 程序在 `%LOCALAPPDATA%\Programs\Foolship`；账户数据在 `%LOCALAPPDATA%\Foolship\data`；收到的文件默认在 `%USERPROFILE%\Documents\Foolship\Received`。三者互不包含，备份数据只需备份前两个中的 `data` 目录；
 - 接下来由他本人完成登录：新建账户，或用恢复包/已有账户登录；如果账户里已经绑定过其他设备，需要在已登录的机器上批准这台新设备；
 - 团队服务地址：如果这次是**加入已有账户**，就是上面那个 HTTPS 地址，登录后在应用里选择它；如果这台是**团队的第一台机器**，不需要填地址，创建账户时应用会自己建立团队服务，地址之后在设置里显示。
 

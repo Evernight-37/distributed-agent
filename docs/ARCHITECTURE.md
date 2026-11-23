@@ -58,4 +58,4 @@ Codex MCP；旧 `/api/session`、`/api/action`、Cookie 页面和浏览器 SSE �
 
 1.0 是干净的数据格式基线。正式代码直接创建当前数据库结构，不包含试验版数据库、版本化目录或旧 MCP 授权的自动迁移逻辑。
 
-运行状态不写入源码树。正式应用把数据放在安装目录下的 `data\`（Windows 便携/安装版都是），只有安装目录不可写时才退回 `%LOCALAPPDATA%\Foolship\data`；构建输出和缓存由 `.gitignore` 排除。
+运行状态不写入源码树。正式应用把数据放在平台目录：Windows `%LOCALAPPDATA%\Foolship\data`、macOS `~/Library/Application Support/Foolship/data`、Linux `~/.local/share/Foolship/data`；安装目录里只有程序。旧版本放在安装目录旁的 `data\` 会在首次启动时复制过去并改名为 `data.migrated-<时间>`。构建输出和缓存由 `.gitignore` 排除。
