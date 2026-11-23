@@ -124,12 +124,7 @@ function teamServiceCard(initial) {
           ? "这是当前电脑的本机转发地址，不能直接交给其它电脑。请向服务托管者获取 HTTPS 团队地址。"
           : "把这个地址和项目邀请代码交给合作伙伴，用于加入项目。访问需要相应的 Tailscale 网络权限；项目邀请仍单独管理。",
       );
-    } else
-      note(
-        card,
-        "给同事一个固定地址，从这里连到这台机器的协作服务。只负责连接，不同步项目文件。",
-      );
-    if (last.state === "conflict")
+    } else if (last.state === "conflict")
       note(
         card,
         "这台机器上已有同名配置，应用没有改动它。先确认原来那个配置不再需要，再继续。",
@@ -271,10 +266,6 @@ Object.assign(FoolshipDesktop.components, {
 function executorCard(current) {
   const card = el("section", "panel");
   card.append(el("h2", "", "本机可用模型"));
-  note(
-    card,
-    "这台电脑能跑哪些模型，以及每个由哪个 CLI 执行。派任务时按模型自动挑 CLI；表里没有的模型不会被派发。",
-  );
 
   const models = Array.isArray(current?.models)
     ? current.models.map((item) => ({ ...item }))
@@ -361,10 +352,6 @@ function executorCard(current) {
 function proxySettingsCard(current) {
   const card = el("section", "panel");
   card.append(el("h2", "", "本机代理端口"));
-  note(
-    card,
-    "端口在这台机器上，固定 127.0.0.1。每个 Agent 在员工设置里自己决定是否走它；团队服务和 Tailscale 不走这里。",
-  );
   const port = field(
     card,
     "端口（留空表示不提供）",
@@ -405,10 +392,6 @@ function proxySettingsCard(current) {
 function idleSettingsCard(seconds) {
   const card = el("section", "panel");
   card.append(el("h2", "", "Agent 空闲保活"));
-  note(
-    card,
-    "任务结束后先不退出，留一段时间给后续消息复用同一个进程。超过这段时间没有新消息就退出。",
-  );
   const choice = field(card, "无新活动后退出", String(seconds || 300), [
     [60, "1 分钟"],
     [300, "5 分钟"],
@@ -431,12 +414,6 @@ function codexCliCard(kind) {
     controls = el("div", "setting-row");
   statusLine.style.overflowWrap = "anywhere";
   card.append(el("h2", "", label), statusLine);
-  note(
-    card,
-    dsh
-      ? "DeepSeek Harness 需要在这台电脑上单独安装。这里只检测程序能否运行，不读取密钥或登录凭据。"
-      : "Codex 需要在这台电脑上单独安装并登录。这里只读取 CLI 返回的登录状态，不会读取登录凭据。",
-  );
   const path = field(card, "手动指定程序（留空则自动检测）", "");
   path.placeholder = dsh
     ? "选择 dsh（Mac/Linux）或 dsh.cmd（Windows）"
@@ -529,10 +506,6 @@ function codexMcpCard(initial) {
   );
   controls.append(action);
   card.append(el("h2", "", "在 Codex 中使用协作"), statusLine);
-  note(
-    card,
-    "连接后可以在普通 Codex 对话里查看项目、发消息、派任务。不读取登录凭据。",
-  );
   card.append(controls);
   function paint(state) {
     state = state || {};
@@ -622,10 +595,6 @@ function dshMcpCard(initial) {
     el("h2", "", "在 DeepSeek Harness 中使用协作"),
     statusLine,
     controls,
-  );
-  note(
-    card,
-    "在这台机器的 DeepSeek Harness 里登记协作服务，不开放端口，也不读取密钥。只影响桌面应用里的普通对话，派出去的任务不受影响；新开的 DSH 会话生效。",
   );
   function paint(state) {
     if (state) card.state = state;

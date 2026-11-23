@@ -26,10 +26,6 @@ function renderAccount() {
         button("重命名", () =>
           modal("重命名设备", (b, a) => {
             const input = field(b, "显示名称", d.name);
-            note(
-              b,
-              "只改这台机器在账户里的显示名称，不影响密钥、设备标识或权限。",
-            );
             a.append(
               button("取消", closeModal),
               button(
@@ -101,10 +97,6 @@ function renderAccount() {
   account.append(
     button("创建离线恢复包", () =>
       modal("创建离线恢复包", (b, a) => {
-        note(
-          b,
-          "恢复包只适用于根设备。它可在原设备不可用时恢复账户，请离线保存并使用独立密码保护。",
-        );
         const password = field(b, "恢复包密码", "", null, "password");
         const confirm = field(b, "再次输入", "", null, "password");
         a.append(
@@ -129,10 +121,6 @@ function renderAccount() {
         );
       }),
     ),
-  );
-  note(
-    account,
-    "关联新电脑：在新电脑的登录页选择“关联我的另一台电脑”，点“输入新电脑的关联码”，核对并批准请求。",
   );
   (S.dash.pending_devices || []).forEach((d) => {
     const r = el("div", "setting-row");
@@ -196,10 +184,6 @@ async function renderSettings() {
   list.append(team);
   const machine = el("section", "panel");
   machine.append(el("h2", "", "本机状态"));
-  note(
-    machine,
-    "接收服务在这台机器上后台运行：领取派给这台机器的任务，也接收发来的文件。登录时自动启动；停止它不会退出应用，但任务会停在服务端等你重新启动。",
-  );
   const receivers = Array.isArray(settings.receivers) ? settings.receivers : [];
   if (settings.data_root) {
     const pathRow = el("div", "setting-row");
@@ -329,10 +313,6 @@ async function renderSettings() {
   advanced.append(el("summary", "", "高级 · 服务连接"));
   const server = field(advanced, "协作服务地址", settings.server);
   server.readOnly = true;
-  note(
-    advanced,
-    "这是创建身份时接入的第一个服务。要加入别处的项目，用那个项目发来的邀请。",
-  );
   list.append(advanced);
   c.append(list);
   renderApprovals(c);
@@ -362,10 +342,6 @@ async function aiInstallSetup() {
     ["macos", "macOS 电脑（Apple Silicon）"],
   ];
   modal("用 AI 在另一台电脑上安装", (body, actions) => {
-    note(
-      body,
-      "把这段提示词交给那台机器上的 AI。它负责检查环境、下载、校验和安装；登录与设备批准仍由你在那台机器上完成。",
-    );
     if (!services.length) {
       note(
         body,
@@ -416,10 +392,6 @@ async function aiInstallSetup() {
 function updateCard() {
   const card = el("section", "panel");
   card.append(el("h2", "", "应用更新"));
-  note(
-    card,
-    "只向本仓库的 Releases 查版本。可以后台预下载并校验，安装仍要你点一次；没有网络时不检查，选“从不”就完全关闭。",
-  );
   const schedule = field(card, "检查频率", "weekly", [
     ["daily", "每天"],
     ["weekly", "每周"],

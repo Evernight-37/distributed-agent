@@ -405,7 +405,6 @@ function authHeader(title, subtitle) {
     el("h1", "", title),
     el("p", "muted", subtitle),
   );
-  root.append(button("完全退出", requestAppClose, "link"));
   return root;
 }
 function renderAuth(mode = "home") {
@@ -484,7 +483,7 @@ function renderAuth(mode = "home") {
     const box = el("input");
     box.type = "checkbox";
     box.checked = !!(profile.value && S.autologin === profile.value);
-    row.append(box, el("span", "", "下次自动登录这个账户"));
+    row.append(box, el("span", "", "下次自动登录"));
     form.append(row);
     profile.onchange = () => {
       box.checked = !!(profile.value && S.autologin === profile.value);
@@ -586,11 +585,12 @@ function renderAuth(mode = "home") {
       await enter();
     }, submit);
   };
-  note(
-    root,
-    "密码仅用于本机解锁，与 Codex、OpenAI 或 GitHub 登录无关。项目工作目录不会自动同步。",
+  const foot = el("div", "auth-foot");
+  foot.append(
+    button("← 返回", () => renderAuth("home"), "auth-back"),
+    button("完全退出", requestAppClose, "link"),
   );
-  root.append(button("← 返回", () => renderAuth("home"), "auth-back"));
+  root.append(foot);
 }
 function renderPendingDevice(r) {
   const root = authHeader("新电脑关联码", "请在已登录的电脑上完成批准。");

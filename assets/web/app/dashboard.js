@@ -166,10 +166,6 @@ function renderAttachmentApprovals(parent) {
           request.manifest.forEach((file) => {
             body.append(el("p", "", `${file.path} · ${fileSize(file.size)}`));
           });
-          note(
-            body,
-            "批准后，目标机器会再次核对文件内容；文件有变化时不会发送。",
-          );
           const decide = async (approve) => {
             await api("attachment-decide", {
               id: request.id,
@@ -209,10 +205,6 @@ function newProject() {
         s.server === local ? "这台机器" : serviceName(s.server),
       ]),
     );
-    note(
-      b,
-      "选择“这台机器”时，应用会自动建立 data 数据目录并准备本机协作服务。其他选项只显示你自己名下的服务。",
-    );
     a.append(
       button("取消", closeModal),
       button(
@@ -236,10 +228,6 @@ function joinProject() {
   modal("加入项目", (b, a) => {
     const server = field(b, "协作服务地址", S.server),
       invite = field(b, "项目邀请代码");
-    note(
-      b,
-      "使用群主提供的服务地址和项目邀请代码。你的现有身份会加入该项目，无需新建账户。服务托管者会保存这个项目的消息；请先确认地址来自你信任的群主。",
-    );
     a.append(
       button("取消", closeModal),
       button(
@@ -479,14 +467,6 @@ function openEmployeeSettings(e, models) {
         ["auto", "帮我批准"],
         ["full", "完全访问权限"],
       ],
-    );
-    note(
-      b,
-      "此设置控制 Agent 将当前项目工作目录中的文件作为聊天附件发送。目录外文件始终不能自动发送。",
-    );
-    note(
-      b,
-      "模型与执行权限由目标机器应用。工作目录改为在项目派遣页面按机器设置，不再属于某个员工。",
     );
     const network = field(
       b,

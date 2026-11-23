@@ -750,12 +750,6 @@ function invite() {
 function dispatch() {
   modal("派遣我的员工", (b, a) => {
     const server = S.view.server || S.view.project.server || S.server;
-    note(
-      b,
-      "这里只显示已接入 " +
-        serviceName(server) +
-        " 的员工。工作目录按“项目 × 机器”设置；同一机器派到本项目的员工共享该目录，但各自保留独立会话。",
-    );
     const checks = [];
     const eligible = S.dash.employees.filter(
       (e) => employeeServer(e) === server,

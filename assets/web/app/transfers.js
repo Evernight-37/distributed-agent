@@ -72,10 +72,6 @@ function transferSettings(view) {
   );
   if (remoteDevices.length) {
     section.append(el("h3", "", "其他机器"));
-    note(
-      section,
-      "账户里的其他机器收到文件时，各自保存到自己的接收目录。这里只转交设置，目录不存在时由目标机器创建。",
-    );
     remoteDevices.forEach((device) => {
       const row = el("div", "setting-row");
       const label = el("div", "", device.name);
@@ -147,10 +143,6 @@ function transferDirect(view) {
   if (!rows.length) return null;
   const section = el("section", "panel");
   section.append(el("h2", "", "直连传输"));
-  note(
-    section,
-    "文件由对方的机器直接传到这台机器，协作服务不接触内容。跨账户第一次来件需要你确认，确认后会记住该发送账户。",
-  );
   rows.forEach((item) => {
     const row = el("div", "transfer-row"),
       info = el("div", "transfer-info");
@@ -238,10 +230,6 @@ function transferSend(view) {
     "发送给",
     "0",
     targets.map((item, index) => [String(index), item.label]),
-  );
-  note(
-    section,
-    "对方确认后，文件从你的机器直接传到对方的机器；协作服务只转交“谁发给谁、大小、地址”，不接触文件内容。",
   );
   section.append(
     button(
