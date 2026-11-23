@@ -274,13 +274,12 @@ class DshCommandTests(unittest.TestCase):
 
 
 class CodexCommandTests(unittest.TestCase):
-    def test_sandbox_follows_the_stage(self):
-        project = dict(PROJECT, model="gpt-5.6-sol", effort="high", _stage="implement")
-        argv = executors.codex_command("codex.exe", project, None)
-        self.assertEqual(argv[argv.index("--sandbox") + 1], "workspace-write")
-        discuss = dict(project, _stage="discuss")
-        argv = executors.codex_command("codex.exe", discuss, None)
-        self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
+    def test_the_stage_does_not_narrow_the_sandbox(self):
+        """Every stage keeps the model's native tools inside its workspace."""
+        for stage in ("discuss", "review", "implement"):
+            project = dict(PROJECT, model="gpt-5.6-sol", effort="high", _stage=stage)
+            argv = executors.codex_command("codex.exe", project, None)
+            self.assertEqual(argv[argv.index("--sandbox") + 1], "workspace-write", stage)
 
     def test_managed_turn_disables_extensions_and_pins_a_schema(self):
         project = dict(PROJECT, model="gpt-5.6-sol", effort="high")
@@ -291,13 +290,14 @@ class CodexCommandTests(unittest.TestCase):
 
 
 class DshPermissionEnvironmentTests(unittest.TestCase):
-    def test_stage_selects_the_sandbox_mode(self):
+    def test_only_an_owner_grant_widens_the_sandbox(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             write_json(root / "executor.json", {"executor": "dsh"})
-            self.assertEqual(executors.environment(root, "implement")["DSH_PERMISSION_MODE"], "workspace-write")
-            self.assertEqual(executors.environment(root, "discuss")["DSH_PERMISSION_MODE"], "read-only")
-            self.assertEqual(executors.environment(root, "review")["DSH_PERMISSION_MODE"], "read-only")
+            for stage in ("discuss", "review", "implement", None):
+                self.assertEqual(
+                    executors.environment(root, stage)["DSH_PERMISSION_MODE"], "workspace-write", str(stage)
+                )
             self.assertEqual(
                 executors.environment(root, None, full_access=True)["DSH_PERMISSION_MODE"], "danger-full-access"
             )

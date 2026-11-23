@@ -55,27 +55,18 @@ class BoundaryTests(unittest.TestCase):
             self.assertIsInstance(handler.backend, PullBackend)
             self.assertIsInstance(Coordinator(handler.store).backend, PullBackend)
 
-    def test_inspection_keeps_read_only_sandbox_and_implementation_uses_workspace(self):
-        p = {
+    def test_every_stage_keeps_the_workspace_writable(self):
+        """Capability comes from the executor; the stage only names the intent."""
+        project = {
             "model": "gpt-5.6-sol",
             "effort": "medium",
             "remote_path": "D:/project",
             "local_control": True,
         }
-        args = worker.build_command("codex.exe", p, None)
-        self.assertNotIn("--approve-for-me", args)
-        self.assertIn('approval_policy="never"', args)
-        self.assertEqual(args[args.index("--sandbox") + 1], "read-only")
-        self.assertNotIn("shell_tool", args)
-        self.assertNotIn("unified_exec", args)
-        p["_stage"] = "review"
-        args = worker.build_command("codex.exe", p, None)
-        self.assertEqual(args[args.index("--sandbox") + 1], "read-only")
-        p["_stage"] = "implement"
-        args = worker.build_command("codex.exe", p, None)
-        self.assertEqual(args[args.index("--sandbox") + 1], "workspace-write")
-        self.assertNotIn("shell_tool", args)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        for stage in (None, "discuss", "review", "implement"):
+            args = worker.build_command("codex.exe", dict(project, _stage=stage), None)
+            self.assertNotIn("--approve-for-me", args)
+            self.assertIn('approval_policy="never"', args)
+            self.assertEqual(args[args.index("--sandbox") + 1], "workspace-write", str(stage))
+            self.assertNotIn("shell_tool", args)
+            self.assertNotIn("unified_exec", args)

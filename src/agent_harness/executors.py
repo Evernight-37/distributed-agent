@@ -440,10 +440,9 @@ def environment(root, stage=None, full_access=False):
     """
     if selected(root) != DSH:
         return {}
-    if full_access:
-        mode = "danger-full-access"
-    else:
-        mode = "workspace-write" if stage == "implement" else "read-only"
+    # The stage says what the humans expect, not what the model may do. Only the
+    # machine owner's grant widens the sandbox beyond the workspace.
+    mode = "danger-full-access" if full_access else "workspace-write"
     return {"DSH_PERMISSION_MODE": mode}
 
 
@@ -569,11 +568,15 @@ def codex_command(exe, project, thread_id, managed=False, schema_path=None):
         project["remote_path"],
     ]
     if project.get("local_control"):
-        stage = project.get("_stage", "discuss")
+        # Keep the model's own capabilities: the workspace is writable in every
+        # stage, and approvals are answered by the human, not guessed here.
         args += [
             "--sandbox",
-            "workspace-write" if stage == "implement" else "read-only",
+            "workspace-write",
             "-c",
+            # `codex exec` has no interactive prompt: a request would hang the
+            # turn. The agent asks the human through its structured reply, and the
+            # human grants permissions for the next turn.
             'approval_policy="never"',
         ]
     else:

@@ -195,10 +195,27 @@ class DshWorkerTurnTests(unittest.TestCase):
             {"provider": "deepseek-official", "model": "deepseek-flash"},
         )
 
-    def test_read_only_stages_use_the_read_only_sandbox(self):
+    def test_rules_are_sent_once_and_only_the_contract_afterwards(self):
+        """A resumed thread already holds the rules; repeating them wastes tokens."""
+        self._job(channel="group")
+        worker.run("job1")
+        first = read_json(self.record)["task"]
+        self.assertIn("You are an agent in a human-owned project group", first)
+
+        import shutil
+
+        shutil.rmtree(worker.job_dir("job1"), ignore_errors=True)
+        self._job(thread_id="session-11111111-2222-3333-4444-555555555555", channel="group")
+        worker.run("job1")
+        resumed = read_json(self.record)["task"]
+        self.assertNotIn("You are an agent in a human-owned project group", resumed)
+        self.assertTrue(resumed.startswith("Reply with one JSON object"), resumed[:80])
+        self.assertIn("TASK CONTRACT:", resumed)
+
+    def test_every_stage_runs_with_write_access_to_its_workspace(self):
         self._job()
         worker.run("job1")
-        self.assertEqual(read_json(self.record)["permission"], "read-only")
+        self.assertEqual(read_json(self.record)["permission"], "workspace-write")
 
     def test_implement_stage_uses_the_writable_sandbox(self):
         self._job(prompt=self._contract(stage="implement"))
