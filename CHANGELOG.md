@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.16.9 - 2026-11-23
+
+- **回复工具补上 `request` 参数**。第一次实测时 agent 确实被沙箱拒绝了写入，但只能把原因写进 `reply`——因为 `foolship_reply` 的参数里没有 `request` 字段。现在它可以直接申请权限，群里会出现 `/allow` 提示。
+- **任务契约的措辞跟上 2.16.5 的模型**。调度消息里的 `allowed_files` 还写着"本轮不得修改文件、只读检查"，agent 因此专门声明"这不是我自己扩权"。现在写的是"可以读写分配到的项目目录，越界写入需要机器主人授权"。
+
 ## 2.16.8 - 2026-11-23
 
 - **DSH 回合现在用工具提交结果，不再依赖解析模型文本**。worker 每回合把一个小插件 `foolship_reply.js` 写进任务目录，并在 `dsh-patch.json` 里 `insert` 一行把它挂进 headless profile；agent 调 `foolship_reply({reply, messages, attachments, memory_notes})`，插件把参数写进 `reply.json`，worker 优先读这个文件，读不到才回退到原来的文本解析。提示词相应改成"有工具就用工具，没有才写 JSON"。

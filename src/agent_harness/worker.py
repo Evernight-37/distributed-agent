@@ -897,6 +897,15 @@ export function apply(ctx, config) {
         description: "Durable facts from the public group; empty in a private turn.",
         items: { type: "string" },
       },
+      request: {
+        type: "object",
+        description:
+          "Ask a human for a permission this turn lacked, e.g. writing outside the project directory.",
+        properties: {
+          reason: { type: "string", description: "What you need and what it unblocks." },
+          scope: { type: "string", description: "full_access" },
+        },
+      },
     },
     output: {
       schema: {
