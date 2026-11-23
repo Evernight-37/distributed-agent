@@ -15,11 +15,19 @@ def identifier(value):
     return value
 
 
-def read_json(path, default=None):
+def read_json(path, default=None, *, tolerant=False):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return default
+    except ValueError:
+        # A file that exists but is not JSON (a crash mid-write, or the
+        # filesystem handing back zeros) must not turn every later request into
+        # a 400. Callers of cache-like files opt in; configuration that decides
+        # behaviour keeps failing loudly.
+        if tolerant:
+            return default
+        raise
 
 
 def write_json(path, value):

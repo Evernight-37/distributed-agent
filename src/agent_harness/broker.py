@@ -189,7 +189,7 @@ class PullBackend:
         """Remember the device's public keys. Only the public halves move."""
         if isinstance(transfer_value, str) and 0 < len(transfer_value) <= 128:
             path = self.store.root / "nodes" / (device["node"] + ".json")
-            current = read_json(path, {})
+            current = read_json(path, {}, tolerant=True)
             if not isinstance(current, dict):
                 current = {}
             if current.get("transfer_public_key") != transfer_value:
@@ -206,7 +206,7 @@ class PullBackend:
         if len(raw) != 32:
             raise ValueError("无效的设备加密公钥")
         path = self.store.root / "nodes" / (device["node"] + ".json")
-        current = read_json(path, {})
+        current = read_json(path, {}, tolerant=True)
         if not isinstance(current, dict):
             current = {}
         if current.get("encrypt_public_key") != value:
@@ -225,7 +225,7 @@ class PullBackend:
         except (TypeError, ValueError):
             return
         path = self.store.root / "nodes" / (device["node"] + ".json")
-        current = read_json(path, {})
+        current = read_json(path, {}, tolerant=True)
         if not isinstance(current, dict):
             current = {}
         current["health"] = safe

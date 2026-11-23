@@ -55,7 +55,7 @@ class AccountBackend:
         """The public key a device published for signing direct downloads."""
         if not isinstance(node, str) or not node:
             return {}
-        value = read_json(self.store.root / "nodes" / (node + ".json"), {})
+        value = read_json(self.store.root / "nodes" / (node + ".json"), {}, tolerant=True)
         key = value.get("transfer_public_key") if isinstance(value, dict) else None
         return {"transfer_public_key": key} if isinstance(key, str) and key else {}
 
@@ -81,7 +81,7 @@ class AccountBackend:
             if not db.execute("SELECT 1 FROM nodes WHERE name=? AND owner_id=?", (node, user)).fetchone():
                 raise PermissionError("当前设备尚未接入此协作服务")
         path = self.store.root / "nodes" / (node + ".json")
-        current = read_json(path, {})
+        current = read_json(path, {}, tolerant=True)
         if not isinstance(current, dict):
             current = {}
         current["transfer_public_key"] = key
@@ -493,7 +493,7 @@ class AccountBackend:
                     (user,),
                 ):
                     node = self._node(db, row["public_key"], user)
-                    config = read_json(self.store.root / "nodes" / (node + ".json"), {})
+                    config = read_json(self.store.root / "nodes" / (node + ".json"), {}, tolerant=True)
                     seen = db.execute("SELECT last_seen FROM pull_devices WHERE node=?", (node,)).fetchone()
                     last_seen = seen["last_seen"] if seen else None
                     devices.append(

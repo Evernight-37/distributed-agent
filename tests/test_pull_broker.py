@@ -149,6 +149,23 @@ class PullBrokerTests(unittest.TestCase):
         self.assertNotIn("private_field", json.dumps(saved))
         self.assertNotIn("/secret", json.dumps(saved))
 
+    def test_a_corrupt_node_file_does_not_break_the_device_poll(self):
+        """A crash can leave the node record full of zeros; polling must survive it."""
+        token, pair = self.enroll()
+        config = self.store.root / "nodes" / (pair["node"] + ".json")
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_bytes(b"\x00" * 705)
+        health = {
+            "schema_version": 1,
+            "generated_at": time.time(),
+            "overall": "healthy",
+            "components": [{"id": "receiver", "state": "healthy", "code": "OK", "message": "ok"}],
+        }
+        result = self.backend.device_api("/api/device/poll", {"health": health}, token)
+        self.assertIsInstance(result, dict)
+        saved = json.loads(config.read_text(encoding="utf-8"))
+        self.assertEqual(saved["health"]["overall"], "healthy")
+
     def test_ownership_project_and_report_isolation(self):
         token, _ = self.enroll()
         invite = self.store.invite(self.owner, self.project)["invite"]
