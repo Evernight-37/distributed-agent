@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.16.12 - 2026-11-24
+
+**授权之后真的能写到项目目录之外了**——缺的那一环是 Windows 的文件权限。
+
+- DSH 在 Windows 上的 shell 沙箱是 ACL 驱动的：沙箱身份（`CodexSandboxUsers` 组，成员是 `CodexSandboxOffline`/`Online`）能不能写某个目录，由那个目录的 ACE 决定。项目目录会被定期种上 ACE，所以项目内可写；`C:\Users\vladi\Documents` 上只有 Codex 留下的 `(RX)`，所以沙箱里写不进去——这和我们的策略对不对无关。
+- 现在 `full_access` 授权生效时，接收端会给**当前用户的目录**（`%USERPROFILE%`，继承覆盖桌面/文档/下载）加一条 `CodexSandboxUsers:(OI)(CI)M`，授权撤销时移除。幂等、只动这一条、不碰所有者和其他条目；执行记录写进任务的 `state.json`。
+- 只在**显式授权**时这么做；对端模式下的宽权限（`local_control=false`）不会去改本机 ACL。
+
 ## 2.16.11 - 2026-11-23
 
 权限链路一共三处断点，这一版修掉前两处：
