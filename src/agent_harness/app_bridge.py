@@ -751,6 +751,30 @@ class AppBridge:
         suffix = ".cmd" if os.name == "nt" else ".sh"
         return self.root / "mcp" / ("launch-" + self.profile["id"] + "-dsh" + suffix)
 
+    def refresh_mcp_launchers(self):
+        """Repoint existing Codex/DSH launchers at this installation.
+
+        The launcher is a stable file whose contents embed absolute paths to the
+        runtime and the grant. A data-directory migration or a move of the
+        program leaves those stale, so every start rewrites them (the writer is
+        a no-op when nothing changed).
+        """
+        if not self.profile:
+            return
+        try:
+            pairs = (
+                (self._mcp_launcher_path(), self._mcp_launch_command()),
+                (self._dsh_mcp_launcher_path(), self._dsh_mcp_command()),
+            )
+        except Exception:
+            return
+        for path, command in pairs:
+            try:
+                if path.is_file():
+                    self._write_launcher(path, command)
+            except Exception:
+                continue
+
     def _write_launcher(self, path, command):
         """Write a launcher whose path is stable while its contents track the runtime."""
         import shlex
@@ -1248,6 +1272,9 @@ class AppBridge:
             pass
 
     def _dashboard(self):
+        if not getattr(self, "_launchers_refreshed", False):
+            self._launchers_refreshed = True
+            self.refresh_mcp_launchers()
         self._sync_service_links()
         self._start_direct_receive()
         self.project_servers = {}
