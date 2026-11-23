@@ -51,6 +51,12 @@ def main():
     import webview
 
     bridge = AppBridge(args.data)
+    # A remembered account unlocks before the window appears; a failure simply
+    # leaves the login screen in place.
+    try:
+        bridge.auto_login()
+    except Exception:
+        pass
     holder = {}
 
     def raise_window():

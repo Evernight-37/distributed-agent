@@ -226,6 +226,14 @@ class DesktopIdentityActions:
                     bridge._sync_mcp_delegate()
                 except (OSError, RuntimeError, ValueError, PermissionError):
                     pass
+            # "Remember me" is one account at a time: checking it here replaces any
+            # other remembered account, and leaving it unchecked forgets this one.
+            from agent_harness import autologin
+
+            if data.get("remember"):
+                autologin.save(bridge.root, profile["id"], data.get("password", ""))
+            else:
+                autologin.clear(bridge.root)
             return {"unlocked": True}
         if action == "device-request":
             identity = generate_identity()

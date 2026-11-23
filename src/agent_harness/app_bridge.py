@@ -1381,6 +1381,27 @@ class AppBridge:
     def _missing(self):
         raise ValueError("员工不存在")
 
+    def auto_login(self):
+        """Unlock the remembered account at startup, when the user asked for it.
+
+        The password comes from the OS-protected file written by the login action;
+        only that one profile is unlocked, so another account always needs typing.
+        """
+        from agent_harness import autologin
+
+        remembered = autologin.load(self.root)
+        if not remembered:
+            return False
+        profile_id, password = remembered
+        if not any(profile["id"] == profile_id for profile in self._profiles()):
+            autologin.clear(self.root)
+            return False
+        try:
+            result = self.invoke("login", {"profile": profile_id, "password": password, "remember": True})
+        except Exception:
+            return False
+        return bool(isinstance(result, dict) and result.get("unlocked"))
+
     def invoke(self, action, data=None):
         try:
             with self.guard:

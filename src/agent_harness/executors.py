@@ -537,7 +537,13 @@ def _dsh_patch(root, model, effort=None, scratch=None, full_access=False):
             # workspaceRoot keeps the loader's process.cwd() fallback.
             {
                 "id": "sandbox-policy",
-                "config": {"mode": "danger-full-access" if full_access else "workspace-write"},
+                "config": {
+                    "mode": "danger-full-access" if full_access else "workspace-write",
+                    # The sandbox gives each writable path its own untrusted SID,
+                    # so a hand-written group ACE never applies; naming the root
+                    # here is what makes the harness file tools writable there.
+                    **({"additionalWritableRoots": [str(Path.home())]} if full_access else {}),
+                },
             },
         ]
     )

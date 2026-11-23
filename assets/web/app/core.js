@@ -476,6 +476,24 @@ function renderAuth(mode = "home") {
   );
   password.autocomplete =
     mode === "login" ? "current-password" : "new-password";
+  // Remembering is per account: the box follows the remembered profile and is
+  // re-evaluated whenever another account is selected.
+  let remember = null;
+  if (mode === "login") {
+    const row = el("label", "remember-row");
+    const box = el("input");
+    box.type = "checkbox";
+    box.checked = !!(profile.value && S.autologin === profile.value);
+    row.append(box, el("span", "", "下次自动登录这个账户"));
+    note(
+      form,
+      "记住的只是这一个账户；换账户或点“退出账户”都需要重新输入密码。密码由系统密钥（Windows DPAPI / macOS 钥匙串 / Linux Secret Service）保护，不会明文保存。",
+    );
+    profile.onchange = () => {
+      box.checked = !!(profile.value && S.autologin === profile.value);
+    };
+    remember = box;
+  }
   if (mode !== "login") {
     const connection = el(mode === "device" ? "div" : "details");
     if (mode === "register")
@@ -565,6 +583,7 @@ function renderAuth(mode = "home") {
                 : {}),
             }),
         password: password.value,
+        ...(mode === "login" ? { remember: Boolean(remember?.checked) } : {}),
       });
       password.value = "";
       await enter();

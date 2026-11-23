@@ -55,6 +55,12 @@ class DesktopSessionActions:
     def __init__(self, bridge):
         self.bridge = bridge
 
+    def _autologin_profile(self):
+        """Which local account is remembered for automatic unlock."""
+        from agent_harness import autologin
+
+        return autologin.status(self.bridge.root)
+
     def invoke(self, action, payload):
         if action == "app-capabilities":
             # Background mode is only offered where the window can be brought
@@ -115,6 +121,7 @@ class DesktopSessionActions:
                 ],
                 "unlocked": bool(self.bridge.identity),
                 "server": (self.bridge.profile or {}).get("server", "http://127.0.0.1:8765"),
+                "autologin": self._autologin_profile(),
             }
         self.bridge.identity = None
         self.bridge.profile = None

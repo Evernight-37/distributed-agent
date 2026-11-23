@@ -1062,25 +1062,6 @@ def run(job):
         if marker is not None:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text(required_mode, encoding="utf-8")
-            # The grant promises writes outside the project, but the Windows shell
-            # sandbox decides that with an ACL. The sandbox group is granted Modify
-            # on the granted roots while the grant is active (idempotent) and the
-            # entry is removed once the grant is gone.
-            from agent_harness import sandbox_acl
-
-            acl_marker = directory / "sandbox-acl.txt"
-            granted_before = acl_marker.is_file()
-            if granted_full:
-                applied = [str(item) for item in sandbox_acl.granted_paths() if sandbox_acl.apply(item, True)]
-                if applied:
-                    state["sandbox_acl"] = applied
-                    write_json(path / "state.json", state)
-                    acl_marker.parent.mkdir(parents=True, exist_ok=True)
-                    acl_marker.write_text("granted", encoding="utf-8")
-            elif granted_before:
-                for item in sandbox_acl.granted_paths():
-                    sandbox_acl.apply(item, False)
-                acl_marker.unlink(missing_ok=True)
         env = executor_environment(
             ROOT,
             command_project.get("_stage"),
