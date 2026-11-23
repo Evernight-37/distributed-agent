@@ -118,12 +118,18 @@ class AppBridge:
         )
         try:
             with broker_opener(self.broker_proxy).open(req, timeout=timeout) as response:
-                result = json.load(response)
+                try:
+                    result = json.load(response)
+                except ValueError:
+                    # A proxy or an instance that is still starting can answer
+                    # with a page instead of JSON; "Expecting value: char 0" is
+                    # not something a person can act on.
+                    raise RuntimeError("协作服务返回了无法解析的响应，它可能正在启动或重启；稍后再试即可。") from None
         except urllib.error.HTTPError as exc:
             try:
                 message = json.load(exc).get("error", "服务拒绝请求")
             except Exception:
-                message = "服务拒绝请求"
+                message = "协作服务暂时不可用（HTTP " + str(exc.code) + "），请稍后重试。"
             if exc.code == 403:
                 raise PermissionError(message) from None
             raise RuntimeError(message) from None
@@ -1256,9 +1262,26 @@ class AppBridge:
         fetched = {}
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        # The dashboard is fetched immediately after login, sometimes before the
+        # local service has finished starting. Retry only for services this
+        # machine runs; a remote service that is down should be reported at once.
+        try:
+            own = {self.profile["server"], self._hosting_server()}
+        except Exception:
+            own = {self.profile["server"]}
+
         def fetch(server):
-            self._activate_service(server, 5)
-            return self._rpc("dashboard", server=server, timeout=5)
+            attempts = (0, 1) if server in own else (0,)
+            for attempt in attempts:
+                try:
+                    self._activate_service(server, 5)
+                    return self._rpc("dashboard", server=server, timeout=5)
+                except PermissionError:
+                    raise
+                except (OSError, RuntimeError, ValueError):
+                    if attempt == len(attempts) - 1:
+                        raise
+                    time.sleep(0.6)
 
         with ThreadPoolExecutor(
             max_workers=min(8, max(1, len(services))),
