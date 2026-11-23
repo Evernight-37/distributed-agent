@@ -34,10 +34,6 @@ function transferSettings(view) {
   const configured = !!view.settings?.receive_folder_configured;
   const folder = view.settings?.receive_folder || "";
   section.append(el("h2", "", "接收设置"));
-  note(
-    section,
-    "同账户的机器发来文件时自动收下，保存到下面的目录；其他账户第一次发来需要你确认一次，之后记住该账户。",
-  );
   const local = el("div", "setting-row");
   const where = el("div", "", "本机接收目录");
   where.append(
