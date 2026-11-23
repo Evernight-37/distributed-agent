@@ -149,6 +149,34 @@ class PullBrokerTests(unittest.TestCase):
         self.assertNotIn("private_field", json.dumps(saved))
         self.assertNotIn("/secret", json.dumps(saved))
 
+    def test_a_report_without_a_verifiable_model_is_accepted(self):
+        """The DSH CLI cannot name the model that answered; that must not hang a turn."""
+        token, _ = self.enroll()
+        agent = self.advertise(token)
+        self.submit(agent)
+        job = self.claim(token)
+        answer = self.backend.device_api(
+            "/api/device/report",
+            {
+                "job_id": job["id"],
+                "lease_id": job["lease_id"],
+                "state": "needs_review",
+                "result": {
+                    "report": '{"reply": "hi"}',
+                    "requested_model": "deepseek-flash",
+                    "effective_model": None,
+                    "model_verified": False,
+                    "reasoning_effort": "high",
+                },
+            },
+            token,
+        )
+        self.assertTrue(answer.get("ok"))
+        with self.store.connect() as db:
+            row = db.execute("SELECT state, result FROM pull_jobs WHERE id=?", (job["id"],)).fetchone()
+        self.assertEqual(row["state"], "needs_review")
+        self.assertIn("deepseek-flash", row["result"])
+
     def test_a_corrupt_node_file_does_not_break_the_device_poll(self):
         """A crash can leave the node record full of zeros; polling must survive it."""
         token, pair = self.enroll()

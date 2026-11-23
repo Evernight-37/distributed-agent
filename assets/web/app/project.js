@@ -541,7 +541,17 @@ function renderProject() {
             );
             if (created) S.chatSelection.set(S.project, created.id);
             renderProject();
-          } else await refresh(true);
+          } else {
+            // One project read instead of a full dashboard fan-out: the message
+            // must appear as soon as the service has it, not a second later.
+            S.view = await api("project", {
+              id: S.project,
+              visit: false,
+              active_conversation_id: selectedId,
+            });
+            renderProject();
+            refresh().catch(() => {});
+          }
         } finally {
           sending = false;
         }

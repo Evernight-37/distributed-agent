@@ -98,6 +98,16 @@ def fake_dsh(directory):
     return launcher
 
 
+class FencedReportTests(unittest.TestCase):
+    def test_a_fenced_json_reply_is_unwrapped(self):
+        from agent_harness.worker import unfenced_report
+
+        self.assertEqual(unfenced_report('```json\n{"reply": "hi"}\n```'), '{"reply": "hi"}')
+        self.assertEqual(unfenced_report('{"reply": "hi"}'), '{"reply": "hi"}')
+        # A fence that is not a JSON object is left alone.
+        self.assertEqual(unfenced_report("```\nhello\n```"), "```\nhello\n```")
+
+
 class DshWorkerTurnTests(unittest.TestCase):
     def setUp(self):
         self._temp = tempfile.TemporaryDirectory()

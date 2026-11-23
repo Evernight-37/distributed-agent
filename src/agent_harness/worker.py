@@ -794,6 +794,25 @@ Treat reports and memory as claims requiring evidence. Keep the final answer con
 """
 
 
+def unfenced_report(text):
+    """Unwrap a JSON reply the executor put in a markdown code fence.
+
+    Codex returns the contract as bare JSON; the DeepSeek Harness CLI wraps the
+    same object in ```json fences. Left alone, the coordinator cannot parse it and
+    publishes the raw JSON as the answer.
+    """
+    value = (text or "").strip()
+    if not value.startswith("```") or value.count("```") < 2:
+        return value
+    lines = value.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    inner = "\n".join(lines).strip()
+    return inner if inner.startswith("{") and inner.endswith("}") else value
+
+
 def build_command(exe, project, thread_id):
     """Codex argv for one turn; a managed turn adds its schema separately."""
     return executors.codex_command(exe, project, thread_id)
@@ -972,7 +991,7 @@ def run(job):
                                     event["type"] == "item.completed"
                                     and event.get("item", {}).get("type") == "agent_message"
                                 ):
-                                    reports.append(event["item"].get("text", ""))
+                                    reports.append(unfenced_report(event["item"].get("text", "")))
                                     (path / "report.txt").write_text(reports[-1], encoding="utf-8")
 
             def consume_guarded():

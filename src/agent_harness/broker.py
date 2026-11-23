@@ -450,8 +450,13 @@ class PullBackend:
                 for key in ("report", "error"):
                     if key in data:
                         result[key] = data[key]
+                # effective_model is null when the executor cannot report which
+                # model actually answered (the DeepSeek Harness CLI does not
+                # expose it). Rejecting that made every such turn hang forever:
+                # the device never got its completed report accepted.
                 for key in ("requested_model", "effective_model"):
-                    if key in result and (not isinstance(result[key], str) or len(result[key]) > 120):
+                    value = result.get(key)
+                    if value is not None and (not isinstance(value, str) or len(value) > 120):
                         raise ValueError("无效的模型审计字段")
                 if "reasoning_effort" in result and result["reasoning_effort"] not in {
                     "low",
