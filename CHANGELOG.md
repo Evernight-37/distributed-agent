@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.16.8 - 2026-11-23
+
+- **DSH 回合现在用工具提交结果，不再依赖解析模型文本**。worker 每回合把一个小插件 `foolship_reply.js` 写进任务目录，并在 `dsh-patch.json` 里 `insert` 一行把它挂进 headless profile；agent 调 `foolship_reply({reply, messages, attachments, memory_notes})`，插件把参数写进 `reply.json`，worker 优先读这个文件，读不到才回退到原来的文本解析。提示词相应改成"有工具就用工具，没有才写 JSON"。
+- 这个做法是实验验证过的：headless 会加载 `--patch` 里 `insert:` 的本地插件行（相对路径按 patch 文件解析），`ctx.tools` 服务存在，`ctx.tools.register` 接受普通对象但**必须**声明 `output.schema` 和 `output.render`，且插件不需要 `import "@deepseek-ai/dsh-tools"`——接收端可以自带这个文件，不用装进 DSH 的包目录。
+- 提示词的 JSON 契约暂时保留作回退；等真实回合跑稳后可以删掉它和围栏剥离逻辑。
+
 ## 2.16.7 - 2026-11-23
 
 - **Agent 可以开口要权限了**。回复里带 `request:{"reason":"…"}` 时，群里会出现一条系统消息说明它要什么，并告诉你用 `/allow 名字` 或 `/deny 名字` 批准或拒绝——只有项目所有者或该 Agent 的主人能执行。批准写在 `data/team-service/grants.json`，下一个回合生效：DSH 的沙箱升到 `danger-full-access`，Codex 用 `--sandbox danger-full-access`。这是唯一能越过项目目录的入口，由人决定。

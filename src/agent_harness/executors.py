@@ -497,7 +497,7 @@ def reasoning_effort(effort):
     return EFFORT_MAP.get(effort if isinstance(effort, str) else "", None)
 
 
-def _dsh_patch(root, model, effort=None):
+def _dsh_patch(root, model, effort=None, scratch=None):
     """The loader patch that pins DSH to this turn's model and permissions.
 
     Every entry replaces its config wholesale, so the permission presets are
@@ -508,6 +508,9 @@ def _dsh_patch(root, model, effort=None):
     profile's layer, and this one-shot turn runs the ``headless`` profile.
     """
     selection = {"provider": settings(root).get("provider") or DSH_PROVIDER, "model": model}
+    # Present only when the worker staged it: an in-process tool that writes the
+    # structured reply, so the turn never depends on parsing model prose.
+    plugin = Path(scratch) / "foolship_reply.js" if scratch is not None else None
     level = reasoning_effort(effort)
     if level:
         selection["reasoningEffort"] = level
@@ -530,6 +533,18 @@ def _dsh_patch(root, model, effort=None):
             {"id": "credentials", "disabled": False},
         ]
     )
+    if plugin is not None and plugin.is_file():
+        patch.append(
+            {
+                "insert": [
+                    {
+                        "id": "foolship-reply",
+                        "name": "./" + plugin.name,
+                        "config": {"path": str(plugin.parent / "reply.json")},
+                    }
+                ]
+            }
+        )
     return patch
 
 
@@ -596,7 +611,7 @@ def dsh_command(root, exe, project, thread_id, scratch):
     scratch = Path(scratch)
     scratch.mkdir(parents=True, exist_ok=True)
     patch_path = scratch / "dsh-patch.json"
-    write_json(patch_path, _dsh_patch(root, model, project.get("effort")))
+    write_json(patch_path, _dsh_patch(root, model, project.get("effort"), scratch))
     args = [exe, "--profile", DSH_PROFILE, "--patch", str(patch_path), "--json"]
     if thread_id:
         args += ["--session-id", _dsh_session_id(thread_id)]

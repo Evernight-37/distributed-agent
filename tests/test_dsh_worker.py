@@ -212,6 +212,20 @@ class DshWorkerTurnTests(unittest.TestCase):
         self.assertTrue(resumed.startswith("Reply with one JSON object"), resumed[:80])
         self.assertIn("TASK CONTRACT:", resumed)
 
+    def test_the_reply_tool_result_wins_over_prose(self):
+        """A structured answer written by the tool must not be re-parsed from text."""
+        job = self._job(channel="group")
+        worker.run("job1")
+        self.assertTrue((job / "foolship_reply.js").is_file(), "the worker stages the tool")
+
+        import shutil
+
+        shutil.rmtree(job, ignore_errors=True)
+        job = self._job(channel="group")
+        (job / "reply.json").write_text(json.dumps({"reply": "from the tool"}), encoding="utf-8")
+        worker.run("job1")
+        self.assertIn("from the tool", (job / "report.txt").read_text(encoding="utf-8"))
+
     def test_conversation_attachments_land_inside_the_project(self):
         job = self._job(channel="group")
         request = read_json(job / "request.json")

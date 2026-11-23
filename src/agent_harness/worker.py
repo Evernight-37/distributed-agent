@@ -773,7 +773,7 @@ Your final report awaits independent review; you cannot approve your own work.
 """
 
 GROUP_RULES = """You are an agent in a human-owned project group. Use the visible messages, shared project memory, the task contract and the assigned local project directory.
-Reply with one JSON object: {"reply": str, "messages": [{recipient, body}], "attachments": [{path}], "tasks": [...], "executions": [...], "memory_notes": [str], "done": bool}.
+If a foolship_reply tool is available, call it once with {reply, messages, attachments, memory_notes} instead of writing JSON. Otherwise reply with one JSON object: {"reply": str, "messages": [{recipient, body}], "attachments": [{path}], "tasks": [...], "executions": [...], "memory_notes": [str], "done": bool}.
 - reply is the human-facing answer, without private reasoning or progress logs. messages are for distinct follow-ups only and never repeat reply.
 - attachments are project-relative paths: existing ordinary files inside the project, at most five, each at most 5 MB; never hidden files, credentials or paths outside it.
 - memory_notes only for durable facts from the public group; empty in a private turn.
@@ -865,6 +865,57 @@ def reply_schema():
     )
 
 
+FOOLSHIP_REPLY_JS = """\
+// In-process reply tool for a Foolship turn. The agent answers by calling it;
+// the worker reads reply.json instead of parsing model prose.
+export const name = "foolship-reply";
+export const inject = ["tools"];
+
+export function apply(ctx, config) {
+  const target = String((config && config.path) || "");
+  ctx.tools.register({
+    name: "foolship_reply",
+    description:
+      "Deliver this turn's answer: the human-facing reply, optional follow-up messages, project files and durable memory notes. Call it once, at the end of the turn.",
+    parameters: {
+      reply: { type: "string", description: "The human-facing answer." },
+      messages: {
+        type: "array",
+        description: "Distinct follow-ups; never repeat reply.",
+        items: {
+          type: "object",
+          properties: { recipient: { type: "string" }, body: { type: "string" } },
+        },
+      },
+      attachments: {
+        type: "array",
+        description: "Project-relative file paths to send.",
+        items: { type: "object", properties: { path: { type: "string" } } },
+      },
+      memory_notes: {
+        type: "array",
+        description: "Durable facts from the public group; empty in a private turn.",
+        items: { type: "string" },
+      },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: { ok: { type: "boolean" } },
+      },
+      render: () => [{ type: "text", text: "reply delivered" }],
+    },
+    async execute(args) {
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(target, JSON.stringify(args && typeof args === "object" ? args : {}), "utf8");
+      return { ok: true };
+    },
+  });
+}
+"""
+
+
 def materialize_inbound(config, remote):
     """Copy the conversation's attachments into the agent's project directory.
 
@@ -911,6 +962,9 @@ def run(job):
         login = codex_login_status(exe, ROOT, kind=kind)
         if not login["logged_in"]:
             raise RuntimeError(login["login_error"])
+        kind_hint = executors.kind_for(ROOT, config["project"].get("model"))
+        if kind_hint == executors.DSH:
+            (path / "foolship_reply.js").write_text(FOOLSHIP_REPLY_JS, encoding="utf-8")
         command_project = dict(config["project"])
         if command_project.get("local_control"):
             command_project["_stage"] = json.loads(config["prompt"]).get("stage", "discuss")
@@ -1091,6 +1145,18 @@ def run(job):
             if reader_errors:
                 state.update(status="failed", error="Event reader failed: " + reader_errors[0])
             state["model_verified"] = bool(state.get("effective_model"))
+            # The reply tool writes the structured answer itself; prefer it over
+            # whatever prose the model also produced.
+            reply_file = path / "reply.json"
+            if reply_file.is_file():
+                try:
+                    payload = json.loads(reply_file.read_text(encoding="utf-8"))
+                except ValueError:
+                    payload = None
+                if isinstance(payload, dict) and isinstance(payload.get("reply", ""), str):
+                    structured = json.dumps(payload, ensure_ascii=False)
+                    (path / "report.txt").write_text(structured, encoding="utf-8")
+                    reports.append(structured)
             if state["status"] == "needs_review" and not reports:
                 state.update(status="failed", error="No report returned")
             if state.get("effective_model") and state["effective_model"] != state["requested_model"]:
