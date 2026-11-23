@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.16.7 - 2026-11-23
+
+- **Agent 可以开口要权限了**。回复里带 `request:{"reason":"…"}` 时，群里会出现一条系统消息说明它要什么，并告诉你用 `/allow 名字` 或 `/deny 名字` 批准或拒绝——只有项目所有者或该 Agent 的主人能执行。批准写在 `data/team-service/grants.json`，下一个回合生效：DSH 的沙箱升到 `danger-full-access`，Codex 用 `--sandbox danger-full-access`。这是唯一能越过项目目录的入口，由人决定。
+- 回复 schema 与提示词同步加了 `request` 字段（Codex 的 `--output-schema` 会认它，DSH 靠提示词）。
+
 ## 2.16.6 - 2026-11-23
 
 - **聊天里的附件现在会送进 agent 的项目目录**。回合开始前，接收端通过新的设备接口 `/api/device/task-inbound` 取回消息附件的字节，写进 `<项目目录>/.foolship/inbound/`，并在 prompt 里列出相对路径——所以 `read_image` 能读到你在对话里贴的图。接口按"附件所属项目的所有者 == 设备账户"授权，测试覆盖了跨账户越权被拒。

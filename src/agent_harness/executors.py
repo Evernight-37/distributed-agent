@@ -572,7 +572,7 @@ def codex_command(exe, project, thread_id, managed=False, schema_path=None):
         # stage, and approvals are answered by the human, not guessed here.
         args += [
             "--sandbox",
-            "workspace-write",
+            "danger-full-access" if project.get("_full_access") else "workspace-write",
             "-c",
             # `codex exec` has no interactive prompt: a request would hang the
             # turn. The agent asks the human through its structured reply, and the

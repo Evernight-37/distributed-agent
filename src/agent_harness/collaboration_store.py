@@ -47,6 +47,61 @@ class Store:
                 (now - 86400,),
             )
 
+    def _permission_command(self, user, project, verb, name):
+        """Apply /allow or /deny and report it as a system message."""
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self.require_member(db, project, user)
+            agent = db.execute("SELECT * FROM agents WHERE project_id=? AND name=?", (project, name.strip())).fetchone()
+            if not agent:
+                raise ValueError("没有这个 Agent：" + name.strip())
+            owner = db.execute("SELECT owner_id FROM projects WHERE id=?", (project,)).fetchone()["owner_id"]
+            if user not in (owner, agent["owner_id"]):
+                raise PermissionError("只有项目所有者或该 Agent 的主人可以授权")
+        allow = verb == "/allow"
+        scopes = self.set_grant(agent["id"], "full_access", allow, actor=user)
+        listed = "、".join(scopes) if scopes else "无"
+        text = (
+            "已允许「" + agent["name"] + "」越出项目目录执行（下一回合生效）；当前授权：" + listed
+            if allow
+            else "已收回「" + agent["name"] + "」的额外权限；当前授权：" + listed
+        )
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._message(db, project, "scheduler", "system", text, None, None)
+            row = db.execute("SELECT * FROM messages ORDER BY id DESC LIMIT 1").fetchone()
+        return dict(row)
+
+    def grants(self, agent):
+        """Scopes a human has granted one agent, e.g. full_access."""
+        from agent_harness.common import read_json
+
+        value = read_json(self.root / "grants.json", {})
+        entry = value.get(agent) if isinstance(value, dict) else None
+        return sorted(entry) if isinstance(entry, list) else []
+
+    def set_grant(self, agent, scope, allow, actor="owner"):
+        """Grant or revoke one scope; the file is small and written atomically."""
+        from agent_harness.common import lock, read_json, write_json
+
+        with lock(self.root / "grants.lock"):
+            value = read_json(self.root / "grants.json", {})
+            if not isinstance(value, dict):
+                value = {}
+            current = set(value.get(agent) or []) if isinstance(value.get(agent), list) else set()
+            if allow:
+                current.add(scope)
+            else:
+                current.discard(scope)
+            if current:
+                value[agent] = sorted(current)
+            else:
+                value.pop(agent, None)
+            write_json(self.root / "grants.json", value)
+        with self.connect() as db:
+            self.log(db, actor, "agent_grant", {"agent": agent, "scope": scope, "allow": bool(allow)})
+        return self.grants(agent)
+
     @contextmanager
     def connect(self):
         db = sqlite3.connect(self.database, timeout=30)
@@ -522,6 +577,13 @@ class Store:
         attachment_ids=None,
     ):
         from agent_harness.attachments import Attachments
+
+        # A human can answer a permission request from the chat: "/allow 名字" or
+        # "/deny 名字". This is the one place a grant changes, so the boundary the
+        # agent cannot cross is decided by a person.
+        words = str(body or "").strip().split()
+        if words and words[0] in ("/allow", "/deny") and len(words) >= 2:
+            return self._permission_command(user, project, words[0], " ".join(words[1:]))
 
         attachments = Attachments(self)
         attachment_ids = attachments.ids(attachment_ids if attachment_ids is not None else [])

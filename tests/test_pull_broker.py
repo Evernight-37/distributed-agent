@@ -202,6 +202,23 @@ class PullBrokerTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.backend.device_api("/api/device/task-inbound", {"ids": [file["id"]]}, token)
 
+    def test_a_human_allows_and_revokes_a_full_access_grant(self):
+        from tests.helpers import provision_account  # noqa: F401  (same account model)
+
+        with self.store.connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout,enabled)"
+                " VALUES('agent-1',?,'tester',?,'node-1','backend-1','deepseek-flash','medium',600,1)",
+                (self.project, self.owner),
+            )
+        with self.assertRaises(ValueError):
+            self.store.message(self.owner, self.project, "/allow nobody")
+        self.assertEqual(self.store.grants("agent-1"), [])
+        self.store.message(self.owner, self.project, "/allow tester")
+        self.assertEqual(self.store.grants("agent-1"), ["full_access"])
+        self.store.message(self.owner, self.project, "/deny tester")
+        self.assertEqual(self.store.grants("agent-1"), [])
+
     def test_a_corrupt_node_file_does_not_break_the_device_poll(self):
         """A crash can leave the node record full of zeros; polling must survive it."""
         token, pair = self.enroll()

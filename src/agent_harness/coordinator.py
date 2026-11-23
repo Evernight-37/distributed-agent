@@ -145,6 +145,7 @@ class Coordinator:
                 "visible_messages": visible,
                 "project_memory": shared_memory,
                 "task": contract,
+                "grants": self.store.grants(agent["id"]),
                 # Files the humans attached to the message that woke this turn.
                 "attachments": contract.get("attachments") or [],
                 # The behavioural rules live once, in the worker prompt; the
@@ -408,6 +409,26 @@ class Coordinator:
                 reply = (answer or {}).get("reply", "").strip()
                 if reply.casefold().startswith("[checkpoint]"):
                     reply = ""
+                request = (answer or {}).get("request")
+                if isinstance(request, dict) and str(request.get("reason") or "").strip():
+                    self.store._message(
+                        db,
+                        project["id"],
+                        "scheduler",
+                        "system",
+                        "「"
+                        + agent["name"]
+                        + "」申请更多权限："
+                        + str(request["reason"]).strip()
+                        + "。由机器主人或项目所有者发送 /allow "
+                        + agent["name"]
+                        + " 批准，或 /deny "
+                        + agent["name"]
+                        + " 拒绝。",
+                        None,
+                        None,
+                        "permission-request",
+                    )
                 if reply:
                     if not self.store.finalize_draft(db, task_id, reply, reply_to):
                         self.store._message(

@@ -777,7 +777,7 @@ Reply with one JSON object: {"reply": str, "messages": [{recipient, body}], "att
 - reply is the human-facing answer, without private reasoning or progress logs. messages are for distinct follow-ups only and never repeat reply.
 - attachments are project-relative paths: existing ordinary files inside the project, at most five, each at most 5 MB; never hidden files, credentials or paths outside it.
 - memory_notes only for durable facts from the public group; empty in a private turn.
-Use the tools your executor gives you; the stage names the humans' intent, not a limit. You may spawn your own sub-agents and remain responsible for the combined result. If something you need is denied, say what and why in reply.
+Use the tools your executor gives you; the stage names the humans' intent, not a limit. You may spawn your own sub-agents and remain responsible for the combined result. If something you need is denied, put request:{"reason": "..."} in the reply so a human can approve it with /allow.
 Never reveal a human's private message outside its conversation. Do not read credentials or contact outside parties unless the task says so.
 """
 
@@ -856,6 +856,11 @@ def reply_schema():
             ),
             "executions": array({"template": {"type": "string"}}),
             "memory_notes": {"type": "array", "items": {"type": "string"}},
+            # A request the human answers with /allow or /deny.
+            "request": {
+                "type": "object",
+                "properties": {"reason": {"type": "string"}, "scope": {"type": "string"}},
+            },
         }
     )
 
@@ -951,10 +956,17 @@ def run(job):
         ]
         prompt = "\n".join(sections)
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
+        try:
+            spec = json.loads(config["prompt"])
+            granted = spec.get("grants") or []
+        except ValueError:
+            granted = []
+        full_access = not command_project.get("local_control") or "full_access" in granted
+        command_project["_full_access"] = bool(full_access)
         env = executor_environment(
             ROOT,
             command_project.get("_stage"),
-            full_access=not command_project.get("local_control"),
+            full_access=full_access,
             network=command_project.get("network"),
         )
         with (path / "stderr.log").open("wb") as error:
