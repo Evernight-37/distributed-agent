@@ -81,7 +81,9 @@ async function boot() {
     S.server = status.server || "";
     S.autologin = status.autologin || null;
     if (status.unlocked) await enter();
-    else renderAuth("home");
+    // One local account goes straight to its unlock form, so the remember-me
+    // checkbox is the first thing on screen instead of one click away.
+    else renderAuth(S.profiles.length === 1 ? "login" : "home");
   } catch (e) {
     $("login").replaceChildren(
       el("h1", "", "正在连接应用…"),
