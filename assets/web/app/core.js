@@ -485,10 +485,7 @@ function renderAuth(mode = "home") {
     box.type = "checkbox";
     box.checked = !!(profile.value && S.autologin === profile.value);
     row.append(box, el("span", "", "下次自动登录这个账户"));
-    note(
-      form,
-      "记住的只是这一个账户；换账户或点“退出账户”都需要重新输入密码。密码由系统密钥（Windows DPAPI / macOS 钥匙串 / Linux Secret Service）保护，不会明文保存。",
-    );
+    form.append(row);
     profile.onchange = () => {
       box.checked = !!(profile.value && S.autologin === profile.value);
     };
