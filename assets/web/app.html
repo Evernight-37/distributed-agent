@@ -9,6 +9,7 @@
       content="default-src 'self' data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <link rel="stylesheet" href="styles/app.css" />
+    <link rel="stylesheet" href="vendor/katex/katex.min.css" />
   </head>
   <body>
     <div id="login" class="login"></div>
@@ -68,6 +69,10 @@
       </div>
     </div>
     <div id="toast" class="toast hidden" role="status"></div>
+    <script src="vendor/marked.min.js"></script>
+    <script src="vendor/purify.min.js"></script>
+    <script src="vendor/katex/katex.min.js"></script>
+    <script src="app/render.js"></script>
     <script src="app/core.js"></script>
     <script src="app/dashboard.js"></script>
     <script src="app/transfers.js"></script>

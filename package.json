@@ -4,7 +4,7 @@
   "description": "Developer tooling for the Foolship web interface",
   "scripts": {
     "format:check": "prettier --check \"assets/web/**/*.{html,css,js}\" \"tests/*.js\"",
-    "test": "node tests/test_web_syntax.js && node tests/test_ui.js"
+    "test": "node tests/test_web_syntax.js && node tests/test_web_render.js && node tests/test_ui.js"
   },
   "repository": {
     "type": "git",

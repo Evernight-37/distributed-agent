@@ -316,7 +316,8 @@ function renderProject() {
       name = el("div", "name", sender);
     if (m.mention_agent_name)
       name.append(el("span", "channel", "@" + m.mention_agent_name));
-    const body = el("p", "", m.body);
+    const body = el("div", "message-text");
+    FoolshipRender.render(body, m.body);
     streamMessageText(m, body, msgs);
     bubble.append(name, body, el("div", "muted small", date(m.created_at)));
     (m.attachments || []).forEach((file) =>
@@ -614,7 +615,11 @@ function renderProject() {
         "成员";
     row.append(
       el("div", "small muted", author + " · " + date(item.created_at)),
-      el("p", "", item.body),
+      (() => {
+        const report = el("div", "message-text");
+        FoolshipRender.render(report, item.body);
+        return report;
+      })(),
     );
     if (owner || item.author_id === me)
       row.append(

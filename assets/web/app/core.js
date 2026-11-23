@@ -83,44 +83,95 @@ function fileSize(bytes) {
     return (bytes / 1024 / 1024).toFixed(1) + " MB";
   return (bytes / 1024 / 1024 / 1024).toFixed(2) + " GB";
 }
-function attachmentCard(file, project) {
-  const card = el("div", "note attachment-card");
-  card.append(el("span", "", "📎 " + file.name + " · " + fileSize(file.size)));
+function attachmentKind(file) {
+  const mime = String(file.mime || "");
+  const name = String(file.name || "");
+  if (/^image\/(png|jpeg|gif|webp|bmp)$/.test(mime)) return "image";
+  if (/^application\/pdf$/.test(mime)) return "pdf";
   if (
-    ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.mime)
-  ) {
-    card.append(
-      button("预览图片", async () => {
-        const result = await api("attachment-get", {
-          project,
-          id: file.id,
-        });
-        if (
-          !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(
-            result.mime,
-          )
-        )
-          throw new Error("附件不是可预览的图片");
-        modal(file.name, (body) => {
-          const img = el("img");
-          img.alt = file.name;
-          img.src = "data:" + result.mime + ";base64," + result.base64;
-          img.style.maxWidth = "100%";
-          img.style.maxHeight = "65vh";
-          body.append(img);
-        });
+    /^text\//.test(mime) ||
+    /^application\/(json|xml|javascript|x-yaml|x-sh|toml)$/.test(mime) ||
+    /\.(md|txt|log|csv|tsv|json|ya?ml|toml|ini|cfg|py|js|ts|tsx|jsx|css|html|sh|ps1|bat)$/i.test(
+      name,
+    )
+  )
+    return "text";
+  return "file";
+}
+
+function decodeBase64Text(base64) {
+  const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+  return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+}
+
+/* A file under a message: preview when the browser can show it, save otherwise.
+ *
+ * Images are loaded as data URLs (the app's CSP allows `data:` and nothing
+ * remote). PDFs are not previewed inside the app: the app shell forbids frames,
+ * and opening them there would mean widening that policy for one file type.
+ */
+function attachmentCard(file, project) {
+  const kind = attachmentKind(file);
+  const icons = { image: "🖼", text: "📄", pdf: "📕", file: "📦" };
+  const card = el("div", "note attachment-card");
+  const head = el("div", "attachment-head");
+  head.append(
+    el("span", "attachment-icon", icons[kind]),
+    el("span", "attachment-name", file.name || "附件"),
+    el("span", "muted small", fileSize(file.size || 0)),
+  );
+  card.append(head);
+
+  const load = () => api("attachment-get", { project, id: file.id });
+  const preview = async (build) => {
+    const result = await load();
+    modal(file.name || "附件", (body) => build(body, result));
+  };
+
+  if (kind === "image") {
+    const thumb = el("img", "attachment-thumb");
+    thumb.alt = file.name || "附件";
+    thumb.loading = "lazy";
+    thumb.title = "点击查看大图";
+    card.append(thumb);
+    load()
+      .then((result) => {
+        thumb.src = "data:" + result.mime + ";base64," + result.base64;
+      })
+      .catch(() => thumb.remove());
+    thumb.addEventListener("click", () =>
+      preview((body, result) => {
+        const image = el("img", "attachment-preview-image");
+        image.alt = file.name || "附件";
+        image.src = "data:" + result.mime + ";base64," + result.base64;
+        body.append(image);
+      }).catch((error) => notify(error.message || "无法打开附件")),
+    );
+  }
+
+  const actions = el("div", "attachment-actions");
+  if (kind === "text") {
+    actions.append(
+      button("预览", async () => {
+        try {
+          await preview((body, result) => {
+            const text = el("pre", "attachment-preview");
+            text.textContent = decodeBase64Text(result.base64);
+            body.append(text);
+          });
+        } catch (error) {
+          notify(error.message || "无法打开附件");
+        }
       }),
     );
   }
-  card.append(
+  actions.append(
     button("下载", async () => {
-      const result = await api("attachment-save", {
-        project,
-        id: file.id,
-      });
+      const result = await api("attachment-save", { project, id: file.id });
       if (result.saved) notify("已保存：" + result.name);
     }),
   );
+  card.append(actions);
   return card;
 }
 function field(parent, label, value = "", options = null, type = "text") {
