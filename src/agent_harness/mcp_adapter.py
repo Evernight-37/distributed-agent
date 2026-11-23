@@ -146,6 +146,7 @@ class FoolshipMcpBackend:
         available = []
         unavailable = []
         projects = {}
+        names = {}
         service_ids = set()
         for server in self._services():
             try:
@@ -161,16 +162,24 @@ class FoolshipMcpBackend:
             available.append({"server": server, "data": data})
             for project in data.get("projects", []):
                 projects[project["id"]] = server
+                names[project.get("name") or project["id"]] = project["id"]
         self.project_servers = projects
+        self.project_names = names
         self.dashboard_cache = {"available": available, "unavailable": unavailable}
         self.last_dashboard = time.monotonic()
         return self.dashboard_cache
 
+    def _resolve(self, project):
+        """A project id, or the human-typed name mapped onto one."""
+        return self.project_names.get(project, project)
+
     def _project_server(self, project):
         self._dashboards()
+        project = self._resolve(project)
         server = self.project_servers.get(project)
         if not server:
             self._dashboards(force=True)
+            project = self._resolve(project)
             server = self.project_servers.get(project)
         if not server:
             raise ValueError("当前账户看不到这个项目，或其协作服务暂时离线")

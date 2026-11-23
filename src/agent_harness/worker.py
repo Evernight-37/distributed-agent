@@ -101,10 +101,10 @@ def set_root(root):
     return ROOT
 
 
-def executor_environment(root=None, stage=None, full_access=False, network=None):
+def executor_environment(root=None, stage=None, full_access=False, network=None, kind=None):
     """Build the exact environment used by the local executor and its login preflight."""
     root = ROOT if root is None else Path(root)
-    return executors.child_environment(root, stage, full_access, network)
+    return executors.child_environment(root, stage, full_access, network, kind)
 
 
 def codex_login_status(exe, root=None, kind=None):
@@ -925,6 +925,33 @@ export function apply(ctx, config) {
 """
 
 
+def contract_spec(config):
+    """The turn's structured context.
+
+    The receiver submits a wrapper: the stage plus an ``objective`` string that is
+    itself the JSON context (identity, task, grants, attachments). Reading the
+    wrapper alone silently loses every field the model can see, which is how a
+    granted permission never reached the sandbox.
+    """
+    try:
+        spec = json.loads(config.get("prompt") or "{}")
+    except ValueError:
+        return {}
+    if not isinstance(spec, dict):
+        return {}
+    objective = spec.get("objective")
+    if isinstance(objective, str):
+        try:
+            inner = json.loads(objective)
+        except ValueError:
+            inner = None
+        if isinstance(inner, dict):
+            merged = dict(inner)
+            merged.update({key: value for key, value in spec.items() if key != "objective"})
+            return merged
+    return spec
+
+
 def materialize_inbound(config, remote):
     """Copy the conversation's attachments into the agent's project directory.
 
@@ -932,10 +959,7 @@ def materialize_inbound(config, remote):
     each turn writes the files it was given into ``.foolship/inbound`` and lists
     them in the prompt. Nothing is written when the turn carried no attachments.
     """
-    try:
-        spec = json.loads(config.get("prompt") or "{}")
-    except ValueError:
-        return []
+    spec = contract_spec(config)
     wanted = [
         item for item in spec.get("attachments") or [] if isinstance(item, dict) and isinstance(item.get("id"), str)
     ]
@@ -1019,11 +1043,7 @@ def run(job):
         ]
         prompt = "\n".join(sections)
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
-        try:
-            spec = json.loads(config["prompt"])
-            granted = spec.get("grants") or []
-        except ValueError:
-            granted = []
+        granted = contract_spec(config).get("grants") or []
         full_access = not command_project.get("local_control") or "full_access" in granted
         command_project["_full_access"] = bool(full_access)
         env = executor_environment(
@@ -1031,6 +1051,7 @@ def run(job):
             command_project.get("_stage"),
             full_access=full_access,
             network=command_project.get("network"),
+            kind=kind,
         )
         with (path / "stderr.log").open("wb") as error:
             proc = subprocess.Popen(

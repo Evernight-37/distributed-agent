@@ -425,9 +425,7 @@ class Coordinator:
                         + " 批准，或 /deny "
                         + agent["name"]
                         + " 拒绝。",
-                        None,
-                        None,
-                        "permission-request",
+                        causal_task="permission-request",
                     )
                 if reply:
                     if not self.store.finalize_draft(db, task_id, reply, reply_to):
@@ -490,6 +488,24 @@ class Coordinator:
             if reply.casefold().startswith("[checkpoint]"):
                 self.store.log(db, "scheduler", "suppressed_checkpoint", {"task": task_id})
                 reply = ""
+            request = answer.get("request")
+            if isinstance(request, dict) and str(request.get("reason") or "").strip():
+                self.store._message(
+                    db,
+                    project["id"],
+                    "scheduler",
+                    "system",
+                    "「"
+                    + agent["name"]
+                    + "」申请更多权限："
+                    + str(request["reason"]).strip()
+                    + "。由机器主人或项目所有者发送 /allow "
+                    + agent["name"]
+                    + " 批准，或 /deny "
+                    + agent["name"]
+                    + " 拒绝。",
+                    causal_task="permission-request",
+                )
             from agent_harness.attachments import Attachments
 
             files = Attachments(self.store)

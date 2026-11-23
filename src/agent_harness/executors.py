@@ -397,7 +397,7 @@ def resolve_network(root, network=None):
     return proxy
 
 
-def child_environment(root, stage=None, full_access=False, network=None):
+def child_environment(root, stage=None, full_access=False, network=None, kind=None):
     """The exact environment one executor child process inherits.
 
     The proxy is resolved per turn from the agent's policy and the machine's
@@ -428,17 +428,17 @@ def child_environment(root, stage=None, full_access=False, network=None):
     proxy = resolve_network(root, network)
     if proxy is not None:
         env = apply_local_proxy(env, proxy)
-    env.update(environment(root, stage, full_access))
+    env.update(environment(root, stage, full_access, kind))
     return env
 
 
-def environment(root, stage=None, full_access=False):
+def environment(root, stage=None, full_access=False, kind=None):
     """Extra child-process environment for one turn of the selected executor.
 
     DSH reads its sandbox mode from ``DSH_PERMISSION_MODE``; Codex receives the
     equivalent as command-line flags instead.
     """
-    if selected(root) != DSH:
+    if (kind or selected(root)) != DSH:
         return {}
     # The stage says what the humans expect, not what the model may do. Only the
     # machine owner's grant widens the sandbox beyond the workspace.

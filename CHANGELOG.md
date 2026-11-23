@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.16.10 - 2026-11-23
+
+实测暴露的两个解析/传递错误，都修了：
+
+- **契约解析错误**：接收端拿到的是包装层 `{"stage": ..., "objective": "<真正的上下文 JSON>"}`，而 worker 直接 `json.loads(config["prompt"])` 读顶层。于是 `grants` 和 `attachments` 永远是空的——agent 在契约里能看到 `full_access`，沙箱却拿不到。现在 `contract_spec()` 会拆开 `objective` 再合并。
+- **环境变量给了错的执行器**：`environment()` 用"保存的选择"（`selected(root)`）判断是不是 DSH，而不是本回合实际启动的那个（`kind`）。模型表选的是 DSH、保存的选择不是时，`DSH_PERMISSION_MODE` 从来没被设置过。现在由 `kind` 决定。
+
 ## 2.16.9 - 2026-11-23
 
 - **回复工具补上 `request` 参数**。第一次实测时 agent 确实被沙箱拒绝了写入，但只能把原因写进 `reply`——因为 `foolship_reply` 的参数里没有 `request` 字段。现在它可以直接申请权限，群里会出现 `/allow` 提示。
