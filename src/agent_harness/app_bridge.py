@@ -1189,6 +1189,38 @@ class AppBridge:
             executor["warm_idle_seconds"] = seconds
             write_json(path, executor)
 
+    def _ensure_receivers(self):
+        """Restart receivers whose deployed code is from an earlier build.
+
+        A receiver keeps running across an upgrade, so its turn worker would stay
+        on the previous build until something restarts it. Comparing the version it
+        was deployed with against the running application makes the upgrade take
+        effect on the next login.
+        """
+        from agent_harness.desktop_runtime import DesktopRuntime, version_path
+
+        target = version_path()
+        if target is None:
+            return
+        try:
+            wanted = target.read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+        for path in sorted((self.root / "receivers").glob("device-*")):
+            if not path.is_dir():
+                continue
+            marker = path / "VERSION"
+            try:
+                recorded = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
+            except OSError:
+                recorded = ""
+            if recorded == wanted:
+                continue
+            try:
+                DesktopRuntime(path).start()
+            except Exception:
+                continue
+
     def _enroll(self, server=None):
         server = server or self.profile["server"]
         runtime = self._runtime(server)

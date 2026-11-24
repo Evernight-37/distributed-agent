@@ -217,6 +217,7 @@ class DesktopIdentityActions:
                     bridge._enroll() if server == bridge.profile["server"] else bridge._enroll(server)
                 except (OSError, RuntimeError, ValueError):
                     pass
+            bridge._ensure_receivers()
             try:
                 bridge._retry_mcp_revocations()
             except (OSError, RuntimeError, ValueError, PermissionError):
