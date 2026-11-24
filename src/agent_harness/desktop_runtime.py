@@ -66,6 +66,17 @@ def assets():
 
 
 def web_assets():
+    """Where the window loads its HTML and scripts from.
+
+    A frozen build keeps the current web assets in ``_internal/web``, which every
+    installer and portable upgrade replaces. The deployed runtime bundle is a
+    content-addressed copy of the *service* files, so its ``web`` directory can
+    lag behind the UI: prefer the bundled one whenever it exists.
+    """
+    if getattr(sys, "frozen", False):
+        bundled = Path(sys.executable).resolve().parent / "_internal" / "web"
+        if (bundled / "app.html").is_file():
+            return bundled
     root = assets()
     return root / "web" if (root / "web").is_dir() else root.parents[1] / "assets" / "web"
 

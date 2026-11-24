@@ -1473,18 +1473,6 @@ button.primary:hover {
     background-position: -200% 0;
   }
 }
-.remember-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--muted);
-  margin: 2px 0 10px;
-  cursor: pointer;
-}
-.remember-row input {
-  margin: 0;
-}
 
 .auth-foot {
   display: flex;
@@ -1495,20 +1483,4 @@ button.primary:hover {
 .auth-foot .auth-back {
   width: auto;
   margin: 0;
-}
-.remember-row {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  width: 100%;
-  margin: 10px 0 4px;
-  font-size: 13px;
-  color: var(--muted);
-  white-space: nowrap;
-  cursor: pointer;
-}
-.remember-row input {
-  margin: 0;
-  flex: none;
 }

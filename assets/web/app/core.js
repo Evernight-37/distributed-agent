@@ -476,20 +476,25 @@ function renderAuth(mode = "home") {
   password.autocomplete =
     mode === "login" ? "current-password" : "new-password";
   // Remembering is per account: the box follows the remembered profile and is
-  // re-evaluated whenever another account is selected.
+  // re-evaluated whenever another account is selected. Every layout property is
+  // stated inline because this form's container ignores stylesheet intent.
   let remember = null;
   if (mode === "login") {
-    const row = el("label", "remember-row");
     const box = el("input");
     box.type = "checkbox";
     box.checked = !!(profile.value && S.autologin === profile.value);
-    // Inline layout: the card's stylesheet fights a class here, and the checkbox
-    // must sit on the left edge of the field column, next to its label.
-    row.style.cssText =
-      "display:flex;align-items:center;justify-content:flex-start;gap:8px;width:100%;margin:10px 0 4px;font-size:13px;color:var(--muted);white-space:nowrap;cursor:pointer";
-    box.style.cssText = "margin:0;flex:none";
-    row.append(box, el("span", "", "下次自动登录"));
-    form.append(row);
+    // The stylesheet makes every input 100% wide, so the checkbox itself has to
+    // opt out: otherwise it is a 251px box with the glyph centred inside.
+    box.style.cssText =
+      "margin:0 6px 0 0;width:auto;min-width:0;flex:0 0 auto;vertical-align:-2px";
+    const inline = el("div", "remember-line");
+    inline.style.cssText =
+      "display:flex;flex-direction:row;align-items:center;justify-content:flex-start;align-self:stretch;" +
+      "width:100%;max-width:100%;box-sizing:border-box;text-align:left;float:none;clear:both;" +
+      "margin:8px 0 0;padding:0;font-weight:400;font-size:12px;letter-spacing:0;text-transform:none;" +
+      "color:var(--muted);white-space:nowrap;cursor:pointer";
+    inline.append(box, el("span", "", "下次自动登录"));
+    form.append(inline);
     profile.onchange = () => {
       box.checked = !!(profile.value && S.autologin === profile.value);
     };
