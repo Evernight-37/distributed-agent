@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.16.21 - 2026-11-25
+
+**授权后 shell 终于能写到项目外了**——修法来自 Codex（GPT）的独立诊断，比我此前的方向准确。
+
+- 真正的原因：**DSH 续接会话时，会话里记录的权限优先于部署默认**。我们原来靠 `sandbox-mode.txt` + 清空 `thread_id` 来绕，但清空发生在拼命令**之后**，进程仍带着旧的 `--session-id` 启动，所以权限一直停在 `workspace-write`。
+- 新做法：每回合显式给 DSH 传 `--permission-mode workspace-write|danger-full-access --approval-policy never`。续接同一个会话也能当轮切换权限，撤销后立刻恢复受限。
+- 删掉了 `sandbox-mode.txt` 与会话重置那套脆弱逻辑。
+- 新增用例：同一会话 id 连续跑"默认 → 批准 → 撤销"三轮，断言 `--permission-mode` 与 `sandbox-policy.mode` 每轮都跟着授权走。
+
 ## 2.16.20 - 2026-11-25
 
 - **登录时自动重启"老版本"的接收端**。接收端是独立进程，升级应用不会替换它正在用的代码，所以之前每次都要手动重启才生效。现在登录后会比对接收端部署时的 `VERSION` 与当前应用版本，不一致就停掉并重启它（一致则什么都不做）。

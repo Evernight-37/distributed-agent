@@ -432,6 +432,10 @@ def child_environment(root, stage=None, full_access=False, network=None, kind=No
     return env
 
 
+def _dsh_permission_mode(full_access):
+    return "danger-full-access" if full_access else "workspace-write"
+
+
 def environment(root, stage=None, full_access=False, kind=None):
     """Extra child-process environment for one turn of the selected executor.
 
@@ -442,8 +446,7 @@ def environment(root, stage=None, full_access=False, kind=None):
         return {}
     # The stage says what the humans expect, not what the model may do. Only the
     # machine owner's grant widens the sandbox beyond the workspace.
-    mode = "danger-full-access" if full_access else "workspace-write"
-    return {"DSH_PERMISSION_MODE": mode}
+    return {"DSH_PERMISSION_MODE": _dsh_permission_mode(full_access)}
 
 
 def requested_model(root, project_model, kind=None):
@@ -538,7 +541,7 @@ def _dsh_patch(root, model, effort=None, scratch=None, full_access=False):
             {
                 "id": "sandbox-policy",
                 "config": {
-                    "mode": "danger-full-access" if full_access else "workspace-write",
+                    "mode": _dsh_permission_mode(full_access),
                     # The sandbox gives each writable path its own untrusted SID,
                     # so a hand-written group ACE never applies; naming the root
                     # here is what makes the harness file tools writable there.
@@ -622,14 +625,18 @@ def codex_command(exe, project, thread_id, managed=False, schema_path=None):
 def dsh_command(root, exe, project, thread_id, scratch):
     """DSH one-shot invocation that reads the task from stdin."""
     model = requested_model(root, project["model"])
+    full_access = bool(project.get("_full_access"))
     scratch = Path(scratch)
     scratch.mkdir(parents=True, exist_ok=True)
     patch_path = scratch / "dsh-patch.json"
     write_json(
         patch_path,
-        _dsh_patch(root, model, project.get("effort"), scratch, bool(project.get("_full_access"))),
+        _dsh_patch(root, model, project.get("effort"), scratch, full_access),
     )
     args = [exe, "--profile", DSH_PROFILE, "--patch", str(patch_path), "--json"]
+    # A resumed session's saved permissions outrank the deployment defaults.
+    # Apply the current grant explicitly on every invocation, including revocation.
+    args += ["--permission-mode", _dsh_permission_mode(full_access), "--approval-policy", "never"]
     if thread_id:
         args += ["--session-id", _dsh_session_id(thread_id)]
     # ``-`` is the task, read from stdin like the prompt file the worker opens.

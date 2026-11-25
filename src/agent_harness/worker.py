@@ -1050,18 +1050,6 @@ def run(job):
         ]
         prompt = "\n".join(sections)
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
-        # A session logs the sandbox mode it started with, and that log outranks
-        # the deployment default on every later turn. Resuming a session created
-        # under workspace-write therefore ignores a newly granted full_access, so
-        # a mode change starts a fresh session instead.
-        required_mode = "danger-full-access" if full_access else "workspace-write"
-        marker = directory / "sandbox-mode.txt" if directory is not None else None
-        previous_mode = marker.read_text(encoding="utf-8").strip() if marker and marker.is_file() else ""
-        if previous_mode and previous_mode != required_mode and config.get("thread_id"):
-            config["thread_id"] = None
-        if marker is not None:
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text(required_mode, encoding="utf-8")
         env = executor_environment(
             ROOT,
             command_project.get("_stage"),

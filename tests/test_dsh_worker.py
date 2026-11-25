@@ -151,8 +151,8 @@ class DshWorkerTurnTests(unittest.TestCase):
             "local_control": True,
         }
 
-    def _job(self, thread_id=None, channel=None, prompt=None):
-        job = worker.job_dir("job1")
+    def _job(self, thread_id=None, channel=None, prompt=None, job_id="job1"):
+        job = worker.job_dir(job_id)
         job.mkdir(parents=True)
         request = {
             "project": self._project(),
@@ -264,6 +264,36 @@ class DshWorkerTurnTests(unittest.TestCase):
         worker.run("job1")
         self.assertEqual(read_json(self.record)["argv"][-3:], ["--session-id", first, "-"])
         self.assertEqual(read_json(job / "state.json")["status"], "needs_review")
+
+    def test_dsh_resume_applies_grant_and_revocation_to_the_same_session(self):
+        thread_id = None
+        turns = (
+            ("baseline", [], "workspace-write"),
+            ("approved", ["full_access"], "danger-full-access"),
+            ("revoked", [], "workspace-write"),
+        )
+        for job_id, grants, mode in turns:
+            with self.subTest(job=job_id):
+                objective = json.dumps({"grants": grants, "instructions": "Check permissions"})
+                contract = {"stage": "discuss", "objective": objective}
+                job = self._job(thread_id=thread_id, channel="group", prompt=json.dumps(contract), job_id=job_id)
+                worker.run(job_id)
+
+                record = read_json(self.record)
+                argv = record["argv"]
+                self.assertEqual(argv[argv.index("--permission-mode") + 1], mode)
+                self.assertEqual(argv[argv.index("--approval-policy") + 1], "never")
+                self.assertEqual(record["permission"], mode)
+                sandbox = next(row["config"] for row in record["patch"] if row["id"] == "sandbox-policy")
+                self.assertEqual(sandbox["mode"], mode)
+                if thread_id:
+                    self.assertEqual(argv[argv.index("--session-id") + 1], thread_id)
+                else:
+                    self.assertNotIn("--session-id", argv)
+                state = read_json(job / "state.json")
+                self.assertEqual(state["status"], "needs_review")
+                thread_id = state["thread_id"] if thread_id is None else thread_id
+                self.assertEqual(state["thread_id"], thread_id)
 
     def test_managed_turn_uses_the_group_contract_without_a_schema(self):
         job = self._job(channel="chat1")
