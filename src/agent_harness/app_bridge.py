@@ -13,6 +13,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from agent_harness.common import lock, read_json, validate_local_proxy, write_json
+from agent_harness.hub_api import account_response
 from agent_harness.protocol import ensure_hub_compatible
 from agent_harness.desktop_runtime import DesktopRuntime, assets, python_command
 from agent_harness.desktop_api import (
@@ -138,11 +139,7 @@ class AppBridge:
             raise RuntimeError(
                 "无法连接协作服务 " + server + "。请检查该电脑的服务是否运行，以及 Tailscale 是否已连接。"
             ) from None
-        if not isinstance(result, dict):
-            raise RuntimeError("协作服务返回了无效数据")
-        if "error" in result:
-            raise RuntimeError(result["error"])
-        value = result.get("result", result) if result.get("ok") is True else result
+        value = account_response(data, result)
         if data.get("action") == "challenge":
             ensure_hub_compatible(value)
         return value
@@ -384,6 +381,8 @@ class AppBridge:
             raise RuntimeError("托管端尚不支持附件。请将协作服务升级到当前版本并重启后再试。")
         if operation.startswith("transfer-") and "device_file_transfers_v1" not in features:
             raise RuntimeError("协作服务尚不支持文件速传。请将托管端升级到当前版本并重启后再试。")
+        if operation == "project-work" and "project_work_v1" not in features:
+            raise RuntimeError("协作服务尚不支持项目任务。请升级托管端并重启协作服务。")
         if (
             operation
             in {

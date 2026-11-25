@@ -14,7 +14,7 @@ from pathlib import Path
 from agent_harness.common import lock
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 11
 BACKUP_RETENTION = 5
 
 
@@ -161,6 +161,163 @@ CREATE TABLE IF NOT EXISTS permission_requests(
     decided_at REAL
 );
 CREATE INDEX IF NOT EXISTS permission_requests_agent ON permission_requests(agent_id,state);
+"""
+
+SCHEMA_V9 = """
+CREATE TABLE IF NOT EXISTS mcp_approval_policies(
+    project_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('permission','attachment','execution')),
+    PRIMARY KEY(project_id,owner_id,kind),
+    FOREIGN KEY(project_id,owner_id) REFERENCES project_users(project_id,user_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS execution_approval_decisions(
+    job_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    approved INTEGER NOT NULL CHECK(approved IN (0,1)),
+    decided_at REAL NOT NULL
+);
+"""
+
+SCHEMA_V10 = """
+CREATE TABLE IF NOT EXISTS task_trace(
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    parent_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    wake_source_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    node TEXT NOT NULL,
+    node_name TEXT,
+    delivery_conversation_id TEXT
+);
+CREATE INDEX IF NOT EXISTS task_trace_wake_source ON task_trace(wake_source_id) WHERE parent_task_id IS NOT NULL;
+"""
+
+SCHEMA_V11 = """
+CREATE TABLE IF NOT EXISTS project_work_drafts(
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    creator_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    visibility TEXT NOT NULL CHECK(visibility IN ('group','private')),
+    status TEXT NOT NULL CHECK(status IN ('draft','confirmed')),
+    current_revision INTEGER NOT NULL CHECK(current_revision > 0),
+    prepared_by_admin INTEGER NOT NULL DEFAULT 0 CHECK(prepared_by_admin IN (0,1)),
+    confirmed_work_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS project_work_drafts_project
+    ON project_work_drafts(project_id,status,updated_at);
+CREATE TABLE IF NOT EXISTS project_work_draft_revisions(
+    draft_id TEXT NOT NULL REFERENCES project_work_drafts(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    title TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    deliverable TEXT NOT NULL,
+    acceptance TEXT NOT NULL,
+    validation TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    allowed_files TEXT NOT NULL,
+    stage TEXT NOT NULL CHECK(stage IN ('discuss','implement')),
+    created_by TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY(draft_id,revision)
+);
+CREATE TABLE IF NOT EXISTS project_work_draft_references(
+    draft_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    PRIMARY KEY(draft_id,revision,message_id),
+    FOREIGN KEY(draft_id,revision) REFERENCES project_work_draft_revisions(draft_id,revision) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS project_work_items(
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    draft_id TEXT,
+    draft_revision INTEGER,
+    creator_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    visibility TEXT NOT NULL CHECK(visibility IN ('group','private')),
+    title TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    deliverable TEXT NOT NULL,
+    acceptance TEXT NOT NULL,
+    validation TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    allowed_files TEXT NOT NULL,
+    stage TEXT NOT NULL CHECK(stage IN ('discuss','implement')),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+    status TEXT NOT NULL CHECK(status IN ('queued','running','waiting','delivered','accepted','blocked')),
+    status_reason TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY(draft_id,draft_revision) REFERENCES project_work_draft_revisions(draft_id,revision)
+);
+CREATE TABLE IF NOT EXISTS project_work_item_revisions(
+    work_id TEXT NOT NULL REFERENCES project_work_items(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    title TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    deliverable TEXT NOT NULL,
+    acceptance TEXT NOT NULL,
+    validation TEXT NOT NULL,
+    allowed_files TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY(work_id,revision)
+);
+CREATE INDEX IF NOT EXISTS project_work_items_project
+    ON project_work_items(project_id,status,updated_at);
+CREATE TABLE IF NOT EXISTS project_work_inputs(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_id TEXT NOT NULL REFERENCES project_work_items(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('reference','follow-up','reopen','scope-update')),
+    body TEXT,
+    message_id INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+    actor_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    CHECK((kind='reference' AND message_id IS NOT NULL AND body IS NULL) OR
+          (kind IN ('follow-up','reopen','scope-update') AND body IS NOT NULL AND message_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS project_work_inputs_work ON project_work_inputs(work_id,id);
+CREATE TABLE IF NOT EXISTS project_work_executions(
+    id TEXT PRIMARY KEY,
+    work_id TEXT NOT NULL REFERENCES project_work_items(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+    state TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    input_cutoff INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    finished_at REAL
+);
+CREATE INDEX IF NOT EXISTS project_work_executions_work ON project_work_executions(work_id,created_at);
+CREATE TABLE IF NOT EXISTS project_work_deliveries(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_id TEXT NOT NULL REFERENCES project_work_items(id) ON DELETE CASCADE,
+    execution_id TEXT NOT NULL REFERENCES project_work_executions(id) ON DELETE CASCADE,
+    summary TEXT NOT NULL,
+    links TEXT NOT NULL,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_work_requests(
+    project_id TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    client_request_id TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    result_kind TEXT NOT NULL,
+    result_id TEXT NOT NULL,
+    result_revision INTEGER,
+    PRIMARY KEY(project_id,actor_id,client_request_id)
+);
+CREATE TABLE IF NOT EXISTS project_work_draft_discussion(
+    message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    draft_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    FOREIGN KEY(draft_id,revision) REFERENCES project_work_draft_revisions(draft_id,revision) ON DELETE CASCADE
+);
 """
 
 
@@ -342,6 +499,13 @@ def migrate_database(database, backup_root=None):
                 and layout_current
                 and connection.execute("SELECT 1 FROM sqlite_master WHERE name='attachment_approvals'").fetchone()
                 and connection.execute("SELECT 1 FROM sqlite_master WHERE name='permission_requests'").fetchone()
+                and connection.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                    "AND name IN ('mcp_approval_policies','execution_approval_decisions')"
+                ).fetchone()[0]
+                == 2
+                and connection.execute("SELECT 1 FROM sqlite_master WHERE name='task_trace'").fetchone()
+                and connection.execute("SELECT 1 FROM sqlite_master WHERE name='project_work_items'").fetchone()
             ):
                 _integrity(connection)
                 _private(database)
@@ -471,6 +635,46 @@ def migrate_database(database, backup_root=None):
                         (8, time.time()),
                     )
                     connection.execute("PRAGMA user_version=8")
+                if (
+                    current < 9
+                    or connection.execute(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                        "AND name IN ('mcp_approval_policies','execution_approval_decisions')"
+                    ).fetchone()[0]
+                    != 2
+                ):
+                    for statement in SCHEMA_V9.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+                        (9, time.time()),
+                    )
+                    connection.execute("PRAGMA user_version=9")
+                if (
+                    current < 10
+                    or not connection.execute("SELECT 1 FROM sqlite_master WHERE name='task_trace'").fetchone()
+                ):
+                    for statement in SCHEMA_V10.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+                        (10, time.time()),
+                    )
+                    connection.execute("PRAGMA user_version=10")
+                if (
+                    current < 11
+                    or not connection.execute("SELECT 1 FROM sqlite_master WHERE name='project_work_items'").fetchone()
+                ):
+                    for statement in SCHEMA_V11.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+                        (11, time.time()),
+                    )
+                    connection.execute("PRAGMA user_version=11")
                 connection.commit()
                 _integrity(connection)
                 connection.execute("PRAGMA journal_mode=WAL")

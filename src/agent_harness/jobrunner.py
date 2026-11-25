@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_harness.common import identifier, lock, read_json, tail, write_json
+from agent_harness.execution_approvals import execution_digest
 
 TERMINAL = {"completed", "failed", "cancelled", "timed_out", "interrupted"}
 
@@ -268,18 +269,27 @@ def rpc(root, request):
             write_json(_project(root, project["name"]) / "execution_templates.json", checked)
         return {"project": project["name"], "templates": checked}
     if action == "execution_start":
-        project = read_json(_project(root, request["project"]) / "project.json")
-        if not project:
-            raise ValueError("Unknown project")
         execution_id = identifier(request["execution"])
         path = _execution(root, execution_id)
         with lock(root / "registry.lock"):
+            project = read_json(_project(root, request["project"]) / "project.json")
+            if not project:
+                raise ValueError("Unknown project")
             if path.exists():
                 raise ValueError("Execution already exists")
             templates = read_json(_project(root, project["name"]) / "execution_templates.json", {})
-            template = templates.get(request.get("template"))
+            template_name = request.get("template")
+            template = templates.get(template_name)
             if not template:
                 raise ValueError("Unknown execution template")
+            if "expected_execution_digest" in request and request["expected_execution_digest"] != execution_digest(
+                project, template_name, template
+            ):
+                return {
+                    "execution": execution_id,
+                    "status": "failed",
+                    "error": "Approved execution snapshot changed; submit a new request",
+                }
             request_data = {
                 "execution": execution_id,
                 "project": project["name"],

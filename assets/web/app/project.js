@@ -61,6 +61,416 @@ function conversationParticipants(conversation) {
     typeof p === "object" ? p.id || p.agent_id || p.user_id : p,
   );
 }
+function projectClientRequestId() {
+  return (
+    globalThis.crypto?.randomUUID?.() ||
+    "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = Math.floor(Math.random() * 16);
+      return (c === "x" ? r : (r & 3) | 8).toString(16);
+    })
+  );
+}
+function projectWorkRequest(action, fields = {}, clientRequestId) {
+  return api("project-work", {
+    project: S.project,
+    action,
+    client_request_id: clientRequestId || projectClientRequestId(),
+    ...fields,
+  });
+}
+function projectWorkHandler(action, fields, complete) {
+  const clientRequestId = projectClientRequestId();
+  let pending = false;
+  return async () => {
+    if (pending) return;
+    pending = true;
+    try {
+      await projectWorkRequest(action, fields(), clientRequestId);
+      await complete?.();
+    } finally {
+      pending = false;
+    }
+  };
+}
+async function refreshProjectWork(project = S.project) {
+  if (!project || S.project !== project) return;
+  const view = await api("project", { id: project, visit: false });
+  if (S.project !== project) return;
+  S.view = view;
+  renderProject();
+}
+function projectWorkFields(body, view, task = {}) {
+  return {
+    title: field(body, "标题", task.title || ""),
+    instructions: field(body, "工作说明", task.instructions || task.body || ""),
+    deliverable: field(body, "交付物", task.deliverable || ""),
+    acceptance: field(body, "验收标准", task.acceptance || ""),
+    validation: field(body, "验证命令", task.validation || ""),
+    allowed_files: field(body, "允许修改的文件", task.allowed_files || ""),
+    agent: field(body, "负责人", task.agent || task.agent_id || "", [
+      ["", "选择 Agent"],
+      ...(view.members || []).map((agent) => [
+        agent.id,
+        agent.name || agent.id,
+      ]),
+    ]),
+    stage: field(body, "阶段", task.stage || "implement", [
+      ["discuss", "讨论"],
+      ["implement", "实现"],
+    ]),
+    visibility: field(body, "可见范围", task.visibility || "group", [
+      ["group", "项目成员"],
+      ["private", "仅相关成员"],
+    ]),
+  };
+}
+function projectWorkValues(controls) {
+  return Object.fromEntries(
+    Object.entries(controls).map(([key, control]) => [
+      key,
+      String(control.value).trim(),
+    ]),
+  );
+}
+function openProjectWorkForm(view, options = {}) {
+  const source = options.draft || options.task || {},
+    project = view.project.id;
+  modal(options.draft ? "审阅工作草稿" : "创建项目工作", (body, actions) => {
+    const controls = projectWorkFields(body, view, source);
+    if (options.draft || source.visibility === "private")
+      controls.visibility.disabled = true;
+    if (!options.draft && source.visibility === "private" && source.agent)
+      controls.agent.disabled = true;
+    const initial = JSON.stringify(projectWorkValues(controls));
+    const changed = () =>
+      JSON.stringify(projectWorkValues(controls)) !== initial;
+    appendProjectMessageReferences(
+      body,
+      view,
+      options.draft?.reference_message_ids || [],
+      "草稿依据",
+    );
+    actions.append(button("取消", closeModal));
+    if (options.draft) {
+      note(
+        body,
+        "草稿版本 " +
+          options.draft.revision +
+          "。修改后须先保存新版本，不能直接确认。",
+      );
+      if (options.draft.can_edit === false) {
+        Object.values(controls).forEach((control) => (control.disabled = true));
+        note(body, "你可以查看此草稿，但不能修改或确认。");
+        return;
+      }
+      actions.append(
+        button("继续讨论", () =>
+          openProjectWorkTextAction("继续讨论草稿", "draft-discuss", {
+            project,
+            draft_id: options.draft.id,
+            revision: options.draft.revision,
+          }),
+        ),
+        button(
+          "保存新版本",
+          projectWorkHandler(
+            "revise",
+            () => {
+              if (!changed()) throw Error("任务内容没有变化");
+              return {
+                project,
+                draft_id: options.draft.id,
+                revision: options.draft.revision,
+                ...projectWorkValues(controls),
+              };
+            },
+            async () => {
+              closeModal();
+              await refreshProjectWork(project);
+              notify("新版本已保存，请重新核对后确认。");
+            },
+          ),
+        ),
+        button(
+          "确认此版本",
+          projectWorkHandler(
+            "confirm",
+            () => {
+              if (changed())
+                throw Error("内容已修改，请先保存新版本并重新核对");
+              return {
+                project,
+                draft_id: options.draft.id,
+                revision: options.draft.revision,
+              };
+            },
+            async () => {
+              closeModal();
+              await refreshProjectWork(project);
+            },
+          ),
+          "primary",
+        ),
+      );
+    } else
+      actions.append(
+        button(
+          "创建",
+          projectWorkHandler(
+            "create",
+            () => {
+              const values = projectWorkValues(controls);
+              if (!values.title || !values.instructions || !values.agent)
+                throw Error("请填写标题、工作说明并选择负责人");
+              return {
+                project,
+                ...values,
+                ...(options.conversation_id &&
+                (values.visibility === "group" ||
+                  source.visibility === "private")
+                  ? { conversation_id: options.conversation_id }
+                  : {}),
+                ...(options.source_message_id
+                  ? { source_message_id: options.source_message_id }
+                  : {}),
+              };
+            },
+            async () => {
+              closeModal();
+              await refreshProjectWork(project);
+            },
+          ),
+          "primary",
+        ),
+      );
+  });
+}
+function openProjectWorkTextAction(title, action, target) {
+  modal(title, (body, actions) => {
+    const input = field(body, "内容", "");
+    actions.append(
+      button("取消", closeModal),
+      button(
+        "提交",
+        projectWorkHandler(
+          action,
+          () => {
+            if (!input.value.trim()) throw Error("请填写内容");
+            return {
+              ...target,
+              body: input.value.trim(),
+            };
+          },
+          async () => {
+            closeModal();
+            await refreshProjectWork(target.project);
+          },
+        ),
+        "primary",
+      ),
+    );
+  });
+}
+
+function openProjectWorkReference(project, work) {
+  modal("引用项目消息", (body, actions) => {
+    const input = field(body, "消息编号", "", null, "number");
+    actions.append(
+      button("取消", closeModal),
+      button(
+        "引用",
+        projectWorkHandler(
+          "reference",
+          () => {
+            const messageId = Number(input.value);
+            if (!Number.isInteger(messageId)) throw Error("请输入消息编号");
+            return {
+              project,
+              work_id: work.id,
+              message_id: messageId,
+            };
+          },
+          async () => {
+            closeModal();
+            await refreshProjectWork(project);
+          },
+        ),
+        "primary",
+      ),
+    );
+  });
+}
+
+function openProjectWorkScope(project, work) {
+  modal("修改工作范围", (body, actions) => {
+    const controls = {
+      title: field(body, "标题", work.title || ""),
+      instructions: field(body, "工作说明", work.instructions || ""),
+      deliverable: field(body, "交付物", work.deliverable || ""),
+      acceptance: field(body, "验收标准", work.acceptance || ""),
+      validation: field(body, "验证命令", work.validation || ""),
+      allowed_files: field(body, "允许修改的文件", work.allowed_files || ""),
+    };
+    const revision = work.revision;
+    note(
+      body,
+      "当前版本 · " + revision + "。保存时会核对版本，避免覆盖其他修改。",
+    );
+    actions.append(
+      button("取消", closeModal),
+      button(
+        "保存范围",
+        projectWorkHandler(
+          "update-scope",
+          () => {
+            const values = projectWorkValues(controls);
+            if (!values.title || !values.instructions)
+              throw Error("请填写标题和工作说明");
+            return { project, work_id: work.id, revision, ...values };
+          },
+          async () => {
+            closeModal();
+            await refreshProjectWork(project);
+          },
+        ),
+        "primary",
+      ),
+    );
+  });
+}
+
+function openProjectWorkDetail(view, work) {
+  const project = view.project.id;
+  modal(work.title || "项目工作", (body, actions) => {
+    const agent = (view.members || []).find(
+      (item) => item.id === (work.agent || work.agent_id),
+    );
+    const status =
+      {
+        queued: "排队中",
+        running: "执行中",
+        waiting: "等待中",
+        delivered: "已交付",
+        accepted: "已验收",
+        blocked: "受阻",
+      }[work.status] ||
+      work.status ||
+      "未知";
+    const revision = work.revision;
+    body.append(
+      el("div", "setting-row", "状态 · " + status),
+      el("div", "setting-row", "版本 · " + (revision ?? "—")),
+      el(
+        "div",
+        "setting-row",
+        "负责人 · " + (agent?.name || work.agent || work.agent_id || ""),
+      ),
+      el("p", "", work.instructions || ""),
+      el("div", "setting-row", "交付物 · " + (work.deliverable || "未填写")),
+      el("div", "setting-row", "验收标准 · " + (work.acceptance || "未填写")),
+      el("div", "setting-row", "验证 · " + (work.validation || "未填写")),
+    );
+    if (work.status_reason) body.append(el("p", "muted", work.status_reason));
+    (work.deliveries || []).forEach((delivery) => {
+      const card = el(
+        "div",
+        "task",
+        "交付 · " + (delivery.summary || delivery.body || delivery.id || ""),
+      );
+      (delivery.links || []).forEach((value) => {
+        const raw = typeof value === "string" ? value : value?.url;
+        if (!raw) return;
+        try {
+          const url = new URL(raw);
+          if (["http:", "https:"].includes(url.protocol)) {
+            const link = el("a", "link small", value.label || url.href);
+            link.href = url.href;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            card.append(link);
+            return;
+          }
+        } catch {}
+        card.append(el("div", "small", raw));
+      });
+      if (delivery.message_id)
+        appendProjectMessageReferences(
+          card,
+          view,
+          [delivery.message_id],
+          "交付消息",
+        );
+      body.append(card);
+    });
+    const referenceIds = [];
+    (work.inputs || []).forEach((input) => {
+      if (input.message_id) referenceIds.push(input.message_id);
+      else
+        body.append(
+          el(
+            "div",
+            "task",
+            "补充信息 · " + (input.body || input.kind || input.id || ""),
+          ),
+        );
+    });
+    appendProjectMessageReferences(body, view, referenceIds, "引用消息");
+    (work.executions || []).forEach((execution) => {
+      const row = el(
+        "div",
+        "task",
+        "执行记录 · " +
+          (execution.state || execution.status || execution.id || ""),
+      );
+      if (execution.error)
+        row.append(el("div", "error small", execution.error));
+      body.append(row);
+    });
+    const textAction = (label, action) =>
+      button(label, () =>
+        openProjectWorkTextAction(label + "项目工作", action, {
+          project,
+          work_id: work.id,
+        }),
+      );
+    actions.append(button("关闭", closeModal));
+    if (work.can_manage !== false && work.status !== "accepted")
+      actions.append(
+        button("修改范围", () => openProjectWorkScope(project, work)),
+      );
+    if (
+      work.can_manage !== false &&
+      ["queued", "running", "waiting", "blocked", "delivered"].includes(
+        work.status,
+      )
+    )
+      actions.append(textAction("继续", "follow-up"));
+    if (work.can_manage !== false)
+      actions.append(
+        button("引用消息", () => openProjectWorkReference(project, work)),
+      );
+    if (work.can_manage !== false && work.status === "delivered")
+      actions.append(
+        button(
+          "验收",
+          projectWorkHandler(
+            "accept",
+            () => ({ project, work_id: work.id }),
+            async () => {
+              closeModal();
+              await refreshProjectWork(project);
+            },
+          ),
+          "primary",
+        ),
+      );
+    if (
+      work.can_manage !== false &&
+      ["accepted", "delivered", "blocked"].includes(work.status)
+    )
+      actions.append(textAction("重新打开", "reopen"));
+  });
+}
 async function selectConversation(conversation) {
   S.chatSelection = S.chatSelection || new Map();
   S.chatSelection.set(
@@ -78,6 +488,138 @@ async function selectConversation(conversation) {
   });
   if (S.project === view.project?.id) S.view = view;
   renderProject();
+}
+
+function groupMentionOptions(view) {
+  const addressedWake = view.capabilities.includes("addressed_wake_v1");
+  return [
+    ["", addressedWake ? "普通聊天" : "默认由管理员回复"],
+    ...view.members.map((agent) => [
+      agent.id,
+      (agent.id === view.project.admin_agent_id ? "交给管理员 · @" : "@") +
+        (agent.name || agent.id),
+    ]),
+  ];
+}
+
+async function jumpToProjectMessage(project, message, conversation) {
+  if (S.project !== project) return;
+  if (S.chatSelection.get(project) !== conversation.id)
+    await selectConversation(conversation);
+  requestAnimationFrame(() => {
+    if (
+      S.project !== project ||
+      S.chatSelection.get(project) !== conversation.id
+    )
+      return;
+    const row = document.getElementById("project-message-" + message.id);
+    row?.scrollIntoView({ block: "center" });
+    row?.focus({ preventScroll: true });
+  });
+}
+
+function appendProjectMessageReferences(container, view, ids, label) {
+  [...new Set(ids || [])].forEach((id) => {
+    const message = (view.messages || []).find((item) => item.id === id);
+    const conversation = (view.conversations || []).find(
+      (item) => message && item.id === message.conversation_id,
+    );
+    const text = (label || "关联消息") + " · #" + id;
+    if (message && conversation)
+      container.append(
+        button(
+          text,
+          async () => {
+            closeModal();
+            await jumpToProjectMessage(view.project.id, message, conversation);
+          },
+          "link small",
+        ),
+      );
+    else container.append(el("div", "muted small", text));
+  });
+}
+
+function openProjectTaskTrace(view, task) {
+  const trace = task.trace || {},
+    rooms = view.conversations || [],
+    source = (view.messages || []).find(
+      (m) => m.id === trace.source_message_id,
+    ),
+    sourceRoom = rooms.find(
+      (room) => source && room.id === source.conversation_id,
+    ),
+    deliveryRoom = rooms.find(
+      (room) => room.id === trace.delivery_conversation_id,
+    ),
+    parent = (view.tasks || []).find(
+      (item) => item.id === trace.parent_task_id,
+    ),
+    assignee = view.members.find((member) => member.id === task.agent_id),
+    name = trace.agent_name || assignee?.name || task.agent_id;
+  modal(task.title || "任务追溯", (body, actions) => {
+    const id = field(body, "任务编号", task.id);
+    id.readOnly = true;
+    if (name) body.append(el("div", "setting-row", "负责人 · " + name));
+    if (trace.node)
+      body.append(
+        el(
+          "div",
+          "setting-row",
+          "执行设备 · " + (trace.node_name || trace.node),
+        ),
+      );
+    if (trace.source_message_id)
+      body.append(
+        el("div", "setting-row", "来源消息 · #" + trace.source_message_id),
+        ...(sourceRoom
+          ? [
+              button(
+                "查看来源消息",
+                async () => {
+                  closeModal();
+                  await jumpToProjectMessage(
+                    view.project.id,
+                    source,
+                    sourceRoom,
+                  );
+                },
+                "link small",
+              ),
+            ]
+          : []),
+      );
+    if (parent)
+      body.append(
+        button(
+          "查看上游任务",
+          () => openProjectTaskTrace(view, parent),
+          "link small",
+        ),
+      );
+    if (deliveryRoom)
+      body.append(
+        button(
+          "交付会话 · " + (deliveryRoom.title || "项目大群"),
+          async () => {
+            closeModal();
+            await selectConversation(deliveryRoom);
+          },
+          "link small",
+        ),
+      );
+    actions.append(
+      button("关闭", closeModal),
+      button(
+        "复制任务编号",
+        async () => {
+          await copyText(task.id, id);
+          notify("已复制任务编号");
+        },
+        "primary",
+      ),
+    );
+  });
 }
 
 function confirmTaskCancellation(project, task) {
@@ -278,6 +820,20 @@ function renderProject() {
     kind = conversationKind(selected),
     isGroup = kind === "group",
     readOnly = kind === "agent_agent";
+  const privateWorkAgent =
+    kind === "human_agent"
+      ? selected.recipient_id ||
+        conversationParticipants(selected).find((id) => id !== me)
+      : null;
+  const createWorkOptions = {
+    conversation_id:
+      selectedId.startsWith("new:") || (!isGroup && !privateWorkAgent)
+        ? undefined
+        : selectedId,
+    task: privateWorkAgent
+      ? { visibility: "private", agent: privateWorkAgent }
+      : {},
+  };
   const oldBox =
     c.dataset.projectId === S.project && c.dataset.conversationId === selectedId
       ? c.querySelector(".messages")
@@ -382,6 +938,25 @@ function renderProject() {
     if (!streamIds.has(key)) S.streamTexts.delete(key);
   if (!visible.length)
     empty(msgs, isGroup ? "在项目大群开始讨论。" : "这段会话还没有消息。");
+  const tasksById = new Map((v.tasks || []).map((task) => [task.id, task]));
+  const workByMessage = new Map();
+  (v.work?.drafts || [])
+    .filter((draft) => draft.status === "draft")
+    .forEach((draft) =>
+      (draft.reference_message_ids || []).forEach((id) => {
+        const records = workByMessage.get(id) || [];
+        records.push({ kind: "draft", record: draft });
+        workByMessage.set(id, records);
+      }),
+    );
+  (v.work?.items || []).forEach((work) =>
+    (work.inputs || []).forEach((input) => {
+      if (!input.message_id) return;
+      const records = workByMessage.get(input.message_id) || [];
+      records.push({ kind: "work", record: work });
+      workByMessage.set(input.message_id, records);
+    }),
+  );
   visible.forEach((m) => {
     const baseSender = m.sender_name || m.sender_username || m.sender_id || "?",
       clientLabel = { codex: "Codex", dsh: "DSH" }[m.sender_client],
@@ -389,14 +964,53 @@ function renderProject() {
       row = el("div", "message"),
       bubble = el("div", "bubble"),
       name = el("div", "name", sender);
+    row.id = "project-message-" + m.id;
+    row.tabIndex = -1;
     if (m.mention_agent_name)
       name.append(el("span", "channel", "@" + m.mention_agent_name));
     const body = el("div", "message-text");
     FoolshipRender.render(body, m.body);
     streamMessageText(m, body, msgs);
     bubble.append(name, body, el("div", "muted small", date(m.created_at)));
+    const linkedTask = tasksById.get(m.task_id);
+    if (linkedTask)
+      bubble.append(
+        button(
+          "查看关联任务",
+          () => openProjectTaskTrace(v, linkedTask),
+          "link small",
+        ),
+      );
     (m.attachments || []).forEach((file) =>
       bubble.append(attachmentCard(file, S.project)),
+    );
+    if (
+      (isGroup || privateWorkAgent) &&
+      (v.capabilities || []).includes("project_work_v1")
+    )
+      bubble.append(
+        button(
+          "创建工作",
+          () =>
+            openProjectWorkForm(v, {
+              ...createWorkOptions,
+              source_message_id: m.id,
+              task: { ...createWorkOptions.task, instructions: m.body },
+            }),
+          "link small",
+        ),
+      );
+    (workByMessage.get(m.id) || []).forEach(({ kind, record }) =>
+      bubble.append(
+        button(
+          kind === "draft" ? "查看工作草稿" : "查看项目工作",
+          () =>
+            kind === "draft"
+              ? openProjectWorkForm(v, { draft: record })
+              : openProjectWorkDetail(v, record),
+          "link small",
+        ),
+      ),
     );
     const request = m.permission_request;
     if (request?.id) {
@@ -454,13 +1068,10 @@ function renderProject() {
     const mention = el("select", "mention-agent"),
       text = el("textarea");
     if (isGroup) {
-      mention.setAttribute("aria-label", "呼叫 Agent");
-      const defaultMention = el("option", "", "默认由管理员回复");
-      defaultMention.value = "";
-      mention.append(defaultMention);
-      v.members.forEach((a) => {
-        const option = el("option", "", "@" + (a.name || a.id));
-        option.value = a.id;
+      mention.setAttribute("aria-label", "群消息发送方式");
+      groupMentionOptions(v).forEach(([value, label]) => {
+        const option = el("option", "", label);
+        option.value = value;
         mention.append(option);
       });
       mention.value = draft.mention || "";
@@ -664,6 +1275,62 @@ function renderProject() {
     chat.append(composer);
   }
   const side = el("aside", "project-side");
+  if ((v.capabilities || []).includes("project_work_v1")) {
+    const projectWork = el("details", "panel side-section"),
+      drafts = (v.work?.drafts || []).filter(
+        (draft) => draft.status === "draft",
+      ),
+      items = v.work?.items || [];
+    projectWork.open = true;
+    projectWork.append(
+      el("summary", "", "项目工作 · " + (drafts.length + items.length)),
+      button(
+        "＋ 创建工作",
+        () => openProjectWorkForm(v, createWorkOptions),
+        "link small",
+      ),
+    );
+    drafts
+      .filter(
+        (draft) =>
+          !draft.conversation_id || draft.conversation_id === selectedId,
+      )
+      .forEach((draft) => {
+        const card = el(
+          "div",
+          "task",
+          (draft.title || "未命名草稿") + " · 草稿 v" + draft.revision,
+        );
+        card.append(
+          button(
+            "审阅并确认",
+            () => openProjectWorkForm(v, { draft }),
+            "link small",
+          ),
+        );
+        projectWork.append(card);
+      });
+    items
+      .filter(
+        (item) => !item.conversation_id || item.conversation_id === selectedId,
+      )
+      .forEach((item) => {
+        const card = el(
+          "div",
+          "task",
+          (item.title || item.id) + " · " + item.status,
+        );
+        card.append(
+          button(
+            "查看详情",
+            () => openProjectWorkDetail(v, item),
+            "link small",
+          ),
+        );
+        projectWork.append(card);
+      });
+    side.append(projectWork);
+  }
   const tasks = el("details", "panel side-section");
   tasks.id = "projectTasks";
   tasks.open = tasksOpen;
@@ -692,6 +1359,7 @@ function renderProject() {
         "",
         who + " · " + (t.title || t.body || t.id) + " · " + status + issue,
       ),
+      button("任务追溯", () => openProjectTaskTrace(v, t), "link small"),
     );
     if (t.can_cancel && !t.cancel_requested) {
       task.append(
@@ -858,6 +1526,12 @@ function renderProject() {
     members.append(row);
   });
   members.append(button("新增项目 Agent", () => openProjectAgentForm()));
+  if (Array.isArray(v.mcp_approval_kinds))
+    members.append(
+      button("MCP 审批权限", () =>
+        editMcpApprovalPolicy(p.id, v.mcp_approval_kinds),
+      ),
+    );
   if (owner) {
     members.append(button("邀请成员", invite));
     const admin = field(members, "管理员 Agent", p.admin_agent_id || "", [
@@ -904,6 +1578,42 @@ function renderProject() {
     tasks.scrollTop = panelScroll.tasks;
     memory.scrollTop = panelScroll.memory;
     members.scrollTop = panelScroll.members;
+  });
+}
+function editMcpApprovalPolicy(project, current) {
+  modal("MCP 审批权限", (body, actions) => {
+    note(
+      body,
+      "代言者可以查看待审批。勾选后，它也可以代你批准或拒绝本项目中你自己设备的对应申请。",
+    );
+    const choices = [
+      ["permission", "额外执行权限（一次续跑）"],
+      ["attachment", "发送附件"],
+      ["execution", "执行已登记的命令"],
+    ].map(([kind, label]) => {
+      const row = el("label", "setting-row", label);
+      const check = el("input", "check");
+      check.type = "checkbox";
+      check.checked = current.includes(kind);
+      row.append(check);
+      body.append(row);
+      return [kind, check];
+    });
+    actions.append(
+      button("返回", closeModal),
+      button(
+        "保存审批权限",
+        async () => {
+          const kinds = choices
+            .filter(([, check]) => check.checked)
+            .map(([kind]) => kind);
+          await api("mcp-approval-policy", { project, kinds });
+          closeModal();
+          if (S.project === project) await refresh(true);
+        },
+        "primary",
+      ),
+    );
   });
 }
 function invite() {

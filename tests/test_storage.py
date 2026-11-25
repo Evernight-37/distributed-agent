@@ -21,6 +21,27 @@ from tests.helpers import provision_account
 
 
 class StorageMigrationTests(unittest.TestCase):
+    def test_version_nine_upgrade_preserves_legacy_tasks_without_inventing_trace(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(folder)
+            owner = provision_account(store, "owner", bootstrap=True)["id"]
+            project = store.project_create(owner, "Existing project")["id"]
+            with store.connect() as db:
+                db.execute(
+                    "INSERT INTO tasks(id,project_id,agent_id,title,contract,state,created_at) "
+                    "VALUES ('task-legacy',?,'old-agent','Old work','{}','needs_review',1)",
+                    (project,),
+                )
+                db.execute("DROP TABLE task_trace")
+                db.execute("PRAGMA user_version=9")
+            result = migrate_database(store.database)
+            self.assertEqual((result["from"], result["to"]), (9, SCHEMA_VERSION))
+            self.assertTrue(Path(result["backup"]).is_file())
+            task = store.project_view(owner, project)["tasks"][0]
+            self.assertEqual(task["title"], "Old work")
+            self.assertIsNone(task["trace"]["source_message_id"])
+            self.assertIsNone(task["trace"]["node"])
+
     def test_an_older_database_gains_the_direct_transfer_table(self):
         with tempfile.TemporaryDirectory() as folder:
             database = Path(folder) / "hub.sqlite3"
@@ -49,6 +70,23 @@ class StorageMigrationTests(unittest.TestCase):
             with store.connect() as db:
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM permission_requests").fetchone()[0], 0)
                 self.assertEqual(db.execute("SELECT id FROM projects").fetchone()[0], project)
+
+    def test_version_eight_upgrade_does_not_enable_delegate_approvals(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(folder)
+            owner = provision_account(store, "owner", bootstrap=True)["id"]
+            project = store.project_create(owner, "Existing project")
+            with store.connect() as db:
+                db.execute("DROP TABLE mcp_approval_policies")
+                db.execute("DROP TABLE execution_approval_decisions")
+                db.execute("PRAGMA user_version=8")
+            result = migrate_database(store.database)
+            self.assertEqual((result["from"], result["to"]), (8, SCHEMA_VERSION))
+            self.assertTrue(Path(result["backup"]).is_file())
+            with store.connect() as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM mcp_approval_policies").fetchone()[0], 0)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM execution_approval_decisions").fetchone()[0], 0)
+                self.assertEqual(db.execute("SELECT id FROM projects").fetchone()[0], project["id"])
 
     def test_online_backup_and_offline_restore_preserve_service_data(self):
         with tempfile.TemporaryDirectory() as temporary:

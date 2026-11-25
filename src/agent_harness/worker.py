@@ -622,6 +622,19 @@ def _rpc(request, managed_runtime=None):
             # that selected workspace (still under Codex workspace-write).
             if contract.get("stage") == "implement" and (strict_guard or not project.get("local_control")):
                 require_worktree(project)
+            channel = request.get("session_channel")
+            if contract.get("stage") == "implement" and isinstance(channel, str) and channel.startswith("work-"):
+                # Structured project work owns its checkout across turns. A new
+                # work item may take over only after the previous item leaves it
+                # clean; legacy jobs retain their existing behaviour.
+                try:
+                    git = _git_executable()
+                except ValueError:
+                    git = None
+                if git:
+                    from agent_harness.workspace_ownership import claim_worktree
+
+                    claim_worktree(ROOT, project["remote_path"], channel, git, _worktree_status)
             job = identifier(request["job"])
             path = job_dir(job)
             path.mkdir(parents=True, exist_ok=False)
@@ -629,7 +642,6 @@ def _rpc(request, managed_runtime=None):
             # table does not list falls back to the machine's own executor, so an
             # existing agent keeps working before its model is added to the table.
             kind = executors.kind_for(ROOT, project.get("model"))
-            channel = request.get("session_channel")
             session_file = "session-" + kind + ".json"
             if channel:
                 identifier(channel)
@@ -773,17 +785,20 @@ Your final report awaits independent review; you cannot approve your own work.
 """
 
 GROUP_RULES = """You are an agent in a human-owned project group. Use the visible messages, shared project memory, the task contract and the assigned local project directory.
-If a foolship_reply tool is available, call it once with {reply, messages, attachments, memory_notes} instead of writing JSON. Otherwise reply with one JSON object: {"reply": str, "messages": [{recipient, body}], "attachments": [{path}], "tasks": [...], "executions": [...], "memory_notes": [str], "done": bool}.
+If a foolship_reply tool is available, call it once with the structured result instead of writing JSON. Otherwise reply with one JSON object: {"reply": str, "messages": [{recipient, body}], "attachments": [{path}], "tasks": [...], "executions": [...], "memory_notes": [str], "work_proposal": object|null, "work_delivery": object|null, "done": bool}.
 - reply is the human-facing answer, without private reasoning or progress logs. messages are for distinct follow-ups only and never repeat reply.
 - attachments are project-relative paths: existing ordinary files inside the project, at most five, each at most 5 MB; never hidden files, credentials or paths outside it.
 - memory_notes only for durable facts from the public group; empty in a private turn.
+- work_proposal is only a draft for explicit human confirmation, never authorization to start work. Use it only as the project administrator in a human-directed turn. Include the complete title, instructions, deliverable, acceptance, validation, agent, allowed_files, stage, visibility and reference_message_ids. To revise a known draft include both its id and revision.
+- work_follow_up identifies one existing work item when the human explicitly asks for further action in that same scope. Use only an unambiguous work_id supplied in context; do not rewrite the human request or broaden the work.
+- work_delivery is only for a scheduled project-work execution. Report a concise summary and relevant links after doing the assigned work. Do not create unrelated tasks, executions or messages from that scoped turn.
 Use the tools your executor gives you. Your task stage describes its intent; the executor and machine owner decide what is permitted. You may spawn your own sub-agents and remain responsible for the combined result. If this task needs extra execution permissions, put request:{"reason": "..."} in the reply. The machine owner can approve one continuation of this task.
 Never reveal a human's private message outside its conversation. Do not read credentials or contact outside parties unless the task says so.
 """
 
 # Every resumed turn still needs the reply contract, even though the full rules
 # are only sent once per thread.
-REPLY_REMINDER = 'Reply with one JSON object: {"reply": "...", "messages": [], "attachments": [], "memory_notes": []}.'
+REPLY_REMINDER = "Reply with one JSON object using the full structured reply contract; include work_proposal or work_delivery only when this turn calls for it."
 
 
 def unfenced_report(text):
@@ -829,6 +844,39 @@ def reply_schema():
     def array(properties):
         return {"type": "array", "items": obj(properties)}
 
+    proposal = {
+        "type": ["object", "null"],
+        "additionalProperties": False,
+        "properties": {
+            "id": {"type": "string"},
+            "revision": {"type": "integer"},
+            **{
+                key: {"type": "string"}
+                for key in (
+                    "title",
+                    "instructions",
+                    "deliverable",
+                    "acceptance",
+                    "validation",
+                    "agent",
+                    "allowed_files",
+                )
+            },
+            "stage": {"type": "string", "enum": ["discuss", "implement"]},
+            "visibility": {"type": "string", "enum": ["group", "private"]},
+            "reference_message_ids": {"type": "array", "items": {"type": "integer"}},
+        },
+    }
+    delivery = {
+        "type": ["object", "null"],
+        "additionalProperties": False,
+        "properties": {
+            "summary": {"type": "string"},
+            "links": {"type": "array", "items": {"type": "string"}},
+            "message_id": {"type": ["integer", "null"]},
+        },
+    }
+
     return obj(
         {
             "reply": {"type": "string"},
@@ -856,6 +904,13 @@ def reply_schema():
             ),
             "executions": array({"template": {"type": "string"}}),
             "memory_notes": {"type": "array", "items": {"type": "string"}},
+            "work_proposal": proposal,
+            "work_follow_up": {
+                "type": ["object", "null"],
+                "additionalProperties": False,
+                "properties": {"work_id": {"type": "string"}},
+            },
+            "work_delivery": delivery,
             # A request the human answers with /allow or /deny.
             "request": {
                 "type": "object",
@@ -896,6 +951,31 @@ export function apply(ctx, config) {
         type: "array",
         description: "Durable facts from the public group; empty in a private turn.",
         items: { type: "string" },
+      },
+      work_proposal: {
+        type: "object",
+        description: "A complete project-work draft for explicit human confirmation; never starts work by itself.",
+        properties: {
+          id: { type: "string" }, revision: { type: "integer" }, title: { type: "string" },
+          instructions: { type: "string" }, deliverable: { type: "string" }, acceptance: { type: "string" },
+          validation: { type: "string" }, agent: { type: "string" }, allowed_files: { type: "string" },
+          stage: { type: "string", enum: ["discuss", "implement"] },
+          visibility: { type: "string", enum: ["group", "private"] },
+          reference_message_ids: { type: "array", items: { type: "integer" } },
+        },
+      },
+      work_follow_up: {
+        type: "object",
+        description: "Select one unambiguous existing work item for the human's explicit same-scope follow-up.",
+        properties: { work_id: { type: "string" } },
+      },
+      work_delivery: {
+        type: "object",
+        description: "Completion report for the scheduled project-work execution in this turn.",
+        properties: {
+          summary: { type: "string" }, links: { type: "array", items: { type: "string" } },
+          message_id: { type: ["integer", "null"] },
+        },
       },
       request: {
         type: "object",

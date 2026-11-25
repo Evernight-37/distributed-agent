@@ -1,12 +1,13 @@
-"""A chain of agent messages must not spend the team's budget unattended."""
+"""Agent messages continue scheduling while there is new work to process."""
 
+import json
 import unittest
 
-from agent_harness.coordinator import AGENT_WAKE_LIMIT, Coordinator
+from agent_harness.coordinator import Coordinator
 from tests import test_collaboration as fixtures
 
 
-class WakeBudgetTests(unittest.TestCase):
+class AgentWakeTests(unittest.TestCase):
     setUp = fixtures.CollaborationTests.setUp
     tearDown = fixtures.CollaborationTests.tearDown
     add_agent = fixtures.CollaborationTests.add_agent
@@ -15,57 +16,52 @@ class WakeBudgetTests(unittest.TestCase):
         first = self.add_agent(self.owner["id"], "backend-a", "First")
         second = self.add_agent(self.owner["id"], "backend-b", "Second")
         with self.store.connect() as db:
-            # Agents enter "configuring" until their machine confirms; the wake
-            # scheduler only considers confirmed ones, and group posts wake the
-            # project's administrator.
             db.execute("UPDATE agents SET configuring=0 WHERE id IN (?,?)", (first, second))
             db.execute("UPDATE projects SET admin_agent_id=? WHERE id=?", (first, self.project))
         return first, second
 
-    def tasks(self):
+    def post(self, sender, body, recipient=None):
         with self.store.connect() as db:
-            return db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+            self.store._message(db, self.project, sender, "agent", body, recipient)
 
-    def finish_tasks(self):
-        # A real turn ends by consuming its message and completing the task; the
-        # simulation has to do both, or the same message keeps being "new".
-        with self.store.connect() as db:
-            db.execute("UPDATE tasks SET state='completed'")
-            latest = db.execute("SELECT MAX(id) FROM messages").fetchone()[0] or 0
-            for row in db.execute("SELECT DISTINCT agent_id FROM tasks").fetchall():
-                db.execute(
-                    "INSERT INTO agent_cursors(agent_id,channel,last_message) VALUES(?,?,?) "
-                    "ON CONFLICT(agent_id,channel) DO UPDATE SET last_message=excluded.last_message",
-                    (row["agent_id"], "group", latest),
-                )
+    def test_long_group_discussion_does_not_wake_the_administrator(self):
+        _, peer = self.agents()
+        coordinator = Coordinator(self.store, self.backend)
+        for index in range(16):
+            self.post(peer, f"Agent note {index}")
+            coordinator.wake_messages()
+            coordinator.dispatch()
+            coordinator.collect()
 
-    def post(self, sender, kind, body):
-        with self.store.connect() as db:
-            self.store._message(db, self.project, sender, kind, body)
+        self.assertEqual(self.backend.submissions, [])
 
-    def test_a_long_agent_chain_stops_and_records_why(self):
+    def test_private_exchange_continues_past_twenty_four_turns_and_stops_on_empty_reply(self):
         first, second = self.agents()
         coordinator = Coordinator(self.store, self.backend)
-        for index in range(AGENT_WAKE_LIMIT + 4):
-            self.post(second, "agent", "agent note %d" % index)
-            coordinator.wake_messages()
-            self.finish_tasks()
-        self.assertLessEqual(self.tasks(), AGENT_WAKE_LIMIT)
-        with self.store.connect() as db:
-            logged = db.execute("SELECT COUNT(*) FROM audit WHERE action='agent_wake_budget'").fetchone()[0]
-        self.assertGreater(logged, 0)
+        self.post(first, "Kickoff", second)
 
-    def test_a_human_message_restarts_the_budget(self):
-        first, second = self.agents()
-        coordinator = Coordinator(self.store, self.backend)
-        for index in range(AGENT_WAKE_LIMIT + 4):
-            self.post(second, "agent", "agent note %d" % index)
+        for index in range(28):
+            # Scheduling twice while the same message is pending must not enqueue a duplicate.
             coordinator.wake_messages()
-            self.finish_tasks()
-        before = self.tasks()
-        self.post(self.owner["id"], "human", "human takes over")
-        coordinator.wake_messages()
-        self.assertGreater(self.tasks(), before)
+            coordinator.wake_messages()
+            coordinator.dispatch()
+            self.assertEqual(len(self.backend.submissions), index + 1)
+            _, backend, context, _ = self.backend.submissions[-1]
+            self.assertEqual(backend, "backend-a" if index % 2 else "backend-b")
+            task = json.loads(context)["task"]
+            self.assertTrue(task["private_turn"])
+            self.assertEqual(task["reply_to"], second if index % 2 else first)
+            self.backend.report = json.dumps({"reply": f"Reply {index}" if index < 27 else ""})
+            coordinator.collect()
+
+        # The new coordinator has the same durable message cursors after restart.
+        Coordinator(self.store, self.backend).tick()
+        self.assertEqual(len(self.backend.submissions), 28)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 28)
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM tasks WHERE state='needs_review' AND processed=1").fetchone()[0], 28
+            )
 
 
 if __name__ == "__main__":  # pragma: no cover

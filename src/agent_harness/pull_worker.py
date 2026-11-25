@@ -25,7 +25,9 @@ from agent_harness.common import (
 from agent_harness.protocol import ensure_hub_compatible
 from agent_harness.release_info import version_path
 from agent_harness.broker_transport import broker_opener
+from agent_harness.execution_approvals import execution_digest, valid_execution_digest
 from agent_harness.health import HealthCode, component, report
+from agent_harness.workspace_ownership import DIRTY_WORKTREE
 
 TERMINAL = {
     "needs_review",
@@ -634,7 +636,15 @@ class Connector:
             project["local_control"] = True
             write_json(path, project)
 
-    def advance(self, receipt, cancelled=False):
+    def execution_snapshot(self, backend_project, template_name):
+        path = self.root / "projects" / backend_project
+        project = read_json(path / "project.json")
+        template = read_json(path / "execution_templates.json", {}).get(template_name)
+        if not template or not project:
+            return template, None
+        return template, execution_digest(project, template_name, template)
+
+    def advance(self, receipt, cancelled=False, execution_decision=None):
         job = receipt["job"]
         request = job["request"]
         local_id = receipt["local_id"]
@@ -663,13 +673,10 @@ class Connector:
                 receipt.update(phase="terminal", result={"status": "cancelled"})
             elif receipt["phase"] == "received":
                 if execution:
-                    templates = read_json(
-                        self.root / "projects" / binding["backend_project"] / "execution_templates.json",
-                        {},
-                    )
-                    if request.get("template") not in templates:
+                    _, snapshot = self.execution_snapshot(binding["backend_project"], request.get("template"))
+                    if not snapshot:
                         raise ValueError("Template is not registered by the local owner")
-                    receipt["phase"] = "waiting_local_approval"
+                    receipt.update(phase="waiting_local_approval", execution_approval_digest=snapshot)
                 else:
                     stage = request.get("stage", "discuss")
                     if stage not in binding["stages"]:
@@ -702,44 +709,81 @@ class Connector:
                         "acceptance": request.get("acceptance", ""),
                         "validation": request.get("validation", ""),
                     }
-                    self.executor(
-                        {
-                            "action": "start",
-                            "project": binding["backend_project"],
-                            "job": local_id,
-                            "prompt": json.dumps(contract),
-                            "session_channel": identifier(request.get("session_channel") or "group"),
-                        }
-                    )
-                    receipt["phase"] = "running"
+                    try:
+                        self.executor(
+                            {
+                                "action": "start",
+                                "project": binding["backend_project"],
+                                "job": local_id,
+                                "prompt": json.dumps(contract),
+                                "session_channel": identifier(request.get("session_channel") or "group"),
+                            }
+                        )
+                    except ValueError as exc:
+                        # These checks run under the executor lock before creating a job.
+                        if str(exc) == DIRTY_WORKTREE:
+                            receipt.update(phase="terminal", result={"status": "failed", "error": DIRTY_WORKTREE})
+                        elif str(exc) == "Remote directory is busy in another project" or str(exc).startswith(
+                            "Project already has an active job: "
+                        ):
+                            receipt.update(
+                                phase="received", result={"status": "running", "local_status": "workspace_busy"}
+                            )
+                        else:
+                            raise
+                    else:
+                        receipt["phase"] = "running"
+                        receipt.pop("result", None)
             elif receipt["phase"] == "waiting_local_approval":
+                current, snapshot = self.execution_snapshot(binding["backend_project"], request["template"])
+                if snapshot and not receipt.get("execution_approval_digest"):
+                    # Migrate waiting receipts from receivers that reported no digest.
+                    receipt["execution_approval_digest"] = snapshot
+                expected_digest = receipt.get("execution_approval_digest")
+                delegated = (
+                    receipt.get("approval") is None
+                    and isinstance(execution_decision, dict)
+                    and type(execution_decision.get("approved")) is bool
+                    and valid_execution_digest(expected_digest)
+                    and execution_decision.get("digest") == expected_digest
+                )
+                if delegated:
+                    if execution_decision["approved"] and snapshot != expected_digest:
+                        raise PermissionError("Approved execution snapshot changed; submit a new request")
+                    receipt["approval"] = execution_decision["approved"]
+                    receipt["approved_template"] = current
+                    receipt["delegated_execution_digest"] = expected_digest
                 if receipt.get("approval") is False:
                     receipt.update(
                         phase="terminal",
                         result={
                             "status": "cancelled",
-                            "error": "Rejected by local owner",
+                            "error": "Rejected by delegated approval" if delegated else "Rejected by local owner",
                         },
                     )
                 elif receipt.get("approval") is True:
-                    current = read_json(
-                        self.root / "projects" / binding["backend_project"] / "execution_templates.json",
-                        {},
-                    ).get(request["template"])
                     if not current or current != receipt.get("approved_template"):
                         raise ValueError("Template changed after local approval; submit a new request")
                     self.configure(binding)
                     receipt["phase"] = "launching"
                     write_json(path, receipt)
-                    self.executor(
+                    outcome = self.executor(
                         {
                             "action": "execution_start",
                             "project": binding["backend_project"],
                             "execution": local_id,
                             "template": request["template"],
+                            **(
+                                {"expected_execution_digest": receipt["delegated_execution_digest"]}
+                                if receipt.get("delegated_execution_digest")
+                                else {}
+                            ),
                         }
                     )
-                    receipt["phase"] = "running"
+                    if outcome.get("status") == "failed":
+                        receipt.update(phase="terminal", result={"status": "failed", "error": outcome.get("error")})
+                    else:
+                        receipt["phase"] = "running"
             else:
                 # launching means a process may have been created before a crash: reconcile its fixed ID.
                 if cancelled:
@@ -821,6 +865,9 @@ class Connector:
         attachment_decisions = {
             item.get("job_id"): item for item in data.get("attachment_decisions", []) if isinstance(item, dict)
         }
+        execution_decisions = {
+            item.get("job_id"): item for item in data.get("execution_decisions", []) if isinstance(item, dict)
+        }
         with lock(self.root / "pull-receipts.lock"):
             for job in data.get("jobs", []):
                 self.accept(job)
@@ -838,7 +885,7 @@ class Connector:
                     )
                     write_json(path, receipt)
                 if receipt["phase"] != "waiting_attachment_approval":
-                    receipt = self.advance(receipt, job_id in cancellations)
+                    receipt = self.advance(receipt, job_id in cancellations, execution_decisions.get(job_id))
                 if receipt["phase"] in {"terminal", "waiting_attachment_approval"}:
                     from agent_harness.agent_attachments import prepare_reply
 
@@ -847,6 +894,8 @@ class Connector:
                 if receipt["phase"] == "waiting_attachment_approval":
                     continue
                 result = receipt.get("result", {"status": "running", "local_status": receipt["phase"]})
+                if receipt["phase"] == "waiting_local_approval" and receipt.get("execution_approval_digest"):
+                    result["execution_approval_digest"] = receipt["execution_approval_digest"]
                 if "stdout_tail" in result:
                     result["stdout"] = result.pop("stdout_tail")
                 if "stderr_tail" in result:

@@ -6,10 +6,12 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import Mock
 
 from agent_harness.broker import PullBackend
 from agent_harness.collaboration_store import Store, uid
 from agent_harness.coordinator import Coordinator
+from agent_harness.execution_approvals import decide_execution, execution_requests
 from tests.helpers import provision_account
 
 
@@ -94,6 +96,53 @@ class PullBrokerTests(unittest.TestCase):
             },
             delegate=delegate,
         )["id"]
+
+    def request_execution(self, token, agent):
+        coordinator = Coordinator(self.store, self.backend)
+        task_id = self.create_task(agent)
+        coordinator.dispatch(task_id)
+        task = self.claim(token)
+        self.complete(token, task, json.dumps({"reply": "", "executions": [{"template": "train"}]}))
+        coordinator.collect(task_id)
+        with self.store.connect() as db:
+            execution = db.execute("SELECT id,state FROM executions").fetchone()
+            self.assertEqual(execution["state"], "awaiting_owner")
+        return execution["id"]
+
+    def test_agent_execution_request_stages_one_durable_receiver_approval(self):
+        token, _ = self.enroll()
+        agent = self.advertise(token)
+        execution_id = self.request_execution(token, agent)
+
+        Coordinator(self.store, self.backend).tick()
+        claimed = self.claim(token)
+        self.assertEqual(claimed["id"], execution_id)
+        self.assertEqual(claimed["kind"], "execution")
+        self.assertEqual(claimed["request"], {"template": "train"})
+
+        # Simulate a restart after staging commits, before the execution state advances.
+        with self.store.connect() as db:
+            db.execute("UPDATE executions SET state='awaiting_owner',result=NULL WHERE id=?", (execution_id,))
+        Coordinator(self.store, self.backend).tick()
+        self.assertEqual(self.claim(token)["lease_id"], claimed["lease_id"])
+        with self.store.connect() as db:
+            execution = db.execute("SELECT state,result FROM executions WHERE id=?", (execution_id,)).fetchone()
+        self.assertEqual(execution["state"], "running")
+        self.assertEqual(json.loads(execution["result"])["local_status"], "waiting_local_approval")
+
+    def test_awaiting_owner_cannot_start_through_a_direct_backend(self):
+        token, _ = self.enroll()
+        agent = self.advertise(token)
+        execution_id = self.request_execution(token, agent)
+        direct = Mock(spec=["rpc"])
+
+        Coordinator(self.store, direct).executions(execution_id)
+
+        direct.rpc.assert_not_called()
+        self.assertEqual(self.backend.device_api("/api/device/poll", {}, token)["jobs"], [])
+        with self.store.connect() as db:
+            execution = db.execute("SELECT state FROM executions WHERE id=?", (execution_id,)).fetchone()
+        self.assertEqual(execution["state"], "awaiting_owner")
 
     def test_unknown_task_stays_active_until_cancelled_by_the_receiver(self):
         token, _ = self.enroll()
@@ -517,6 +566,56 @@ class PullBrokerTests(unittest.TestCase):
         self.backend.device_api("/api/device/enroll", request)
         with self.assertRaises(PermissionError):
             self.backend.device_api("/api/device/poll", {}, token)
+
+    def test_execution_decision_waits_for_bound_receipt_owner_and_digest(self):
+        token, _ = self.enroll()
+        agent = self.advertise(token)
+        other = provision_account(self.store, "other", invite=self.store.invite(self.owner, self.project)["invite"])[
+            "id"
+        ]
+        other_token, _ = self.enroll("unrelated", other)
+        execution = "execution-approval-test"
+        snapshot = "a" * 64
+        with self.store.connect() as db:
+            db.execute(
+                "INSERT INTO executions(id,project_id,agent_id,template,state,created_at) VALUES(?,?,?,?,?,?)",
+                (execution, self.project, agent["id"], "train", "starting", time.time()),
+            )
+        self.backend.for_node("worker").rpc(
+            {"action": "execution_start", "project": "workspace", "execution": execution, "template": "train"}
+        )
+        job = self.claim(token)
+        report = {"job_id": execution, "lease_id": job["lease_id"], "state": "running"}
+        for result in (
+            {"local_status": "waiting_local_approval"},
+            {"local_status": "waiting_local_approval", "execution_approval_digest": snapshot},
+        ):
+            self.backend.device_api("/api/device/report", {**report, "result": result}, token)
+            with self.store.connect() as db:
+                self.assertEqual(execution_requests(db, other, self.project), [])
+                [pending] = execution_requests(db, self.owner, self.project)
+                self.assertEqual(pending["id"], execution)
+                self.assertEqual(pending["digest"], result.get("execution_approval_digest"))
+                self.assertEqual(pending["can_decide"], "execution_approval_digest" in result)
+                with self.assertRaises(PermissionError):
+                    decide_execution(db, self.owner, self.project, execution, True, "b" * 64)
+                with self.assertRaises(PermissionError):
+                    decide_execution(db, other, self.project, execution, True, snapshot)
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            decision = decide_execution(db, self.owner, self.project, execution, True, snapshot)
+            self.assertEqual(decide_execution(db, self.owner, self.project, execution, True, snapshot), decision)
+            self.assertEqual(decision["state"], "approved")
+            self.assertEqual(execution_requests(db, self.owner, self.project), [])
+            with self.assertRaises(PermissionError):
+                decide_execution(db, self.owner, self.project, execution, False, snapshot)
+        pending_on_worker = self.backend.device_api("/api/device/poll", {}, token)
+        self.assertEqual(
+            pending_on_worker["execution_decisions"], [{"job_id": execution, "digest": snapshot, "approved": True}]
+        )
+        self.assertEqual(self.backend.device_api("/api/device/poll", {}, other_token)["execution_decisions"], [])
+        self.backend.for_node("worker").rpc({"action": "execution_cancel", "execution": execution})
+        self.assertEqual(self.backend.device_api("/api/device/poll", {}, token)["execution_decisions"], [])
 
     def test_local_stage_permission_and_central_settings_rejected(self):
         token, _ = self.enroll()

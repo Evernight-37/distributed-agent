@@ -71,7 +71,8 @@ class ReleaseMetadataTests(unittest.TestCase):
             self.assertIn("team-service", guide)
             self.assertIn("卸载时可以选择是否同时删除", guide)
             self.assertIn("在 Codex 中使用协作", guide)
-            self.assertIn("受限身份", guide)
+            self.assertIn("委托身份", guide)
+            self.assertIn("MCP 审批权限", guide)
 
     def test_invalid_version_source_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

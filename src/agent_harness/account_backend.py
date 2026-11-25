@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import hmac
 import json
 import secrets
 import time
@@ -22,6 +23,8 @@ from agent_harness.common import read_json, write_json
 MAX_ACTIVE_CHALLENGES = 4096
 MAX_PENDING_DEVICE_REQUESTS = 1000
 MAX_PENDING_REQUESTS_PER_KEY = 5
+MCP_APPROVAL_KINDS = frozenset({"permission", "attachment", "execution"})
+MCP_PROJECT_APPROVALS = "mcp_project_approvals_v1"
 
 
 def device_node(public):
@@ -114,6 +117,9 @@ class AccountBackend:
                 "protocol": hub_advertisement(),
                 "features": [
                     "mention_agent_id",
+                    "addressed_wake_v1",
+                    "task_trace_v1",
+                    "project_work_v1",
                     "anchored_reply_draft",
                     "conversation_privacy_v2",
                     "service_host_owner_v1",
@@ -125,6 +131,7 @@ class AccountBackend:
                     "event_cursor_v1",
                     "health_v1",
                     "account_recovery_v1",
+                    MCP_PROJECT_APPROVALS,
                 ],
             }
         if action == "request-device":
@@ -286,6 +293,9 @@ class AccountBackend:
                 }
         with self.store.connect() as db:
             delegate_scopes = verified.get("delegate_scopes")
+            delegated_decision = delegate_scopes is not None and body["operation"] == "mcp-approval-decide"
+            if delegated_decision:
+                db.execute("BEGIN IMMEDIATE")
             device_keys = (
                 set(verified["chain_keys"]) - {public} if delegate_scopes is not None else set(verified["chain_keys"])
             )
@@ -318,9 +328,14 @@ class AccountBackend:
                     "task": "collaboration.task",
                     "task-cancel": "collaboration.task",
                     "task-status": "collaboration.read",
+                    "project-work": "collaboration.task",
+                    "mcp-approvals": "collaboration.read",
+                    "mcp-approval-decide": "collaboration.task",
                 }.get(body["operation"])
                 if not required or required not in delegate_scopes:
                     raise PermissionError("Delegate scope does not allow this operation")
+                if delegated_decision:
+                    return self._mcp_approval_decide(db, user, public, body["payload"])
         return self._operation(user, public, body["operation"], body["payload"], delegate_scopes)
 
     def _name(self, name):
@@ -441,80 +456,214 @@ class AccountBackend:
             or (item["action"] == "project-agent-create" and item["backend_project"] not in visible)
         ]
 
+    def _attachment_approvals(self, db, user, project=None, *, delegated=False):
+        rows = db.execute(
+            "SELECT a.*,p.name AS project_name,g.name AS agent_name,t.contract AS task_contract "
+            "FROM attachment_approvals a JOIN projects p ON p.id=a.project_id "
+            "JOIN agents g ON g.id=a.agent_id JOIN pull_jobs j ON j.id=a.job_id "
+            "LEFT JOIN tasks t ON t.job=a.job_id "
+            "WHERE a.owner_id=? AND a.state='pending' AND j.cancel_requested=0 "
+            "AND j.state NOT IN ('needs_review','completed','failed','cancelled','timed_out','interrupted') "
+            "AND (? IS NULL OR a.project_id=?) AND (?=0 OR (g.project_id=a.project_id AND g.owner_id=a.owner_id "
+            "AND g.node=a.node AND j.node=a.node AND j.agent_id=a.agent_id "
+            "AND EXISTS(SELECT 1 FROM nodes WHERE name=a.node AND owner_id=a.owner_id) "
+            "AND EXISTS(SELECT 1 FROM project_users WHERE project_id=a.project_id AND user_id=a.owner_id))) "
+            "ORDER BY a.created_at",
+            (user, project, project, delegated),
+        ).fetchall()
+        requests = []
+        for row in rows:
+            contract = json.loads(row["task_contract"] or "{}")
+            recipient = contract.get("reply_to") if contract.get("private_turn") else None
+            target = "项目群聊"
+            manifest = json.loads(row["manifest"])
+            if recipient:
+                if delegated and recipient != user:
+                    target = "私聊"
+                    manifest = [
+                        {key: file[key] for key in ("name", "size", "sha256") if key in file} for file in manifest
+                    ]
+                else:
+                    person = db.execute("SELECT username FROM users WHERE id=?", (recipient,)).fetchone()
+                    target = "与 " + (person["username"] if person else "成员") + " 的私聊"
+            requests.append(
+                {
+                    key: row[key]
+                    for key in (
+                        "id",
+                        "job_id",
+                        "project_id",
+                        "project_name",
+                        "agent_id",
+                        "agent_name",
+                        "node",
+                        "digest",
+                        "created_at",
+                    )
+                }
+                | {"manifest": manifest, "destination": target}
+            )
+        return requests
+
+    def _attachment_decide(self, db, user, approval_id, approve, *, project=None, expected_digest=None):
+        if not isinstance(approval_id, str) or type(approve) is not bool:
+            raise ValueError("无效的附件批准决定")
+        row = db.execute("SELECT * FROM attachment_approvals WHERE id=? AND owner_id=?", (approval_id, user)).fetchone()
+        if not row or project is not None and row["project_id"] != project:
+            raise PermissionError("附件请求不存在或不属于当前账户")
+        if project is not None and (
+            not isinstance(expected_digest, str)
+            or not expected_digest.isascii()
+            or not hmac.compare_digest(expected_digest, row["digest"])
+        ):
+            raise PermissionError("附件清单不匹配，请重新查看申请")
+        if (
+            project is not None
+            and not db.execute(
+                "SELECT 1 FROM agents g JOIN nodes n ON n.name=g.node JOIN pull_jobs j ON j.agent_id=g.id AND j.node=g.node "
+                "WHERE g.id=? AND g.project_id=? AND g.owner_id=? AND n.owner_id=? AND g.node=? AND j.id=? AND j.kind='task'",
+                (row["agent_id"], project, user, user, row["node"], row["job_id"]),
+            ).fetchone()
+        ):
+            raise PermissionError("附件请求的执行设备已变更")
+        desired = "approved" if approve else "rejected"
+        if row["state"] != "pending":
+            if row["state"] != desired:
+                raise PermissionError("附件请求已经处理或结束")
+        else:
+            job = db.execute("SELECT state,cancel_requested FROM pull_jobs WHERE id=?", (row["job_id"],)).fetchone()
+            if (
+                not job
+                or job["state"] in {"needs_review", "completed", "failed", "cancelled", "timed_out", "interrupted"}
+                or job["cancel_requested"]
+            ):
+                raise PermissionError("任务已结束或已取消")
+            db.execute(
+                "UPDATE attachment_approvals SET state=?,updated_at=? WHERE id=?", (desired, time.time(), approval_id)
+            )
+            self.store.emit_account_event(db, [user], "approval", row["project_id"])
+        return {"id": approval_id, "state": desired, "digest": row["digest"]}
+
+    def _mcp_approval_kinds(self, db, user, project):
+        return [
+            row["kind"]
+            for row in db.execute(
+                "SELECT kind FROM mcp_approval_policies WHERE project_id=? AND owner_id=? ORDER BY kind",
+                (project, user),
+            )
+        ]
+
+    def _set_mcp_approval_policy(self, user, project, kinds):
+        if (
+            not isinstance(project, str)
+            or not project
+            or not isinstance(kinds, list)
+            or any(not isinstance(kind, str) or kind not in MCP_APPROVAL_KINDS for kind in kinds)
+        ):
+            raise ValueError("无效的项目委托审批设置")
+        kinds = sorted(set(kinds))
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self.store.require_member(db, project, user)
+            if self._mcp_approval_kinds(db, user, project) != kinds:
+                db.execute("DELETE FROM mcp_approval_policies WHERE project_id=? AND owner_id=?", (project, user))
+                db.executemany(
+                    "INSERT INTO mcp_approval_policies(project_id,owner_id,kind) VALUES(?,?,?)",
+                    [(project, user, kind) for kind in kinds],
+                )
+                self.store.log(db, user, "mcp_approval_policy", {"project": project, "kinds": kinds})
+                self.store.emit_account_event(db, [user], "approval", project)
+        return {"kinds": kinds}
+
+    def _mcp_approvals(self, user, project, delegate_scopes):
+        from agent_harness.execution_approvals import execution_requests
+
+        if project is not None and (not isinstance(project, str) or not project):
+            raise ValueError("无效的项目编号")
+        with self.store.connect() as db:
+            if project is not None:
+                self.store.require_member(db, project, user)
+            permitted = {
+                (row["project_id"], row["kind"])
+                for row in db.execute("SELECT project_id,kind FROM mcp_approval_policies WHERE owner_id=?", (user,))
+            }
+            requests = [
+                {**row, "kind": "permission"}
+                for row in db.execute(
+                    "SELECT r.id,r.project_id,r.agent_id,r.node,r.reason,r.state,r.created_at,"
+                    "g.name AS agent_name,p.name AS project_name "
+                    "FROM permission_requests r JOIN projects p ON p.id=r.project_id JOIN agents g ON g.id=r.agent_id "
+                    "JOIN nodes n ON n.name=r.node JOIN project_users m ON m.project_id=r.project_id AND m.user_id=r.owner_id "
+                    "WHERE r.owner_id=? AND r.state='pending' AND (? IS NULL OR r.project_id=?) "
+                    "AND g.project_id=r.project_id AND g.owner_id=r.owner_id AND g.node=r.node AND n.owner_id=r.owner_id",
+                    (user, project, project),
+                )
+            ]
+            requests.extend(
+                {**row, "kind": "attachment", "state": "pending"}
+                for row in self._attachment_approvals(db, user, project, delegated=True)
+            )
+            requests.extend(execution_requests(db, user, project))
+        can_delegate_decide = "collaboration.task" in (delegate_scopes or ())
+        for request in requests:
+            request["can_decide"] = (
+                can_delegate_decide
+                and request.get("can_decide", True)
+                and (request["project_id"], request["kind"]) in permitted
+            )
+        return {"requests": sorted(requests, key=lambda row: (row["created_at"], row["id"]))}
+
+    def _mcp_approval_decide(self, db, user, public, data):
+        project, kind, request_id, approve = (data.get(key) for key in ("project", "kind", "id", "approve"))
+        if (
+            not all(isinstance(value, str) and 1 <= len(value) <= 160 for value in (project, kind, request_id))
+            or kind not in MCP_APPROVAL_KINDS
+            or type(approve) is not bool
+        ):
+            raise ValueError("无效的委托审批决定")
+        self.store.require_member(db, project, user)
+        if kind not in self._mcp_approval_kinds(db, user, project):
+            raise PermissionError("当前账户没有为这个项目开启该类委托审批")
+        if kind == "permission":
+            result = self.store.permission_decide(user, project, request_id, approve, db=db)
+        elif kind == "attachment":
+            result = self._attachment_decide(
+                db, user, request_id, approve, project=project, expected_digest=data.get("digest")
+            )
+        else:
+            from agent_harness.execution_approvals import decide_execution
+
+            result = decide_execution(db, user, project, request_id, approve, data.get("digest"))
+            self.store.emit_account_event(db, [user], "approval", project)
+        self.store.log(
+            db,
+            user,
+            "mcp_approval_decide",
+            {
+                "delegate": digest(public),
+                "project": project,
+                "kind": kind,
+                "request": request_id,
+                "state": result["state"],
+                "client": client_label(data.get("client")) or "codex",
+            },
+        )
+        return {"project_id": project, "kind": kind, **result}
+
     def _operation(self, user, public, op, p, delegate_scopes=None):
+        if op == "mcp-approval-policy":
+            if delegate_scopes is not None:
+                raise PermissionError("委托身份不能修改审批授权设置")
+            return self._set_mcp_approval_policy(user, p.get("project"), p.get("kinds"))
+        if op == "mcp-approvals":
+            return self._mcp_approvals(user, p.get("project"), delegate_scopes)
         if op == "attachment-approvals":
             with self.store.connect() as db:
-                rows = db.execute(
-                    "SELECT a.*,p.name AS project_name,g.name AS agent_name,t.contract AS task_contract "
-                    "FROM attachment_approvals a JOIN projects p ON p.id=a.project_id "
-                    "JOIN agents g ON g.id=a.agent_id JOIN pull_jobs j ON j.id=a.job_id "
-                    "LEFT JOIN tasks t ON t.job=a.job_id "
-                    "WHERE a.owner_id=? AND a.state='pending' AND j.cancel_requested=0 "
-                    "AND j.state NOT IN ('needs_review','completed','failed','cancelled','timed_out','interrupted') "
-                    "ORDER BY a.created_at",
-                    (user,),
-                ).fetchall()
-                requests = []
-                for row in rows:
-                    contract = json.loads(row["task_contract"] or "{}")
-                    recipient = contract.get("reply_to") if contract.get("private_turn") else None
-                    target = "项目群聊"
-                    if recipient:
-                        person = db.execute("SELECT username FROM users WHERE id=?", (recipient,)).fetchone()
-                        target = "与 " + (person["username"] if person else "成员") + " 的私聊"
-                    requests.append(
-                        {
-                            key: row[key]
-                            for key in (
-                                "id",
-                                "job_id",
-                                "project_id",
-                                "project_name",
-                                "agent_id",
-                                "agent_name",
-                                "node",
-                                "digest",
-                                "created_at",
-                            )
-                        }
-                        | {"manifest": json.loads(row["manifest"]), "destination": target}
-                    )
-                return {"requests": requests}
+                return {"requests": self._attachment_approvals(db, user)}
         if op == "attachment-decide":
-            approval_id, approve = p.get("id"), p.get("approve")
-            if not isinstance(approval_id, str) or not isinstance(approve, bool):
-                raise ValueError("无效的附件批准决定")
             with self.store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
-                row = db.execute(
-                    "SELECT * FROM attachment_approvals WHERE id=? AND owner_id=?", (approval_id, user)
-                ).fetchone()
-                if not row:
-                    raise PermissionError("附件请求不存在或不属于当前账户")
-                desired = "approved" if approve else "rejected"
-                if row["state"] != "pending":
-                    if row["state"] != desired:
-                        raise PermissionError("附件请求已经处理或结束")
-                else:
-                    job = db.execute(
-                        "SELECT state,cancel_requested FROM pull_jobs WHERE id=?", (row["job_id"],)
-                    ).fetchone()
-                    if (
-                        not job
-                        or job["state"]
-                        in {"needs_review", "completed", "failed", "cancelled", "timed_out", "interrupted"}
-                        or job["cancel_requested"]
-                    ):
-                        db.execute(
-                            "UPDATE attachment_approvals SET state='closed',updated_at=? WHERE id=?",
-                            (time.time(), approval_id),
-                        )
-                        raise PermissionError("任务已结束或已取消")
-                    db.execute(
-                        "UPDATE attachment_approvals SET state=?,updated_at=? WHERE id=?",
-                        (desired, time.time(), approval_id),
-                    )
-                return {"id": approval_id, "state": desired, "digest": row["digest"]}
+                return self._attachment_decide(db, user, p.get("id"), p.get("approve"))
         if op == "health-status":
             return self.store.health_status()
         if op == "events-wait":
@@ -652,15 +801,19 @@ class AccountBackend:
                 self.store.mark_conversation_read(user, project, p["active_conversation_id"])
             result = self.store.project_view(user, project, delegate=public if delegate_scopes is not None else None)
             from agent_harness.project_memory import ProjectMemory
+            from agent_harness.project_work import ProjectWork
 
             result["project_memory"] = ProjectMemory(self.store).snapshot(user, project)
             with self.store.connect() as db:
+                result["work"] = ProjectWork(self.store).view(db, user, project)
                 if p.get("visit") is True:
                     db.execute(
                         "INSERT INTO account_project_visits VALUES(?,?,?) ON CONFLICT(account_id,project_id) DO UPDATE SET visited=excluded.visited",
                         (user, project, time.time()),
                     )
                 self._project_agent_controls(db, result, project, user, delegate_scopes is not None)
+                if delegate_scopes is None:
+                    result["mcp_approval_kinds"] = self._mcp_approval_kinds(db, user, project)
                 result["workspaces"] = [
                     dict(row)
                     for row in db.execute(
@@ -748,6 +901,10 @@ class AccountBackend:
             )
         if op == "conversation-read":
             return self.store.mark_conversation_read(user, p["project"], p["conversation_id"])
+        if op == "project-work":
+            from agent_harness.project_work import ProjectWork
+
+            return ProjectWork(self.store).command(user, p, public if delegate_scopes is not None else None)
         if op == "task":
             if delegate_scopes is not None:
                 p = {**p, "requested_via": client_label(p.get("client")) or "codex"}
@@ -767,18 +924,19 @@ class AccountBackend:
         if op == "task-status":
             with self.store.connect() as db:
                 row = db.execute("SELECT * FROM tasks WHERE id=?", (p.get("task"),)).fetchone()
-                if not row:
+                if not row or "project" in p and row["project_id"] != p["project"]:
                     raise ValueError("未知任务")
                 self.store.require_member(db, row["project_id"], user)
                 if not self.store.task_visible_to_human(db, row, user):
                     raise PermissionError("无权查看此任务")
                 result = dict(row)
+                result["trace"] = self.store.task_trace_for_human(db, row, user)
                 recovery = self.store.local_task_recovery(
                     db, row, user, public if delegate_scopes is not None else None
                 )
                 if recovery:
                     result["local_recovery"] = recovery
-                return result
+                return {"ok": True, "result": result}
         if op == "memory-note-add":
             from agent_harness.project_memory import ProjectMemory
 

@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import tempfile
 import time
@@ -18,7 +19,7 @@ from agent_harness.account_identity import (
     encrypt_profile,
 )
 from agent_harness.account_backend import AccountBackend, device_node
-from agent_harness.collaboration_store import Store
+from agent_harness.collaboration_store import Store, digest
 from agent_harness.broker import PullBackend
 
 
@@ -54,6 +55,17 @@ class IdentityTests(unittest.TestCase):
             "register",
         )
 
+    def activate_delegate(self, owner, scopes=None):
+        delegate = generate_identity()
+        scopes = scopes if scopes is not None else ["collaboration.message", "collaboration.read", "collaboration.task"]
+        delegate.update(
+            account_id=owner["account_id"],
+            chain=approve_delegate(owner, delegate["public_key"], scopes),
+        )
+        activated = self.call(delegate, "activate-device", {"device_name": "Codex MCP"}, "activate-device")
+        self.assertEqual(activated["account_id"], owner["account_id"])
+        return delegate
+
     def test_encryption(self):
         # Keep this generic contract independent of the host's real Keychain,
         # DPAPI, or Secret Service. OS envelopes have dedicated unit tests.
@@ -69,6 +81,60 @@ class IdentityTests(unittest.TestCase):
         target[field] = target[field][:-5] + "AAAAA"
         with self.assertRaises(PermissionError):
             decrypt_identity(bad, "")
+
+    def test_task_trace_is_scoped_in_signed_status_and_project_messages(self):
+        from tests.helpers import provision_account
+
+        self.register()
+        owner = self.root["account_id"]
+        delegate = self.activate_delegate(self.root)
+        project = self.call(self.root, "create-project", {"name": "Work"})["id"]
+        unrelated = self.call(self.root, "create-project", {"name": "Other"})["id"]
+        peer = provision_account(self.store, "peer", invite=self.store.invite(owner, project)["invite"])["id"]
+        node = device_node(self.root["public_key"])
+        with self.store.connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) "
+                "VALUES ('agent-1',?,'Worker',?,?,'workspace','test','medium',60)",
+                (project, owner, node),
+            )
+        private_message = self.store.message(owner, project, "private source", recipient="agent-1")
+        foreign_message = self.store.message(owner, unrelated, "another project")
+        contract = {
+            "project": project,
+            "agent": "agent-1",
+            "title": "Investigate",
+            "instructions": "Inspect",
+            "acceptance": "Report",
+            "validation": "Review",
+            "audience": "private",
+        }
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "task", {**contract, "source_message_id": foreign_message["id"]})
+        task = self.call(delegate, "task", {**contract, "source_message_id": private_message["id"]})["id"]
+        with self.assertRaisesRegex(ValueError, "未知任务"):
+            self.call(delegate, "task-status", {"task": task, "project": unrelated})
+        trace = self.call(delegate, "task-status", {"task": task, "project": project})["result"]["trace"]
+        self.assertEqual(trace["source_message_id"], private_message["id"])
+        self.assertEqual(trace["agent_name"], "Worker")
+        self.assertEqual((trace["node"], trace["node_name"]), (node, "Laptop"))
+        self.assertEqual(trace["delivery_conversation_id"], private_message["conversation_id"])
+
+        with self.store.connect() as db:
+            db.execute("UPDATE tasks SET state='needs_review',processed=1 WHERE id=?", (task,))
+            p = self.store.require_member(db, project, owner)
+            agent = self.store.require_agent_owner(db, "agent-1", owner)
+            child = self.store._task(db, p, agent, {**contract, "audience": "group"}, owner, parent_task_id=task)["id"]
+            self.store.finalize_draft(db, child, "public report", None)
+        owner_view = self.store.project_view(owner, project)
+        linked = next(m for m in owner_view["messages"] if m["body"] == "public report")
+        self.assertEqual((linked["task_id"], linked["reply_to_message_id"]), (child, private_message["id"]))
+        peer_view = self.store.project_view(peer, project)
+        child_trace = next(t["trace"] for t in peer_view["tasks"] if t["id"] == child)
+        self.assertEqual(child_trace["delivery_conversation_id"], self.store.group_conversation(project))
+        self.assertIsNone(child_trace["source_message_id"])
+        self.assertIsNone(child_trace["parent_task_id"])
+        self.assertNotIn("reply_to_message_id", next(m for m in peer_view["messages"] if m["body"] == "public report"))
 
     def test_legacy_v1_identity_remains_compatible(self):
         legacy = encrypt_profile(self.root, "legacy-password")
@@ -362,14 +428,7 @@ class IdentityTests(unittest.TestCase):
     def test_scoped_codex_delegate_can_collaborate_but_not_administer(self):
         self.register()
         project = self.call(self.root, "create-project", {"name": "MCP project"})["id"]
-        delegate = generate_identity()
-        scopes = ["collaboration.message", "collaboration.read", "collaboration.task"]
-        delegate.update(
-            account_id=self.root["account_id"],
-            chain=approve_delegate(self.root, delegate["public_key"], scopes),
-        )
-        activated = self.call(delegate, "activate-device", {"device_name": "Codex MCP"}, "activate-device")
-        self.assertEqual(activated["account_id"], self.root["account_id"])
+        delegate = self.activate_delegate(self.root)
         self.assertEqual(self.call(delegate, "dashboard", {})["projects"][0]["id"], project)
         sent = self.call(
             delegate,
@@ -421,12 +480,47 @@ class IdentityTests(unittest.TestCase):
         request = next(m["permission_request"] for m in owner_view["messages"] if m.get("permission_request"))
         self.assertEqual(request["agent_id"], "agent-permissions")
         permission = {"project": project, "request_id": request["id"], "approve": False}
+        decision = {"project": project, "kind": "permission", "id": request["id"], "approve": True, "client": "dsh"}
+        self.assertEqual(owner_view["mcp_approval_kinds"], [])
+        pending = self.call(delegate, "mcp-approvals", {"project": project})["requests"]
+        self.assertEqual(
+            [(r["kind"], r["id"], r["can_decide"]) for r in pending], [("permission", request["id"], False)]
+        )
         with self.assertRaises(PermissionError):
             self.call(delegate, "permission-decide", permission)
         with self.assertRaises(PermissionError):
             self.call(delegate, "message", {"project": project, "body": "/allow Peer"})
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "mcp-approval-decide", decision)
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "mcp-approval-policy", {"project": project, "kinds": ["permission"]})
         self.assertEqual(self.store.grants("agent-permissions"), [])
-        self.assertEqual(self.call(self.root, "permission-decide", permission)["state"], "denied")
+        self.assertEqual(
+            self.call(self.root, "mcp-approval-policy", {"project": project, "kinds": ["permission"]}),
+            {"kinds": ["permission"]},
+        )
+        self.assertEqual(self.call(self.root, "project", {"project": project})["mcp_approval_kinds"], ["permission"])
+        self.assertTrue(self.call(delegate, "mcp-approvals", {})["requests"][0]["can_decide"])
+        observer = self.activate_delegate(self.root, ["collaboration.read"])
+        self.assertFalse(self.call(observer, "mcp-approvals", {})["requests"][0]["can_decide"])
+        with self.assertRaises(PermissionError):
+            self.call(observer, "mcp-approval-decide", decision)
+        approved = self.call(delegate, "mcp-approval-decide", decision)
+        self.assertEqual(approved["state"], "approved")
+        self.assertEqual(self.call(delegate, "mcp-approval-decide", decision), approved)
+        self.assertEqual(self.call(delegate, "mcp-approvals", {})["requests"], [])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM tasks WHERE project_id=?", (project,)).fetchone()[0], 2)
+            audits = db.execute("SELECT actor,details FROM audit WHERE action='mcp_approval_decide'").fetchall()
+            self.assertTrue(audits)
+            self.assertTrue(all(row["actor"] == self.root["account_id"] for row in audits))
+            self.assertTrue(
+                all(json.loads(row["details"])["delegate"] == digest(delegate["public_key"]) for row in audits)
+            )
+            self.assertEqual(json.loads(audits[0]["details"])["client"], "dsh")
+        self.call(self.root, "mcp-approval-policy", {"project": project, "kinds": []})
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "mcp-approval-decide", decision)
         delegate_view = self.call(delegate, "project", {"project": project})
         self.assertFalse(delegate_view["members"][0]["can_manage_project_agent"])
         self.assertFalse(any("permission_request" in m for m in delegate_view["messages"]))
@@ -443,6 +537,129 @@ class IdentityTests(unittest.TestCase):
         self.call(self.root, "revoke-delegate", {"public_key": delegate["public_key"]})
         with self.assertRaises(PermissionError):
             self.call(delegate, "dashboard", {})
+
+    def test_delegated_attachment_approval_is_bound_to_owner_project_and_manifest(self):
+        self.register()
+        owner = self.root["account_id"]
+        project = self.call(self.root, "create-project", {"name": "MCP attachment"})["id"]
+        unrelated = self.call(self.root, "create-project", {"name": "Other"})["id"]
+        delegate = self.activate_delegate(self.root)
+        other = generate_identity()
+        self.register(other)
+        invitation = self.call(self.root, "invite", {"project": project})["invite"]
+        self.store.join(other["account_id"], invitation)
+        other_delegate = self.activate_delegate(other)
+        self.call(other, "mcp-approval-policy", {"project": project, "kinds": ["attachment"]})
+        node = device_node(self.root["public_key"])
+        manifest = [{"name": "report.txt", "relative_path": "private/report.txt", "size": 4, "sha256": "a" * 64}]
+        manifest_digest = "b" * 64
+        with self.store.connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) "
+                "VALUES ('attachments',?,'Sender',?,?,'workspace','deepseek-flash','medium',60)",
+                (project, owner, node),
+            )
+            db.execute(
+                "INSERT INTO pull_jobs(id,node,agent_id,kind,request,state,lease_id,created_at) "
+                "VALUES ('job',?,'attachments','task','{}','running','lease',?)",
+                (node, time.time()),
+            )
+            db.execute(
+                "INSERT INTO tasks(id,project_id,agent_id,title,contract,state,job,created_at) "
+                "VALUES ('task',?,'attachments','Private task',?,'running','job',?)",
+                (project, json.dumps({"private_turn": True, "reply_to": other["account_id"]}), time.time()),
+            )
+            db.execute(
+                "INSERT INTO attachment_approvals VALUES ('attachment','job',?,?,'attachments',?,?,?,'pending',?,?)",
+                (owner, node, project, json.dumps(manifest), manifest_digest, time.time(), time.time()),
+            )
+        visible = self.call(delegate, "mcp-approvals", {"project": project})["requests"][0]
+        self.assertEqual(
+            (visible["kind"], visible["digest"], visible["destination"]), ("attachment", manifest_digest, "私聊")
+        )
+        self.assertNotIn("relative_path", visible["manifest"][0])
+        self.assertFalse(visible["can_decide"])
+        self.call(self.root, "mcp-approval-policy", {"project": project, "kinds": ["attachment"]})
+        self.call(self.root, "mcp-approval-policy", {"project": unrelated, "kinds": ["attachment"]})
+        self.assertEqual(self.call(other_delegate, "mcp-approvals", {"project": project})["requests"], [])
+        decision = {
+            "project": project,
+            "kind": "attachment",
+            "id": "attachment",
+            "approve": True,
+            "digest": manifest_digest,
+        }
+        with self.assertRaises(PermissionError):
+            self.call(other_delegate, "mcp-approval-decide", decision)
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "mcp-approval-decide", {**decision, "project": unrelated})
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "mcp-approval-decide", {**decision, "digest": "c" * 64})
+        self.assertTrue(self.call(delegate, "mcp-approvals", {})["requests"][0]["can_decide"])
+        approved = self.call(delegate, "mcp-approval-decide", decision)
+        self.assertEqual(approved["state"], "approved")
+        self.assertEqual(self.call(delegate, "mcp-approval-decide", decision), approved)
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "mcp-approval-decide", {**decision, "approve": False})
+        self.assertEqual(self.call(delegate, "mcp-approvals", {})["requests"], [])
+
+    def test_delegated_execution_approval_requires_its_own_policy_and_receiver_digest(self):
+        self.register()
+        owner = self.root["account_id"]
+        project = self.call(self.root, "create-project", {"name": "MCP execution"})["id"]
+        delegate = self.activate_delegate(self.root)
+        node = device_node(self.root["public_key"])
+        request_id = "execution-check"
+        snapshot = "d" * 64
+        with self.store.connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) "
+                "VALUES ('executor',?,'Executor',?,?,'workspace','deepseek-flash','medium',60)",
+                (project, owner, node),
+            )
+            db.execute("INSERT INTO pull_bindings VALUES ('executor','[]','[\"check\"]')")
+            db.execute(
+                "INSERT INTO executions(id,project_id,agent_id,template,state,created_at) "
+                "VALUES (?,?,'executor','check','running',?)",
+                (request_id, project, time.time()),
+            )
+            db.execute(
+                "INSERT INTO pull_jobs(id,node,agent_id,kind,request,state,lease_id,result,created_at) "
+                "VALUES (?,?,'executor','execution',?,'running','lease',?,?)",
+                (
+                    request_id,
+                    node,
+                    json.dumps({"template": "check"}),
+                    json.dumps({"local_status": "waiting_local_approval"}),
+                    time.time(),
+                ),
+            )
+        self.call(self.root, "mcp-approval-policy", {"project": project, "kinds": ["permission"]})
+        payload = {"project": project, "kind": "execution", "id": request_id, "approve": True, "digest": snapshot}
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "mcp-approval-decide", payload)
+        self.call(self.root, "mcp-approval-policy", {"project": project, "kinds": ["execution"]})
+        [waiting] = self.call(delegate, "mcp-approvals", {"project": project})["requests"]
+        self.assertEqual((waiting["kind"], waiting["template"], waiting["id"]), ("execution", "check", request_id))
+        self.assertFalse(waiting["can_decide"])
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "mcp-approval-decide", payload)
+        with self.store.connect() as db:
+            db.execute(
+                "UPDATE pull_jobs SET result=? WHERE id=?",
+                (
+                    json.dumps({"local_status": "waiting_local_approval", "execution_approval_digest": snapshot}),
+                    request_id,
+                ),
+            )
+        [ready] = self.call(delegate, "mcp-approvals", {"project": project})["requests"]
+        self.assertTrue(ready["can_decide"])
+        self.assertEqual(ready["digest"], snapshot)
+        denied = self.call(delegate, "mcp-approval-decide", {**payload, "approve": False})
+        self.assertEqual(denied["state"], "denied")
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "mcp-approval-decide", payload)
+        self.assertEqual(self.call(delegate, "mcp-approvals", {"project": project})["requests"], [])
 
     def test_delegate_certificate_is_leaf_only_and_tamper_evident(self):
         delegate = generate_identity()

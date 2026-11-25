@@ -19,6 +19,7 @@ from agent_harness.pull_worker import (
     api,
     enroll,
 )
+from agent_harness.workspace_ownership import DIRTY_WORKTREE
 
 
 class PullWorkerTests(unittest.TestCase):
@@ -84,6 +85,7 @@ class PullWorkerTests(unittest.TestCase):
         self.reports = []
         self.jobs = []
         self.cancellations = []
+        self.execution_decisions = []
         self.fail_report = False
         self.local_state = "needs_review"
 
@@ -101,6 +103,7 @@ class PullWorkerTests(unittest.TestCase):
                     "jobs": self.jobs,
                     "projects": [],
                     "cancellations": self.cancellations,
+                    "execution_decisions": self.execution_decisions,
                 }
             if self.fail_report:
                 raise OSError("offline")
@@ -138,6 +141,42 @@ class PullWorkerTests(unittest.TestCase):
 
     def starts(self, action="start"):
         return [r for r in self.calls if r["action"] == action]
+
+    def test_busy_workspace_retries_same_lease_without_unknown_execution(self):
+        self.jobs = [self.job("busy")]
+        executor = self.connector.executor
+
+        def temporarily_busy(request):
+            if request["action"] == "start":
+                self.calls.append(request)
+                raise ValueError("Remote directory is busy in another project")
+            return executor(request)
+
+        self.connector.executor = temporarily_busy
+        self.connector.cycle()
+        waiting = read_json(self.connector.receipt_path("busy"))
+        self.assertEqual((waiting["phase"], waiting["result"]["local_status"]), ("received", "workspace_busy"))
+        self.assertEqual(self.reports[-1]["state"], "running")
+        self.connector.executor = executor
+        self.connector.cycle()
+        self.assertEqual([call["job"] for call in self.starts()], [waiting["local_id"], waiting["local_id"]])
+        self.connector.cycle()
+        self.assertEqual(self.reports[-1]["state"], "needs_review")
+
+    def test_uncommitted_changes_from_another_work_block_before_launch(self):
+        self.jobs = [self.job("dirty")]
+        executor = self.connector.executor
+
+        def dirty_worktree(request):
+            if request["action"] == "start":
+                raise ValueError(DIRTY_WORKTREE)
+            return executor(request)
+
+        self.connector.executor = dirty_worktree
+        self.connector.cycle()
+        self.assertEqual(self.reports[-1]["state"], "failed")
+        self.assertEqual(self.reports[-1]["result"]["error"], DIRTY_WORKTREE)
+        self.assertTrue(read_json(self.connector.receipt_path("dirty"))["reported_terminal"])
 
     def test_old_reported_local_results_are_pruned_without_touching_active_work(self):
         old_id = "pull-" + "a" * 48
@@ -274,6 +313,62 @@ class PullWorkerTests(unittest.TestCase):
         self.connector.cycle()
         self.assertEqual(self.reports[-1]["state"], "failed")
         self.assertEqual(len(self.starts("execution_start")), 1)
+
+    def test_delegated_execution_uses_exact_snapshot_and_is_not_replayed(self):
+        template = self.root / "projects" / "local" / "execution_templates.json"
+        write_json(template, {"check": {"argv": ["fixed-program", "arg"]}})
+        self.jobs = [self.job("exec", "execution", {"template": "check"})]
+        self.connector.cycle()
+        pending = self.reports[-1]["result"]
+        self.assertEqual(pending["local_status"], "waiting_local_approval")
+        self.assertEqual(set(pending), {"status", "local_status", "execution_approval_digest"})
+        digest = pending["execution_approval_digest"]
+        self.assertEqual(len(digest), 64)
+        approved = {"job_id": "exec", "digest": digest, "approved": True}
+        self.execution_decisions = [{**approved, "digest": "0" * 64}]
+        self.connector.cycle()
+        self.assertFalse(self.starts("execution_start"))
+
+        self.execution_decisions = [approved]
+        self.connector.cycle()
+        self.connector.cycle()
+        self.connector.cycle()
+        self.assertEqual(len(self.starts("execution_start")), 1)
+        self.assertEqual(self.starts("execution_start")[0]["expected_execution_digest"], digest)
+        self.assertEqual(self.reports[-1]["state"], "completed")
+
+    def test_delegated_execution_rejects_changed_templates_and_cancellation_wins(self):
+        template = self.root / "projects" / "local" / "execution_templates.json"
+        for case in ("mutated", "cancelled", "denied"):
+            with self.subTest(case=case):
+                write_json(template, {"check": {"argv": ["fixed-program", "arg"]}})
+                self.jobs = [self.job(case, "execution", {"template": "check"})]
+                self.connector.cycle()
+                digest = self.reports[-1]["result"]["execution_approval_digest"]
+                self.execution_decisions = [{"job_id": case, "digest": digest, "approved": case != "denied"}]
+                if case == "mutated":
+                    write_json(template, {"check": {"argv": ["different-program"]}})
+                if case == "cancelled":
+                    self.cancellations = [case]
+                self.connector.cycle()
+                self.assertEqual(self.reports[-1]["state"], "failed" if case == "mutated" else "cancelled")
+                self.assertFalse(self.starts("execution_start"))
+
+    def test_prelaunch_snapshot_refusal_is_terminal_without_reconciliation(self):
+        write_json(
+            self.root / "projects" / "local" / "execution_templates.json",
+            {"check": {"argv": ["fixed-program"]}},
+        )
+        self.jobs = [self.job("exec", "execution", {"template": "check"})]
+        self.connector.cycle()
+        digest = self.reports[-1]["result"]["execution_approval_digest"]
+        self.execution_decisions = [{"job_id": "exec", "digest": digest, "approved": True}]
+        self.connector.executor = lambda request: {"status": "failed", "error": "Snapshot changed under lock"}
+        self.connector.cycle()
+        stored = read_json(self.connector.receipt_path("exec"))
+        self.assertEqual(stored["phase"], "terminal")
+        self.assertEqual(self.reports[-1]["state"], "failed")
+        self.assertEqual(self.reports[-1]["result"]["error"], "Snapshot changed under lock")
 
     def test_lost_report_retries_without_reexecution(self):
         self.jobs = [self.job("turn")]

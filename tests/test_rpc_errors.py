@@ -12,6 +12,7 @@ class PageHandler(BaseHTTPRequestHandler):
     body = b"<html><body>bad gateway</body></html>"
 
     def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler naming
+        self.rfile.read(int(self.headers["Content-Length"]))
         self.send_response(self.status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(self.body)))

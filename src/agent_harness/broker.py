@@ -10,6 +10,7 @@ import time
 from agent_harness.collaboration_store import uid, digest
 from agent_harness.protocol import hub_advertisement
 from agent_harness.common import read_json, write_json
+from agent_harness.execution_approvals import execution_decisions, valid_execution_digest
 from agent_harness.health import report as health_report
 
 TERMINAL = {
@@ -195,6 +196,7 @@ class PullBackend:
             "jobs": jobs,
             "cancellations": cancellations,
             "attachment_decisions": decisions,
+            "execution_decisions": execution_decisions(db, device["node"], device["owner_id"]),
             "transfers": Transfers(self.store).visible(db, device["node"]),
         }
 
@@ -236,6 +238,7 @@ class PullBackend:
                     or result["owner_commands"]
                     or result["cancellations"]
                     or result["attachment_decisions"]
+                    or result["execution_decisions"]
                 ):
                     with self.store.connect() as db:
                         db.execute("BEGIN IMMEDIATE")
@@ -246,6 +249,7 @@ class PullBackend:
                 or result["owner_commands"]
                 or result["cancellations"]
                 or result["attachment_decisions"]
+                or result["execution_decisions"]
                 or time.monotonic() >= deadline
             ):
                 return result
@@ -437,6 +441,7 @@ class PullBackend:
                         time.time(),
                     ),
                 )
+                self.store.emit_account_event(db, [agent["owner_id"]], "approval", agent["project_id"])
                 return {"id": approval_id, "digest": digest_value, "state": "pending"}
             if path == "/api/device/task-inbound":
                 from agent_harness.attachments import Attachments
@@ -534,6 +539,7 @@ class PullBackend:
                         "reasoning_effort",
                         "effective_model",
                         "model_verified",
+                        "execution_approval_digest",
                     }
                 }
                 if "reply_draft" in result and (
@@ -562,6 +568,22 @@ class PullBackend:
                     raise ValueError("无效的思考强度审计字段")
                 if "model_verified" in result and not isinstance(result["model_verified"], bool):
                     raise ValueError("无效的模型核验字段")
+                if "execution_approval_digest" in result and (
+                    row["kind"] != "execution"
+                    or state != "running"
+                    or result.get("local_status") != "waiting_local_approval"
+                    or not valid_execution_digest(result["execution_approval_digest"])
+                ):
+                    raise ValueError("无效的登记命令审批快照")
+                previous = json.loads(row["result"] or "{}")
+                old_approval = (
+                    previous.get("local_status") == "waiting_local_approval",
+                    previous.get("execution_approval_digest"),
+                )
+                new_approval = (
+                    result.get("local_status") == "waiting_local_approval",
+                    result.get("execution_approval_digest"),
+                )
                 result["status"] = state
                 serialized = json.dumps(result, ensure_ascii=False, sort_keys=True)
                 if len(serialized) > 1000000:
@@ -575,6 +597,10 @@ class PullBackend:
                     "UPDATE pull_jobs SET state=?,result=? WHERE id=?",
                     (state, serialized, row["id"]),
                 )
+                if row["kind"] == "execution" and old_approval != new_approval:
+                    self.store.emit_account_event(
+                        db, [device["owner_id"]], "approval", self._job_binding(db, row)["project_id"]
+                    )
                 if state in TERMINAL:
                     db.execute(
                         "UPDATE attachment_approvals SET state='closed',updated_at=? WHERE job_id=?",

@@ -1,6 +1,7 @@
 import tempfile
 import threading
 import unittest
+import uuid
 from types import SimpleNamespace
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -74,6 +75,61 @@ class McpAdapterTests(unittest.TestCase):
         self.assertEqual(view["messages"][-1]["body"], "Hello from normal Codex")
         self.assertEqual(view["messages"][-1]["sender_client"], "codex")
 
+    def test_desktop_and_signed_mcp_share_project_work_with_durable_followups(self):
+        account = self.bridge.identity["account_id"]
+        with Store(self.state).connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    "agent-work",
+                    self.project,
+                    "Worker",
+                    account,
+                    self.bridge.profile["node"],
+                    "backend",
+                    "model",
+                    "low",
+                    90,
+                ),
+            )
+        contract = {
+            "project": self.project,
+            "action": "create",
+            "agent": "agent-work",
+            "instructions": "Investigate and verify",
+            "deliverable": "Reproduction and analysis",
+            "acceptance": "Record the result",
+            "validation": "Check the reproduction",
+            "visibility": "group",
+        }
+        first = self.bridge.invoke(
+            "project-work", {**contract, "title": "Login", "client_request_id": str(uuid.uuid4())}
+        )
+        self.assertTrue(first["ok"], first)
+        first_id = first["result"]["id"]
+        creation = {**contract, "title": "Packaging", "client_request_id": str(uuid.uuid4())}
+        second = self.backend.call("harness_project_work", creation)
+        self.assertNotEqual(first_id, second["id"])
+        self.assertEqual(self.backend.call("harness_project_work", creation)["id"], second["id"])
+        follow_up = {
+            "project": self.project,
+            "action": "follow-up",
+            "work_id": first_id,
+            "body": "Check Wi-Fi changes too",
+            "client_request_id": str(uuid.uuid4()),
+        }
+        self.backend.call("harness_project_work", follow_up)
+        self.backend.call("harness_project_work", follow_up)
+        view = self.backend.call("harness_project_read", {"project": self.project})
+        items = {item["id"]: item for item in view["work"]["items"]}
+        self.assertEqual(set(items), {first_id, second["id"]})
+        self.assertEqual(sum(item.get("body") == follow_up["body"] for item in items[first_id]["inputs"]), 1)
+        self.assertFalse(any(item.get("body") == follow_up["body"] for item in items[second["id"]]["inputs"]))
+        other = self.bridge._rpc("create-project", {"name": "Another project"})["id"]
+        with self.assertRaises((ValueError, PermissionError, RuntimeError)):
+            self.backend.call("harness_project_work", {**follow_up, "project": other})
+
     def test_assigns_owned_agent_asynchronously_and_reads_status(self):
         account = self.bridge.identity["account_id"]
         node = self.bridge.profile["node"]
@@ -110,6 +166,135 @@ class McpAdapterTests(unittest.TestCase):
         self.assertEqual(__import__("json").loads(state["contract"])["requested_via"], "codex")
         cancellation = self.backend.call("harness_task_cancel", {"project": "MCP project", "task": task["id"]})
         self.assertEqual(cancellation["state"], "cancelled")
+
+    def test_unknown_task_diagnostic_preserves_owner_recovery_and_mcp_status(self):
+        account = self.bridge.identity["account_id"]
+        node = self.bridge.profile["node"]
+        with Store(self.state).connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                ("agent-owned", self.project, "Worker", account, node, "backend", "model", "medium", 120),
+            )
+            db.execute(
+                "INSERT INTO tasks(id,project_id,agent_id,title,contract,state,created_at,cutoff,job,error) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "task-unknown",
+                    self.project,
+                    "agent-owned",
+                    "Unknown",
+                    "{}",
+                    "unknown",
+                    0,
+                    0,
+                    "pull-job",
+                    "Unknown job",
+                ),
+            )
+            db.execute(
+                "INSERT INTO pull_jobs(id,node,agent_id,kind,request,state,lease_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                ("pull-job", node, "agent-owned", "task", "{}", "unknown", "lease", 0),
+            )
+        state = self.bridge._rpc("task-status", {"task": "task-unknown"})
+        self.assertEqual(state["error"], "Unknown job")
+        self.assertEqual(state["local_recovery"], {"node": node, "job_id": "pull-job"})
+        delegated = self.backend.call("harness_task_get", {"project": self.project, "task": "task-unknown"})
+        self.assertEqual((delegated["state"], delegated["error"]), ("unknown", "Unknown job"))
+        self.assertNotIn("local_recovery", delegated)
+
+    def test_task_trace_preserves_visible_source_and_enforces_project_routing(self):
+        owner = self.bridge.identity["account_id"]
+        node = self.bridge.profile["node"]
+        with Store(self.state).connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                ("agent-trace", self.project, "Trace worker", owner, node, "backend", "model", "medium", 120),
+            )
+        source = self.backend.call("harness_message_send", {"project": "MCP project", "body": "A proposed review"})
+        task = self.backend.call(
+            "harness_task_assign",
+            {
+                "project": "MCP project",
+                "agent": "agent-trace",
+                "title": "Review",
+                "instructions": "Check the sample",
+                "acceptance": "Report findings",
+                "validation": "Inspect the sample",
+                "source_message_id": source["id"],
+            },
+        )
+        status = self.backend.call("harness_task_get", {"project": "MCP project", "task": task["id"]})
+        self.assertEqual(status["trace"]["source_message_id"], source["id"])
+        self.assertEqual(status["trace"]["agent_id"], "agent-trace")
+        self.assertEqual(status["trace"]["node"], node)
+        self.assertEqual(status["trace"]["delivery_conversation_id"], source["conversation_id"])
+        view = self.backend.call("harness_project_read", {"project": "MCP project"})
+        self.assertEqual(view["tasks"][0]["trace"], status["trace"])
+
+        other = self.bridge._rpc("create-project", {"name": "Other project"}, server=self.url)["id"]
+        self.backend.call("harness_projects_list", {})
+        with self.assertRaises((PermissionError, ValueError)):
+            self.backend.call("harness_task_get", {"project": other, "task": task["id"]})
+
+    def test_delegate_receives_pending_request_and_uses_explicit_project_approval_policy(self):
+        store = Store(self.state)
+        owner = self.bridge.identity["account_id"]
+        node = self.bridge.profile["node"]
+        contract = '{"title":"Review","instructions":"Review","acceptance":"Done","validation":"Check"}'
+        with store.connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                ("agent-owned", self.project, "Worker", owner, node, "backend", "model", "medium", 120),
+            )
+            db.execute(
+                "INSERT INTO tasks(id,project_id,agent_id,title,contract,state,created_at,cutoff,processed) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                ("task-source", self.project, "agent-owned", "Review", contract, "needs_review", 0, 0, 1),
+            )
+            source = db.execute("SELECT * FROM tasks WHERE id='task-source'").fetchone()
+            agent = db.execute("SELECT * FROM agents WHERE id='agent-owned'").fetchone()
+            store.post_permission_request(db, self.project, agent, source, {"reason": "Review a test fixture"})
+
+        requests = self.backend.call("harness_approvals_list", {"project": "MCP project"})["requests"]
+        self.assertEqual(len(requests), 1)
+        notice = requests[0]
+        self.assertEqual(notice["kind"], "permission")
+        self.assertEqual(notice["reason"], "Review a test fixture")
+        self.assertFalse(notice["can_decide"])
+        decision = {"project": "MCP project", "id": notice["id"], "kind": "permission", "approve": True}
+        with self.assertRaises(PermissionError):
+            self.backend.call("harness_approval_decide", decision)
+        with self.assertRaises(PermissionError):
+            self.backend._rpc(self.url, "mcp-approval-policy", {"project": self.project, "kinds": ["permission"]})
+
+        configured = self.bridge.invoke("mcp-approval-policy", {"project": self.project, "kinds": ["permission"]})
+        self.assertTrue(configured["ok"], configured)
+        requests = self.backend.call("harness_approvals_list", {})["requests"]
+        self.assertTrue(requests[0]["can_decide"])
+        approved = self.backend.call("harness_approval_decide", decision)
+        self.assertEqual(approved["state"], "approved")
+        self.assertEqual(self.backend.call("harness_approval_decide", decision)["task_id"], approved["task_id"])
+        self.assertEqual(self.backend.call("harness_approvals_list", {})["requests"], [])
+        with store.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 2)
+
+    def test_approval_wait_checks_new_ids_and_returns_current_snapshot(self):
+        old = {"id": "already-seen"}
+        new = {"id": "new-request"}
+        with (
+            patch.object(
+                self.backend, "_approval_snapshot", side_effect=[{"requests": [old]}, {"requests": [old, new]}]
+            ),
+            patch("agent_harness.mcp_adapter.time.sleep") as wait,
+        ):
+            result = self.backend.call(
+                "harness_approvals_list", {"project": self.project, "seen_ids": ["already-seen"], "wait_seconds": 10}
+            )
+        self.assertEqual(result["requests"], [old, new])
+        wait.assert_called_once_with(2)
 
     def test_project_names_are_sent_to_hub_as_ids(self):
         sent = self.backend.call("harness_message_send", {"project": "MCP project", "body": "Addressed by name"})

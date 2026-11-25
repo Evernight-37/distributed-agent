@@ -59,7 +59,7 @@ def write_release_metadata(destination, source=PROJECT_ROOT, *, service_build=No
 
 
 def getting_started_text(version):
-    return f"Foolship {version}\n双击 Foolship.exe。\n账户、接收设置、MCP 授权和团队数据库保存在 %LOCALAPPDATA%\\Foolship\\data（团队数据库位于其中的 team-service）。程序和用户数据分开：移动或重装程序不影响数据；收到的文件默认在 Documents\\Foolship\\Received。\n首次使用点击“创建账户”；自己的另一台电脑点击“关联我的另一台电脑”，由已登录设备批准。\n凭服务地址和项目邀请代码加入其他团队，不用重新创建身份。\n先创建或加入项目，再在项目内选择自己的设备并新增、配置 Agent。\n设置页管理设备、后台接收和服务连接。\n在“设置 → 在 Codex 中使用协作”点“连接到 Codex”后，可以在普通 Codex 对话里查看 Foolship 项目、发消息和给项目里的 Agent 派异步任务。\nCodex 使用单独的受限身份，不能邀请成员、管理别人的机器或批准命令；断开不会删除项目。\n首次运行 agent 或连接 Codex 前，每台机器需要已有可用的 Codex 登录。\n账户身份保存在当前 Windows 用户目录；项目文件不会自动同步。\n卸载时可以选择是否同时删除 %LOCALAPPDATA%\\Foolship\\data；默认保留，重装后账户与团队数据继续可用。\n请保留整个发布目录，不要只复制 exe。\n"
+    return f"Foolship {version}\n双击 Foolship.exe。\n账户、接收设置、MCP 授权和团队数据库保存在 %LOCALAPPDATA%\\Foolship\\data（团队数据库位于其中的 team-service）。程序和用户数据分开：移动或重装程序不影响数据；收到的文件默认在 Documents\\Foolship\\Received。\n首次使用点击“创建账户”；自己的另一台电脑点击“关联我的另一台电脑”，由已登录设备批准。\n凭服务地址和项目邀请代码加入其他团队，不用重新创建身份。\n先创建或加入项目，再在项目内选择自己的设备并新增、配置 Agent。\n设置页管理设备、后台接收和服务连接。\n在“设置 → 在 Codex 中使用协作”点“连接到 Codex”后，可以在普通 Codex 对话里查看 Foolship 项目、发消息和给项目里的 Agent 派异步任务。\nCodex 使用与本人关联的委托身份。可在项目的“MCP 审批权限”中授权它处理自己设备的申请。\n首次运行 agent 或连接 Codex 前，每台机器需要已有可用的 Codex 登录。\n账户身份保存在当前 Windows 用户目录；项目文件不会自动同步。\n卸载时可以选择是否同时删除 %LOCALAPPDATA%\\Foolship\\data；默认保留，重装后账户与团队数据继续可用。\n请保留整个发布目录，不要只复制 exe。\n"
 
 
 def main(output_root=None):

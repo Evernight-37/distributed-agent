@@ -85,6 +85,9 @@ async function checkProjectAgentForms() {
   let modalBody;
   let fields;
   const calls = [];
+  let failWorkOnce = false;
+  const copied = [];
+  const jumped = [];
   const context = vm.createContext({
     S: state,
     FoolshipDesktop: { render: {}, components: {}, events: {} },
@@ -103,12 +106,24 @@ async function checkProjectAgentForms() {
       render(modalBody, actionBar);
     },
     closeModal() {},
+    copyText: async (value) => copied.push(value),
+    requestAnimationFrame: (fn) => fn(),
+    document: {
+      getElementById: (id) => ({
+        scrollIntoView: () => jumped.push(id),
+        focus() {},
+      }),
+    },
     note() {},
     notify() {},
     deviceName: () => "设备 A",
     refresh: async () => {},
     api: async (action, payload) => {
       calls.push([action, JSON.parse(JSON.stringify(payload))]);
+      if (action === "project-work" && failWorkOnce) {
+        failWorkOnce = false;
+        throw new Error("temporary failure");
+      }
       if (action === "workspace-configure") return { pending: true };
       if (action === "project")
         return { ...view, workspaces: [{ node: "worker-a", status: "ready" }] };
@@ -198,6 +213,179 @@ async function checkProjectAgentForms() {
     "permission-decide",
     { project: "project-a", request_id: "grant-one", approve: true },
   ]);
+
+  context.editMcpApprovalPolicy("project-a", ["attachment"]);
+  assert.deepEqual(
+    modalBody.children.map((row) => row.children[0].checked),
+    [false, true, false],
+  );
+  modalBody.children[0].children[0].checked = true;
+  modalBody.children[1].children[0].checked = false;
+  await findButton("保存审批权限").click();
+  assert.deepEqual(calls[5], [
+    "mcp-approval-policy",
+    { project: "project-a", kinds: ["permission"] },
+  ]);
+
+  const admin = { id: "agent-admin", name: "管理员小蓝" };
+  const traceView = {
+    project: { id: "project-a", admin_agent_id: admin.id },
+    capabilities: ["addressed_wake_v1"],
+    members: [admin, agent],
+    conversations: [{ id: "group:project-a", title: "项目大群" }],
+    messages: [{ id: 42, conversation_id: "group:project-a" }],
+    tasks: [{ id: "task-parent", title: "上游任务" }],
+  };
+  const options = (v) =>
+    JSON.parse(JSON.stringify(context.groupMentionOptions(v)));
+  assert.deepEqual(options(traceView), [
+    ["", "普通聊天"],
+    [admin.id, "交给管理员 · @管理员小蓝"],
+    [agent.id, "@项目审阅员"],
+  ]);
+  assert.deepEqual(options({ ...traceView, capabilities: [] })[0], [
+    "",
+    "默认由管理员回复",
+  ]);
+
+  state.chatSelection = new Map([["project-a", "group:project-a"]]);
+  const traced = {
+    id: "task-traced",
+    agent_id: agent.id,
+    trace: {
+      source_message_id: 42,
+      parent_task_id: "task-parent",
+      agent_name: agent.name,
+      node: "worker-a",
+      node_name: "设备 A",
+      delivery_conversation_id: "group:project-a",
+    },
+  };
+  context.openProjectTaskTrace(traceView, traced);
+  assert.equal(fields.get("任务编号").value, "task-traced");
+  assert.equal(fields.get("任务编号").readOnly, true);
+  assert.ok(
+    modalBody.children.some((item) => item.text === "负责人 · 项目审阅员"),
+  );
+  assert.ok(
+    modalBody.children.some((item) => item.text === "执行设备 · 设备 A"),
+  );
+  assert.ok(findIn(modalBody, "交付会话 · 项目大群"));
+  await findIn(modalBody, "查看来源消息").click();
+  assert.deepEqual(jumped, ["project-message-42"]);
+  await findButton("复制任务编号").click();
+  assert.deepEqual(copied, ["task-traced"]);
+
+  context.openProjectTaskTrace(traceView, {
+    ...traced,
+    trace: {
+      ...traced.trace,
+      source_message_id: null,
+      delivery_conversation_id: "private-unavailable",
+    },
+  });
+  assert.equal(findIn(modalBody, "查看来源消息"), undefined);
+  assert.ok(!JSON.stringify(modalBody).includes("private-unavailable"));
+  findIn(modalBody, "查看上游任务").click();
+  assert.equal(fields.get("任务编号").value, "task-parent");
+
+  context.refreshProjectWork = async () => {};
+  const workView = {
+    ...traceView,
+    members: [admin, agent],
+  };
+  context.openProjectWorkForm(workView, {
+    conversation_id: "group:project-a",
+    source_message_id: 42,
+    task: { instructions: "检查这条消息" },
+  });
+  fields.get("标题").value = "核对发布清单";
+  fields.get("负责人").value = admin.id;
+  fields.get("验收标准").value = "清单完整";
+  await findButton("创建").click();
+  assert.equal(calls.at(-1)[0], "project-work");
+  assert.equal(calls.at(-1)[1].action, "create");
+  assert.equal(calls.at(-1)[1].agent, admin.id);
+  assert.equal(calls.at(-1)[1].conversation_id, "group:project-a");
+  assert.equal(calls.at(-1)[1].source_message_id, 42);
+  assert.ok(calls.at(-1)[1].client_request_id);
+
+  const draft = {
+    id: "draft-a",
+    revision: 7,
+    title: "核对发布清单",
+    instructions: "检查清单",
+    agent: admin.id,
+    stage: "implement",
+    visibility: "group",
+  };
+  context.openProjectWorkForm(workView, { draft });
+  fields.get("标题").value = "已修改但未保存";
+  await assert.rejects(findButton("确认此版本").click(), /先保存新版本/);
+  assert.notEqual(calls.at(-1)[1].action, "confirm");
+  await findButton("保存新版本").click();
+  assert.equal(calls.at(-1)[1].action, "revise");
+  assert.equal(calls.at(-1)[1].draft_id, "draft-a");
+  assert.equal(calls.at(-1)[1].revision, 7);
+
+  context.openProjectWorkForm(workView, { draft });
+  const confirm = findButton("确认此版本");
+  failWorkOnce = true;
+  await assert.rejects(confirm.click(), /temporary failure/);
+  const retryId = calls.at(-1)[1].client_request_id;
+  await confirm.click();
+  assert.equal(calls.at(-1)[1].action, "confirm");
+  assert.equal(calls.at(-1)[1].client_request_id, retryId);
+  assert.deepEqual(
+    { draft_id: calls.at(-1)[1].draft_id, revision: calls.at(-1)[1].revision },
+    { draft_id: "draft-a", revision: 7 },
+  );
+
+  context.openProjectWorkDetail(workView, {
+    id: "work-a",
+    title: "发布工作",
+    status: "delivered",
+    revision: 4,
+    agent: admin.id,
+    instructions: "完成发布",
+    deliverable: "发布包",
+    acceptance: "检查通过",
+    deliveries: [{ body: "已完成" }],
+    inputs: [],
+    executions: [],
+  });
+  findButton("修改范围").click();
+  assert.equal(fields.get("负责人"), undefined);
+  assert.equal(fields.get("阶段"), undefined);
+  fields.get("交付物").value = "发布包和校验记录";
+  await findButton("保存范围").click();
+  assert.equal(calls.at(-1)[1].action, "update-scope");
+  assert.equal(calls.at(-1)[1].work_id, "work-a");
+  assert.equal(calls.at(-1)[1].revision, 4);
+  assert.equal(calls.at(-1)[1].deliverable, "发布包和校验记录");
+  assert.equal(calls.at(-1)[1].project, "project-a");
+
+  context.openProjectWorkDetail(workView, {
+    id: "work-a",
+    title: "发布工作",
+    status: "delivered",
+    revision: 4,
+    agent: admin.id,
+    deliveries: [],
+    inputs: [],
+    executions: [],
+  });
+  await findButton("验收").click();
+  assert.equal(calls.at(-1)[1].action, "accept");
+  assert.equal(calls.at(-1)[1].work_id, "work-a");
+
+  context.openProjectWorkForm(workView);
+  fields.get("标题").value = "无消息来源的项目工作";
+  fields.get("工作说明").value = "直接创建";
+  fields.get("负责人").value = admin.id;
+  await findButton("创建").click();
+  assert.equal("source_message_id" in calls.at(-1)[1], false);
+  assert.equal("conversation_id" in calls.at(-1)[1], false);
 }
 
 checkProjectAgentForms().then(

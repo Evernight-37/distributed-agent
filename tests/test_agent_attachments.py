@@ -75,9 +75,14 @@ class AgentAttachmentTests(unittest.TestCase):
         (self.workspace / "report.pdf").write_bytes(self.content)
         self.files = Attachments(self.store)
 
-    def task(self, private=False):
+    def task(self, private=False, attachment_ids=None):
         self.store.message(
-            self.owner, self.project, "Send report.pdf as an attachment", self.agent["id"] if private else None
+            self.owner,
+            self.project,
+            "Send report.pdf as an attachment",
+            recipient=self.agent["id"] if private else None,
+            mention_agent_id=None if private else self.agent["id"],
+            attachment_ids=attachment_ids,
         )
         self.coordinator.wake_messages()
         self.coordinator.dispatch()
@@ -130,6 +135,15 @@ class AgentAttachmentTests(unittest.TestCase):
             },
         }
         return connector, receipt
+
+    def test_turn_contract_includes_attachments_from_the_addressed_message(self):
+        contents = base64.b64encode(self.content).decode()
+        earlier = self.files.upload(self.owner, self.project, "earlier.pdf", contents)
+        self.store.message(self.owner, self.project, "An unaddressed attachment", attachment_ids=[earlier["id"]])
+        requested = self.files.upload(self.owner, self.project, "requested.pdf", contents)
+        job = self.task(attachment_ids=[requested["id"]])
+        context = json.loads(job["request"]["prompt"])
+        self.assertEqual([item["id"] for item in context["attachments"]], [requested["id"]])
 
     def test_public_attachment_is_downloadable_and_upload_retry_is_idempotent(self):
         job = self.task()

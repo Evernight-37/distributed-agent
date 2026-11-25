@@ -286,7 +286,7 @@ class Regressions(unittest.TestCase):
     def test_private_and_public_messages_have_independent_cursors(self):
         a, _ = self.agents()
         self.store.message(self.owner["id"], self.project, "private first", a)
-        self.store.message(self.owner["id"], self.project, "public second")
+        self.store.message(self.owner["id"], self.project, "public second", mention_agent_id=a)
         c = Coordinator(self.store, self.backend)
         c.wake_messages()
         c.dispatch()

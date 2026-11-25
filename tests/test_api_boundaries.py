@@ -24,11 +24,23 @@ from agent_harness.desktop_api import (
     DesktopSettingsActions,
     DesktopTeamServiceActions,
 )
-from agent_harness.hub_api import HubAccountAPI
+from agent_harness.hub_api import HubAccountAPI, account_response
 from agent_harness.node_api import NodeExecutionAPI
 
 
 class BoundaryContractTests(unittest.TestCase):
+    def test_legacy_task_status_distinguishes_execution_failure_from_request_failure(self):
+        body = {"operation": "task-status", "payload": {"task": "task-1"}}
+        request = {"action": "rpc", "envelope": {"body": body}}
+        row = {"id": "task-1", "project_id": "project", "state": "unknown", "error": "Unknown job"}
+        self.assertIs(account_response(request, row), row)
+        self.assertIs(account_response(request, {"ok": True, "result": row}), row)
+        for failure in ({"error": "Unknown job"}, {**row, "id": "wrong-task"}):
+            with self.assertRaisesRegex(RuntimeError, "Unknown job"):
+                account_response(request, failure)
+        with self.assertRaisesRegex(RuntimeError, "Unknown job"):
+            account_response({"action": "project"}, row)
+
     def test_contract_descriptions_are_stable_machine_readable_objects(self):
         for contract in (DESKTOP_CONTROL, NODE_EXECUTION, HUB_ACCOUNT):
             with self.subTest(contract=contract.name):

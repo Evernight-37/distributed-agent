@@ -63,6 +63,10 @@ https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web
 3. 其他人在应用里用这个地址和项目邀请码加入；不需要为每个团队新建账户。
 4. 接入自己的机器，在项目里新增并配置 Agent，然后派发任务。群主可以指定该项目的管理员 Agent。
 
+在群里可以普通发言、点名某个 Agent，或明确交给管理员。点名后的普通回复留在原会话。任务详情记录触发消息、执行设备和交付会话，便于回看。
+
+要正式交办，可以请管理员 Agent 根据正在讨论的内容整理草稿。打开草稿可以查看引用消息、继续讨论和确认指定版本。确认后任务才会排队，后续要求和交付物保存在同一项工作下。也可以在桌面或 MCP 直接创建项目任务。
+
 工作目录按项目和机器设置。同一项目在同一台机器上的多个 Agent 共享工作目录，各自保留会话和配置。不同项目可以使用同一台机器，并分别配置 Agent。
 
 按钮级流程见 [新手教程](docs/QUICKSTART.md)。单机使用可以跳过 Tailscale。
@@ -78,15 +82,17 @@ https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web
 | 对比项 | Codex CLI | DeepSeek Harness |
 | --- | --- | --- |
 | 每轮命令 | `codex exec --json` | `dsh --profile headless --patch <本轮补丁> --json -` |
-| 权限 | `--sandbox read-only/workspace-write` | `DSH_PERMISSION_MODE`，同一套沙箱语义 |
+| 权限 | 常驻任务按阶段使用只读或工作区可写沙箱 | 每轮显式设置 `--permission-mode` 和 `--approval-policy never` |
 | 会话续接 | `resume <thread-id>` | `--session-id <session-id>` |
 | 群聊托管轮次 | 常驻 app-server，低延迟复用 | 每轮一次性进程，无 app-server |
-| 结构化回复 | JSON schema 强约束 | 仅提示词契约 |
+| 结构化回复 | JSON schema | `foolship_reply` 工具和 JSON 回复回退 |
 
 想在这台机器的普通对话里使用协作功能，两个执行器各有一个开关：
 
 - **DeepSeek Harness**：**设置 → 在 DeepSeek Harness 中使用协作**。它只写 `~/.dsh/profiles/desktop/cordis.patch.yml`，被派发任务用的 headless profile 不受影响；写入前备份，解析失败回滚，细节见[架构说明](docs/ARCHITECTURE.md)。
-- **Codex**：**设置 → 在 Codex 中使用协作**。走本机 stdio MCP，不开放额外端口；委托身份不能邀请成员、改管理员、控制别人的机器或批准命令。通过它发出的消息与本人亲自发送等价——同一身份、同样的可见范围、同样会唤醒 Agent，只是来源标记为 `Codex` 或 `DSH`；派任务时可选 `audience: private`，让结果只回到与该 Agent 的私信，而不是项目群。
+- **Codex**：**设置 → 在 Codex 中使用协作**。走本机 stdio MCP。代言者使用同一账户发消息，来源标记为 `Codex` 或 `DSH`。派任务时可选 `audience: private`，让结果只回到与该 Agent 的私聊。
+
+在项目的 **成员与项目 Agent → MCP 审批权限** 中，可分别授权代言者处理自己设备的额外执行权限、附件发送和已登记命令。`harness_approvals_list` 用来查询或等待申请，`harness_approval_decide` 用来提交批准或拒绝。默认可查看申请，由本人处理；勾选后，代言者可按你的指示或工作规则处理对应类型。额外执行权限只授权原任务的一次续跑。
 
 两处都需要在**新会话**里才能看到这些工具。
 

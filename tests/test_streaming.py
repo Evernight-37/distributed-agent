@@ -59,7 +59,7 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(application_version(), expected)
 
     def test_administrator_self_assignment_reports_back_to_the_group(self):
-        self.store.message(self.owner, self.project, "请修改 README.md 中的项目说明")
+        self.store.message(self.owner, self.project, "请修改 README.md 中的项目说明", mention_agent_id="admin")
         self.coordinator.wake_messages()
         self.coordinator.dispatch()
         self.backend.result = {
@@ -103,7 +103,7 @@ class StreamingTests(unittest.TestCase):
         self.assertIsNone(view["messages"][-1]["recipient_id"])
 
     def test_reply_stream_stays_above_midturn_human_message(self):
-        self.store.message(self.owner, self.project, "first")
+        self.store.message(self.owner, self.project, "first", mention_agent_id="admin")
         self.coordinator.wake_messages()
         self.coordinator.dispatch()
         self.store.message(self.owner, self.project, "second")
@@ -136,7 +136,7 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(shown[1]["id"], draft_id)
 
     def test_agent_can_finish_without_a_reply(self):
-        self.store.message(self.owner, self.project, "notice")
+        self.store.message(self.owner, self.project, "notice", mention_agent_id="admin")
         self.coordinator.wake_messages()
         self.coordinator.dispatch()
         self.backend.result = {
@@ -220,7 +220,7 @@ class StreamingTests(unittest.TestCase):
             [m["body"] for m in context["visible_messages"]],
         )
 
-    def test_other_member_public_message_wakes_the_administrator(self):
+    def test_unaddressed_public_message_from_other_member_does_not_wake_administrator(self):
         other = provision_account(
             self.store,
             "other-member",
@@ -229,28 +229,108 @@ class StreamingTests(unittest.TestCase):
         self.store.message(other, self.project, "A public question for the administrator")
         self.coordinator.wake_messages()
         with self.store.connect() as db:
-            self.assertEqual(
-                [r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")],
-                ["admin"],
-            )
+            self.assertEqual([r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")], [])
 
-    def test_mentions_and_group_chat_create_independent_turns(self):
+    def test_group_chat_is_context_and_mentions_create_independent_turns(self):
         self.store.message(self.owner, self.project, "general update")
-        self.store.message(self.owner, self.project, "please answer", mention_agent_id="peer")
+        first = self.store.message(self.owner, self.project, "please answer", mention_agent_id="peer")
+        second = self.store.message(self.owner, self.project, "second request", mention_agent_id="peer")
         self.coordinator.wake_messages()
         self.coordinator.wake_messages()
+        self.coordinator.dispatch()
+        self.assertEqual(len(self.backend.submissions), 1)
+        first_turn = self.backend.submissions[0]
+        self.assertEqual(first_turn["identity"]["id"], "peer")
+        self.assertEqual(first_turn["task"]["source_message_id"], first["id"])
+        self.assertNotIn("second request", [message["body"] for message in first_turn["visible_messages"]])
+        self.assertIn("general update", [message["body"] for message in first_turn["visible_messages"]])
+        self.backend.result = {"status": "needs_review", "report": json.dumps({"reply": "only peer replies"})}
+        self.coordinator.collect()
+        self.coordinator.wake_messages()
+        self.coordinator.dispatch()
+        self.assertEqual(len(self.backend.submissions), 2)
+        second_turn = self.backend.submissions[1]
+        self.assertEqual(second_turn["identity"]["id"], "peer")
+        self.assertEqual(second_turn["task"]["source_message_id"], second["id"])
+
+    def test_independent_formal_task_does_not_consume_pending_mention(self):
+        mention = self.store.message(self.owner, self.project, "pending mention", mention_agent_id="peer")
+        self.store.task(
+            self.owner,
+            {
+                "project": self.project,
+                "agent": "peer",
+                "title": "independent assignment",
+                "instructions": "finish this task",
+                "acceptance": "answer",
+                "validation": "check",
+            },
+        )
+        self.coordinator.dispatch()
+        self.backend.result = {"status": "needs_review", "report": json.dumps({"reply": "formal result"})}
+        self.coordinator.collect()
+        self.coordinator.wake_messages()
+        self.coordinator.dispatch()
+        self.assertEqual(len(self.backend.submissions), 2)
+        self.assertEqual(self.backend.submissions[1]["task"]["source_message_id"], mention["id"])
+
+    def test_delegation_preserves_pending_private_message_and_routes_public_result(self):
+        request = self.store.message(self.owner, self.project, "Please delegate", mention_agent_id="admin")
+        self.coordinator.wake_messages()
+        self.coordinator.dispatch()
         with self.store.connect() as db:
-            self.assertEqual(
-                [r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")],
-                ["peer", "admin"],
-            )
+            private = self.store._message(db, self.project, "admin", "agent", "Separate question", "peer")
+        self.backend.result = {
+            "status": "needs_review",
+            "report": json.dumps(
+                {
+                    "tasks": [
+                        {
+                            "agent": "peer",
+                            "title": "Deliverable",
+                            "instructions": "Complete the assignment",
+                            "acceptance": "Deliver the result",
+                            "validation": "Check it",
+                            "audience": "group",
+                        }
+                    ]
+                }
+            ),
+        }
+        self.coordinator.collect()
+        self.coordinator.dispatch()
+        with self.store.connect() as db:
+            child = db.execute("SELECT * FROM task_trace WHERE parent_task_id IS NOT NULL").fetchone()
+            parent = db.execute("SELECT * FROM task_trace WHERE task_id=?", (child["parent_task_id"],)).fetchone()
+            self.assertEqual(parent["source_message_id"], request["id"])
+            self.assertGreater(child["source_message_id"], private["id"])
+            self.assertEqual(child["delivery_conversation_id"], self.store.group_conversation(self.project))
+        self.backend.result = {"status": "needs_review", "report": json.dumps({"reply": "Public result"})}
+        self.coordinator.collect()
+        view = self.store.project_view(self.owner, self.project)
+        public = next(m for m in view["messages"] if m["body"] == "Public result")
+        self.assertIsNone(public["recipient_id"])
+        self.assertEqual(public["task_id"], child["task_id"])
+        self.coordinator.wake_messages()
+        self.coordinator.dispatch()
+        turns = {turn["identity"]["id"]: turn for turn in self.backend.submissions[2:]}
+        self.assertEqual(turns["peer"]["task"]["source_message_id"], private["id"])
+        admin = turns["admin"]
+        self.assertTrue(admin["task"]["private_turn"])
+        note = next(m for m in admin["visible_messages"] if m["id"] == admin["task"]["source_message_id"])
+        self.assertIn(f"消息 #{public['id']}", note["body"])
+        self.backend.result = {"status": "needs_review", "report": json.dumps({"reply": ""})}
+        self.coordinator.collect()
+        self.coordinator.wake_messages()
+        self.coordinator.dispatch()
+        self.assertEqual(len(self.backend.submissions), 4)
 
     def test_plain_at_text_is_not_a_mention(self):
         self.store.message(self.owner, self.project, "@Peer please review")
         self.coordinator.wake_messages()
         with self.store.connect() as db:
             tasks = [r["agent_id"] for r in db.execute("SELECT agent_id FROM tasks")]
-        self.assertEqual(tasks, ["admin"])
+        self.assertEqual(tasks, [])
 
     def test_signed_message_path_preserves_explicit_mention(self):
         self.store.message(

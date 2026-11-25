@@ -17,10 +17,6 @@ TERMINAL = {"needs_review", "failed", "cancelled", "timed_out", "interrupted"}
 # "owner" delivers it to the executing agent's own owner.
 AUDIENCES = {"delegator", "group", "owner"}
 
-# How many agent-initiated wakes one conversation may chain before automatic
-# scheduling stops and a human has to take over.
-AGENT_WAKE_LIMIT = 12
-
 
 def channel_for(contract):
     partner = contract.get("reply_to") if contract.get("private_turn") else None
@@ -33,23 +29,13 @@ class Coordinator:
         self.memory = ProjectMemory(store)
         self.backend = backend or PullBackend(store)
         self.stop_event = threading.Event()
-        # Consecutive agent-originated wakes per (project, channel). A chain of
-        # agents answering each other can otherwise spend a team's model budget
-        # without any human involved; the counter resets on a human message.
-        self._agent_wakes = {}
 
-    def _agent_wake_allowed(self, project_id, channel, source_id, sender_type):
-        """Whether one more automatic wake still fits this conversation's budget."""
-        key = (project_id, channel)
-        if sender_type == "human":
-            self._agent_wakes.pop(key, None)
-            return True
-        count, last = self._agent_wakes.get(key, (0, None))
-        if source_id == last:
-            return count <= AGENT_WAKE_LIMIT
-        count += 1
-        self._agent_wakes[key] = (count, source_id)
-        return count <= AGENT_WAKE_LIMIT
+    def _work(self):
+        # Imported lazily so older databases can still be inspected while an
+        # upgrade is being installed.
+        from agent_harness.project_work import ProjectWork
+
+        return ProjectWork(self.store)
 
     def recover(self):
         completed = []
@@ -100,29 +86,72 @@ class Coordinator:
             self.process_completed(task_id)
 
     def consumed(self, db, task):
+        trace = db.execute(
+            "SELECT wake_source_id,parent_task_id FROM task_trace WHERE task_id=?", (task["id"],)
+        ).fetchone()
+        # A formal assignment already has a task. Its notice does not consume queued DMs.
+        if trace and trace["parent_task_id"] is not None:
+            return
+        # Older in-flight tasks already reserved their cutoff before this upgrade.
+        message_id = trace["wake_source_id"] if trace else task["cutoff"]
+        if message_id is None:
+            return
         channel = channel_for(json.loads(task["contract"]))
         db.execute(
             "INSERT INTO agent_cursors(agent_id,channel,last_message) VALUES(?,?,?) ON CONFLICT(agent_id,channel) DO UPDATE SET last_message=MAX(last_message,excluded.last_message)",
-            (task["agent_id"], channel, task["cutoff"]),
+            (task["agent_id"], channel, message_id),
         )
         db.execute(
             "UPDATE agents SET last_message=MAX(last_message,?) WHERE id=?",
-            (task["cutoff"], task["agent_id"]),
+            (message_id, task["agent_id"]),
         )
 
     def agent_context(self, agent, task):
         with self.store.connect() as db:
             project = dict(db.execute("SELECT * FROM projects WHERE id=?", (agent["project_id"],)).fetchone())
             members = [
-                {k: r[k] for k in ("id", "name", "owner_id", "model", "effort", "enabled")}
+                {k: r[k] for k in ("id", "name", "node", "owner_id", "model", "effort", "enabled")}
                 for r in db.execute("SELECT * FROM agents WHERE project_id=?", (agent["project_id"],))
             ]
+            trace = db.execute("SELECT source_message_id FROM task_trace WHERE task_id=?", (task.get("id"),)).fetchone()
             approval = db.execute(
                 "SELECT id,source_task_id,reason FROM permission_requests WHERE continuation_task_id=? "
                 "AND project_id=? AND agent_id=? AND owner_id=? AND state IN ('approved','consumed')",
                 (task.get("id"), project["id"], agent["id"], agent["owner_id"]),
             ).fetchone()
         contract = json.loads(task["contract"])
+        work_execution = contract.get("project_work_execution_id")
+        if work_execution:
+            with self.store.connect() as db:
+                work_context = self._work().execution_context(db, work_execution)
+            if not work_context:
+                raise ValueError("Scheduled project work has no authorized execution context")
+            # Work execution gets a deliberately narrow prompt. In particular it
+            # cannot inherit an agent's private/group history or project memory.
+            return json.dumps(
+                {
+                    "identity": {
+                        "id": agent["id"],
+                        "name": agent["name"],
+                        "node": agent["node"],
+                        "role": "admin" if project["admin_agent_id"] == agent["id"] else "peer",
+                    },
+                    "project": {"id": project["id"], "name": project["name"]},
+                    "task": contract,
+                    "project_work": work_context,
+                    "grants": ["full_access"] if approval else [],
+                    **(
+                        {"permission_request_id": approval["id"], "approved_continuation": dict(approval)}
+                        if approval
+                        else {}
+                    ),
+                    "protocol": (
+                        "Execute only this scheduled project work. Use work_delivery for completion; "
+                        "do not send unrelated messages, delegate tasks, or request background executions."
+                    ),
+                },
+                ensure_ascii=False,
+            )
         visible = self.store.visible_messages(agent["id"], 0, task["cutoff"])[-150:]
         partner = contract.get("reply_to") if contract.get("private_turn") else None
         visible = [
@@ -133,12 +162,23 @@ class Coordinator:
             or m["causal_task"] == "execution-completed"
             and m["recipient_id"] == agent["id"]
         ]
+        if trace and any(message["id"] == trace["source_message_id"] for message in visible):
+            contract["source_message_id"] = trace["source_message_id"]
+        drafts = []
+        existing_work = []
+        if project["admin_agent_id"] == agent["id"] and trace and trace["source_message_id"]:
+            with self.store.connect() as db:
+                source = db.execute("SELECT * FROM messages WHERE id=?", (trace["source_message_id"],)).fetchone()
+                if source and source["sender_type"] == "human":
+                    drafts = self._work().agent_drafts(db, project, agent["id"], dict(source))
+                    existing_work = self._work().agent_work(db, project, agent["id"], dict(source))
         shared_memory = self.memory.agent_context(project["id"])
         return json.dumps(
             {
                 "identity": {
                     "id": agent["id"],
                     "name": agent["name"],
+                    "node": agent["node"],
                     "role": "admin" if project["admin_agent_id"] == agent["id"] else "peer",
                 },
                 "project": {
@@ -149,6 +189,8 @@ class Coordinator:
                 "members": members,
                 "visible_messages": visible,
                 "project_memory": shared_memory,
+                "project_work_drafts": drafts,
+                "project_work_items": existing_work,
                 "task": contract,
                 "grants": ["full_access"] if approval else [],
                 **(
@@ -164,6 +206,13 @@ class Coordinator:
                     "Delegation is admin-only; a task carries audience delegator (private report back to you), "
                     "group (published to the project) or owner (to the executor's owner). Model capabilities are yours to use."
                     + (
+                        " As project administrator in this human-directed turn, you may return a complete work_proposal "
+                        "for the human to review. This only saves or revises a draft: never claim it starts work, and "
+                        "ask the human to confirm the exact draft and revision in the desktop UI."
+                        if project["admin_agent_id"] == agent["id"]
+                        else ""
+                    )
+                    + (
                         " Only continue the approved source task using the one-time grant for this turn."
                         if approval
                         else ""
@@ -173,31 +222,19 @@ class Coordinator:
             ensure_ascii=False,
         )
 
-    def _wake_budget_notice(self, db, project_id, channel):
-        """Record the budget stop once per conversation, for the humans to see."""
-        # Audit rows are cheap and already reviewed by the project owner; a group
-        # message would wake the very agents the budget just stopped.
-        self.store.log(
-            db,
-            "scheduler",
-            "agent_wake_budget",
-            {"project": project_id, "channel": channel, "limit": AGENT_WAKE_LIMIT},
-        )
-
     def wake_messages(self):
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             pending = []
             for r in db.execute(
-                "SELECT a.*,p.admin_agent_id,p.paused FROM agents a JOIN projects p ON a.project_id=p.id WHERE a.enabled=1 AND a.configuring=0 AND p.paused=0"
+                "SELECT a.* FROM agents a JOIN projects p ON a.project_id=p.id WHERE a.enabled=1 AND a.configuring=0 AND p.paused=0"
             ).fetchall():
                 if db.execute(
                     "SELECT 1 FROM tasks WHERE agent_id=? AND state IN ('queued','starting','running','unknown')",
                     (r["id"],),
                 ).fetchone():
                     continue
-                # Public human posts wake administrator only. Direct messages wake their recipient;
-                # agent group posts wake admin, preventing a fan-out chatter storm.
+                # Only explicit addressees wake. Ordinary group messages are context.
                 cursors = {
                     x["channel"]: x["last_message"]
                     for x in db.execute("SELECT * FROM agent_cursors WHERE agent_id=?", (r["id"],))
@@ -205,15 +242,22 @@ class Coordinator:
                 source = None
                 partner = None
                 for candidate in db.execute(
-                    "SELECT * FROM messages WHERE project_id=? AND sender_id<>? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') AND (sender_type<>'system' OR causal_task='execution-completed') AND (recipient_id=? OR (recipient_id IS NULL AND (mention_agent_id=? OR (mention_agent_id IS NULL AND ?=1)))) AND NOT (sender_type='human' AND recipient_id IS NOT NULL AND recipient_id=? AND sender_id<>?) ORDER BY id",
+                    "SELECT * FROM messages WHERE project_id=? AND sender_id<>? "
+                    "AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%') "
+                    "AND (sender_type<>'system' OR causal_task='execution-completed') "
+                    "AND (recipient_id=? OR (recipient_id IS NULL AND mention_agent_id=?)) "
+                    "AND NOT (sender_type='human' AND recipient_id IS NOT NULL AND recipient_id=? AND sender_id<>?) "
+                    "AND NOT EXISTS (SELECT 1 FROM task_trace r JOIN tasks t ON t.id=r.task_id "
+                    "WHERE r.wake_source_id=messages.id AND r.parent_task_id IS NOT NULL AND t.agent_id=?) "
+                    "ORDER BY id",
                     (
                         r["project_id"],
                         r["id"],
                         r["id"],
                         r["id"],
-                        int(r["admin_agent_id"] == r["id"]),
                         r["id"],
                         r["owner_id"],
+                        r["id"],
                     ),
                 ):
                     other = candidate["sender_id"] if candidate["recipient_id"] else None
@@ -225,34 +269,19 @@ class Coordinator:
                         other = execution["reply_to"] if execution else None
                     channel = channel_for({"private_turn": bool(other), "reply_to": other})
                     if candidate["id"] > cursors.get(channel, 0):
-                        if not self._agent_wake_allowed(
-                            r["project_id"], channel, candidate["id"], candidate["sender_type"]
-                        ):
-                            # The budget is spent: stop scheduling this chain and
-                            # tell the humans once, instead of silently stalling.
-                            self._wake_budget_notice(db, r["project_id"], channel)
-                            break
                         source, partner = candidate, other
                         break
                 if not source:
                     continue
-                # Addressed messages take priority over general group chatter.
-                pending.append(
-                    (
-                        0 if source["recipient_id"] or source["mention_agent_id"] else 1,
-                        source["id"],
-                        dict(r),
-                        partner,
-                    )
-                )
-            for _, _, r, partner in sorted(pending, key=lambda item: (item[0], item[1])):
+                pending.append((source["id"], dict(r), partner))
+            for source_id, r, partner in sorted(pending, key=lambda item: item[0]):
                 project = dict(db.execute("SELECT * FROM projects WHERE id=?", (r["project_id"],)).fetchone())
                 if project["paused"]:
                     continue
                 private = bool(partner)
                 data = {
                     "title": "处理新消息",
-                    "instructions": "处理收到的可见消息；管理员根据目标协调分工，必要时向同事定向发送消息或派任务。若无需回复，返回 done:true。",
+                    "instructions": "处理收到的可见消息；管理员根据目标协调分工，必要时向同事定向发送消息或派任务。若无需回复或后续行动，请将 reply 留空并结束本轮。",
                     "stage": "discuss",
                     "allowed_files": "可以使用项目 Agent 的工作目录与执行工具；写入项目外路径需由机器主人批准一次续跑。人类明确要求实现或跑实验时，管理员应分派 implement 任务，写明文件范围、验收与验证。",
                     "acceptance": "回复针对消息且遵守收件权限，任务分工明确",
@@ -260,15 +289,23 @@ class Coordinator:
                 }
                 from agent_harness.attachments import Attachments
 
-                with self.store.connect() as files_db:
-                    files = Attachments(self.store).metadata(files_db, r["id"])
+                files = Attachments(self.store).metadata(db, source_id)
                 if files:
                     data["attachments"] = [
                         {key: item.get(key) for key in ("id", "name", "mime", "size")} for item in files
                     ]
                 if private:
                     data.update(private_turn=True, reply_to=partner)
-                self.store._task(db, project, dict(r), data, "scheduler")
+                self.store._task(
+                    db,
+                    project,
+                    r,
+                    data,
+                    "scheduler",
+                    cutoff=source_id,
+                    source_message_id=source_id,
+                    wake_source_id=source_id,
+                )
 
     def dispatch(self, task_id=None):
         with self.store.connect() as db:
@@ -295,7 +332,16 @@ class Coordinator:
                 self.store.emit_task_event(db, task)
             contract = json.loads(task["contract"])
             try:
-                channel = channel_for(contract)
+                work_execution = contract.get("project_work_execution_id")
+                if work_execution:
+                    with self.store.connect() as db:
+                        work_context = self._work().execution_context(db, work_execution)
+                    if not work_context:
+                        raise ValueError("Scheduled project work has no authorized execution context")
+                    work_id = work_context["work_id"]
+                    channel = work_id if work_id.startswith("work-") else "work-" + work_id
+                else:
+                    channel = channel_for(contract)
                 kwargs = (
                     {"job_id": job, "session_channel": channel} if getattr(self.backend, "durable_ids", False) else {}
                 )
@@ -348,6 +394,8 @@ class Coordinator:
                         agent["id"],
                         task["id"],
                     )
+                    if work_execution and not uncertain:
+                        self._work().finish(db, work_execution, "blocked")
 
     def collect(self, task_id=None):
         with self.store.connect() as db:
@@ -405,6 +453,73 @@ class Coordinator:
             recipient = contract.get("reply_to") if private else None
             self.store.draft_message(db, project["id"], agent["id"], draft, recipient, task["id"])
 
+    def _publish_reply(self, db, task, reply, recipient):
+        draft = db.execute("SELECT id FROM messages WHERE causal_task=?", ("draft:" + task["id"],)).fetchone()
+        if draft and recipient:
+            channel = channel_for({"private_turn": True, "reply_to": task["agent_id"]})
+            already_seen = db.execute(
+                "SELECT 1 FROM agent_cursors WHERE agent_id=? AND channel=? AND last_message>=?",
+                (recipient, channel, draft["id"]),
+            ).fetchone()
+            reserved = db.execute(
+                "SELECT 1 FROM tasks t LEFT JOIN task_trace r ON r.task_id=t.id WHERE t.agent_id=? "
+                "AND t.state IN ('queued','starting','running','unknown') "
+                "AND json_extract(t.contract,'$.private_turn')=1 AND json_extract(t.contract,'$.reply_to')=? "
+                "AND (CASE WHEN r.task_id IS NULL THEN t.cutoff "
+                "WHEN r.parent_task_id IS NULL THEN r.wake_source_id END)>=?",
+                (recipient, task["agent_id"], draft["id"]),
+            ).fetchone()
+            if already_seen or reserved:
+                # Keep late directed results schedulable even if their draft predates the cursor.
+                self.store.clear_draft(db, task["id"])
+                draft = None
+        if draft and self.store.finalize_draft(db, task["id"], reply, recipient):
+            return draft["id"]
+        return self.store._message(db, task["project_id"], task["agent_id"], "agent", reply, recipient, task["id"])[
+            "id"
+        ]
+
+    def _notify_delegator(self, db, task, contract, reply_to, message_id=None):
+        target = contract.get("reply_to") if contract.get("private_turn") else None
+        if (
+            not target
+            or target in {reply_to, task["agent_id"]}
+            or not db.execute(
+                "SELECT 1 FROM agents WHERE id=? AND project_id=?", (target, task["project_id"])
+            ).fetchone()
+        ):
+            return
+        if message_id is not None:
+            note = f"交办任务 {task['id']} 的结果已发布到群聊（消息 #{message_id}）。"
+        else:
+            note = f"交办任务 {task['id']} 已结束，执行状态为 {task['state']}。"
+        self.store._message(db, task["project_id"], task["agent_id"], "agent", note, target, task["id"])
+
+    def _apply_admin_work_action(self, db, task, project, agent, proposal, follow_up):
+        trace = db.execute("SELECT wake_source_id FROM task_trace WHERE task_id=?", (task["id"],)).fetchone()
+        source = (
+            db.execute("SELECT * FROM messages WHERE id=?", (trace["wake_source_id"],)).fetchone()
+            if trace and trace["wake_source_id"]
+            else None
+        )
+        try:
+            if project["admin_agent_id"] != agent["id"] or not source or source["sender_type"] != "human":
+                raise PermissionError("此轮没有来自人类的定向任务请求")
+            if proposal is not None and follow_up is not None:
+                raise ValueError("一次回复只能整理一项草稿或补充要求")
+            if follow_up is not None:
+                if not isinstance(follow_up, dict) or set(follow_up) != {"work_id"}:
+                    raise ValueError("补充要求缺少明确的任务编号")
+                work = self._work().propose_follow_up(db, project, agent, dict(source), follow_up["work_id"])
+                return True, f"这条要求已补充到「{work['title']}」。"
+            draft = self._work().propose(db, project, agent, dict(source), proposal)
+            return True, f"「{draft['title']}」草稿已保存为第 {draft['revision']} 版，请核对后确认创建。"
+        except (ValueError, TypeError, PermissionError) as exc:
+            self.store.log(
+                db, "scheduler", "rejected_project_work_action", {"task": task["id"], "reason": str(exc)[:500]}
+            )
+            return False, "这次建议未保存。请核对任务或草稿版本后再告诉我。"
+
     def process_completed(self, task_id):
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -416,16 +531,13 @@ class Coordinator:
             project = dict(db.execute("SELECT * FROM projects WHERE id=?", (task["project_id"],)).fetchone())
             db.execute("UPDATE tasks SET processed=1 WHERE id=?", (task_id,))
             original = json.loads(task["contract"])
-            reply_to = original.get("reply_to")
+            work_execution = original.get("project_work_execution_id")
+            reply_to = self.store.task_reply_recipient(agent, original)
             private = bool(original.get("private_turn"))
             # Where this turn's final report lands. A task delegated by an agent
             # comes back to the delegator by default; the task itself may ask for
             # the report to go to the group or to the executing agent's owner.
             audience = original.get("audience") if original.get("audience") in AUDIENCES else "delegator"
-            if private and audience == "group":
-                reply_to = None
-            elif private and audience == "owner":
-                reply_to = agent["owner_id"]
             group_posts = 0
             if task["state"] != "needs_review":
                 answer = None
@@ -441,16 +553,7 @@ class Coordinator:
                 if task["state"] == "failed":
                     self.store.post_permission_request(db, project["id"], agent, task, (answer or {}).get("request"))
                 if reply:
-                    if not self.store.finalize_draft(db, task_id, reply, reply_to):
-                        self.store._message(
-                            db,
-                            project["id"],
-                            agent["id"],
-                            "agent",
-                            reply,
-                            reply_to,
-                            task_id,
-                        )
+                    self._publish_reply(db, task, reply, reply_to)
                     notice = (
                         agent["name"]
                         + " 已生成回复，但本机执行状态为 "
@@ -477,6 +580,13 @@ class Coordinator:
                     reply_to if private else None,
                     task_id,
                 )
+                formal_handoff = db.execute(
+                    "SELECT 1 FROM task_trace WHERE task_id=? AND parent_task_id IS NOT NULL", (task_id,)
+                ).fetchone()
+                if formal_handoff:
+                    self._notify_delegator(db, task, original, reply_to if reply else None)
+                if work_execution:
+                    self._work().finish(db, work_execution, "waiting" if (answer or {}).get("request") else "blocked")
                 return
             try:
                 answer = json.loads(task["report"])
@@ -487,23 +597,25 @@ class Coordinator:
                         raise ValueError("Invalid action list")
             except Exception:
                 # Plain reports remain auditable; never interpret commands or guessed JSON fragments.
-                self.store.clear_draft(db, task_id)
-                self.store._message(
-                    db,
-                    project["id"],
-                    agent["id"],
-                    "agent",
-                    task["report"][:16000] or "无报告",
-                    reply_to
-                    if private
-                    else (project["admin_agent_id"] if project["admin_agent_id"] != agent["id"] else None),
-                    task_id,
-                )
+                message_id = self._publish_reply(db, task, (task["report"] or "")[:16000] or "无报告", reply_to)
+                if private and audience == "group":
+                    self._notify_delegator(db, task, original, reply_to, message_id)
+                if work_execution:
+                    self._work().finish(db, work_execution, "blocked")
                 return
             reply = answer.get("reply", "").strip()
+            if work_execution and not reply and isinstance(answer.get("work_delivery"), dict):
+                reply = str(answer["work_delivery"].get("summary") or "").strip()
             if reply.casefold().startswith("[checkpoint]"):
                 self.store.log(db, "scheduler", "suppressed_checkpoint", {"task": task_id})
                 reply = ""
+            proposal = answer.get("work_proposal")
+            follow_up = answer.get("work_follow_up")
+            if not work_execution and (proposal is not None or follow_up is not None):
+                saved, notice = self._apply_admin_work_action(db, task, project, agent, proposal, follow_up)
+                body = reply[:15000] + "\n\n" + notice if saved and reply else notice
+                self._publish_reply(db, task, body, reply_to)
+                return
             self.store.post_permission_request(db, project["id"], agent, task, answer.get("request"))
             from agent_harness.attachments import Attachments
 
@@ -518,25 +630,48 @@ class Coordinator:
                 self.store.log(db, "scheduler", "rejected_agent_attachments", {"task": task_id})
             if attachment_ids and not reply:
                 reply = "已发送附件。"
+            delivery = answer.get("work_delivery")
+            if (
+                work_execution
+                and delivery is not None
+                and (
+                    not isinstance(delivery, dict)
+                    or not isinstance(delivery.get("summary"), str)
+                    or not delivery["summary"].strip()
+                    or not isinstance(delivery.get("links"), list)
+                    or not all(isinstance(link, str) for link in delivery["links"])
+                )
+            ):
+                self._publish_reply(db, task, "这轮交付格式无效，成果尚未登记。", reply_to)
+                self._work().finish(db, work_execution, "blocked")
+                self.store.log(db, "scheduler", "invalid_work_delivery", {"task": task_id})
+                return
             if reply:
-                if not self.store.finalize_draft(db, task_id, reply, reply_to):
-                    self.store._message(
-                        db,
-                        project["id"],
-                        agent["id"],
-                        "agent",
-                        reply,
-                        reply_to,
-                        task_id,
-                    )
+                message_id = self._publish_reply(db, task, reply, reply_to)
                 if attachment_ids:
-                    message = db.execute(
-                        "SELECT id FROM messages WHERE causal_task=? AND sender_id=? ORDER BY id DESC LIMIT 1",
-                        (task_id, agent["id"]),
-                    ).fetchone()
-                    files.bind(db, agent["id"], project["id"], message["id"], attachment_ids)
+                    files.bind(db, agent["id"], project["id"], message_id, attachment_ids)
+                if private and audience == "group":
+                    self._notify_delegator(db, task, original, reply_to, message_id)
             else:
                 self.store.clear_draft(db, task_id)
+                message_id = None
+            if work_execution:
+                if delivery and message_id is not None:
+                    self._work().finish(
+                        db,
+                        work_execution,
+                        "delivered",
+                        {
+                            "summary": delivery["summary"].strip()[:16000],
+                            "links": delivery["links"][:20],
+                            "message_id": message_id,
+                        },
+                    )
+                else:
+                    self._work().finish(db, work_execution, "waiting" if reply or answer.get("request") else "blocked")
+                # A scoped work turn may reply and attach its result, but cannot
+                # mutate unrelated conversation/task/execution state.
+                return
             if not private and answer.get("memory_notes"):
                 try:
                     self.memory.add_agent_notes(db, agent["id"], project["id"], task_id, answer["memory_notes"])
@@ -580,18 +715,16 @@ class Coordinator:
                         ).fetchone()
                         if not target:
                             raise ValueError("Target not in project")
-                        # A self-assignment continues this public request and
-                        # must report back to the human, not to a private
-                        # conversation addressed to the very same agent.
                         same_agent = target["id"] == agent["id"]
-                        assignment["reply_to"] = None if same_agent else agent["id"]
-                        assignment["private_turn"] = not same_agent
+                        assignment["reply_to"] = original.get("reply_to") if same_agent else agent["id"]
+                        assignment["private_turn"] = private if same_agent else True
                         # A task handed to another person's machine runs on their
                         # hardware and their CLI account; the owner is told that a
                         # task exists, not what it says.
                         borrowed = (not same_agent) and target["owner_id"] != agent["owner_id"]
+                        notice = None
                         if not same_agent:
-                            self.store._message(
+                            notice = self.store._message(
                                 db,
                                 project["id"],
                                 agent["id"],
@@ -611,6 +744,9 @@ class Coordinator:
                             dict(target),
                             assignment,
                             agent["id"],
+                            source_message_id=notice["id"] if notice else None,
+                            parent_task_id=task_id,
+                            wake_source_id=notice["id"] if notice else None,
                         )
                         db.execute("RELEASE delegation")
                         if borrowed:
@@ -644,6 +780,7 @@ class Coordinator:
                         )
             elif answer.get("tasks"):
                 self.store.log(db, "scheduler", "rejected_nonadmin_delegation", {"task": task_id})
+
             for request in answer.get("executions", []):
                 template = request.get("template") if isinstance(request, dict) else None
                 if not isinstance(template, str) or not 1 <= len(template) <= 64:
@@ -675,13 +812,18 @@ class Coordinator:
             rows = [
                 dict(x)
                 for x in db.execute(
-                    "SELECT e.*,a.node,a.backend_project FROM executions e JOIN agents a ON e.agent_id=a.id WHERE e.state IN ('approved','starting','running','unknown')"
+                    "SELECT e.*,a.node,a.backend_project FROM executions e JOIN agents a ON e.agent_id=a.id "
+                    "WHERE e.state IN ('approved','starting','running','unknown') OR (e.state='awaiting_owner' AND ?)",
+                    (isinstance(self.backend, PullBackend),),
                 )
             ]
         for row in rows:
             if execution_id and row["id"] != execution_id:
                 continue
             backend = self.backend.for_node(row["node"]) if hasattr(self.backend, "for_node") else self.backend
+            awaiting_owner = row["state"] == "awaiting_owner"
+            if awaiting_owner and not isinstance(backend, PullBackend):
+                continue
             try:
                 if row["state"] == "approved":
                     with self.store.connect() as db:
@@ -694,14 +836,20 @@ class Coordinator:
                         ):
                             continue
                         self.store.emit_execution_event(db, row)
-                    result = backend.rpc(
-                        {
-                            "action": "execution_start",
-                            "project": row["backend_project"],
-                            "execution": row["id"],
-                            "template": row["template"],
-                        }
-                    )
+                if awaiting_owner or row["state"] == "approved":
+                    try:
+                        result = backend.rpc(
+                            {
+                                "action": "execution_start",
+                                "project": row["backend_project"],
+                                "execution": row["id"],
+                                "template": row["template"],
+                            }
+                        )
+                    except (PermissionError, ValueError) as exc:
+                        if not awaiting_owner:
+                            raise
+                        result = {"status": "failed", "error": str(exc)[:2000]}
                 else:
                     result = backend.rpc(
                         {
@@ -711,10 +859,15 @@ class Coordinator:
                     )
                 state = result.get("status", "unknown")
                 with self.store.connect() as db:
-                    db.execute(
-                        "UPDATE executions SET state=?,result=? WHERE id=?",
-                        (state, json.dumps(result, ensure_ascii=False), row["id"]),
-                    )
+                    result_json = json.dumps(result, ensure_ascii=False)
+                    if awaiting_owner:
+                        if not db.execute(
+                            "UPDATE executions SET state=?,result=? WHERE id=? AND state='awaiting_owner'",
+                            (state, result_json, row["id"]),
+                        ).rowcount:
+                            continue
+                    else:
+                        db.execute("UPDATE executions SET state=?,result=? WHERE id=?", (state, result_json, row["id"]))
                     self.store.emit_execution_event(db, row)
                     if (
                         state
@@ -732,17 +885,16 @@ class Coordinator:
                             row["project_id"],
                             row["id"],
                             "system",
-                            "后台作业 "
-                            + row["id"]
-                            + " 已结束："
-                            + state
-                            + "。结果："
-                            + json.dumps(result, ensure_ascii=False)[-6000:],
+                            "后台作业 " + row["id"] + " 已结束：" + state + "。结果：" + result_json[-6000:],
                             row["agent_id"],
                             "execution-completed",
                         )
                         db.execute("UPDATE executions SET notified=1 WHERE id=?", (row["id"],))
             except Exception as exc:
+                if awaiting_owner:
+                    # The durable pull ID makes staging safe to retry after a failed enqueue or state update.
+                    logging.exception("Could not stage execution for machine approval")
+                    continue
                 with self.store.connect() as db:
                     # RPC may have succeeded remotely. Record unknown and query same ID later.
                     db.execute(
@@ -754,6 +906,8 @@ class Coordinator:
     def tick(self):
         self.collect()
         self.executions()
+        with self.store.connect() as db:
+            self._work().schedule(db)
         self.wake_messages()
         self.dispatch()
 
@@ -773,6 +927,8 @@ class Coordinator:
                                 logging.exception("Node operation failed")
                     self.wake_messages()
                     with self.store.connect() as db:
+                        self._work().schedule(db)
+                    with self.store.connect() as db:
                         tasks = [
                             dict(x)
                             for x in db.execute(
@@ -782,7 +938,9 @@ class Coordinator:
                         executions = [
                             r["id"]
                             for r in db.execute(
-                                "SELECT id FROM executions WHERE state IN ('approved','starting','running','unknown')"
+                                "SELECT id FROM executions WHERE state IN ('approved','starting','running','unknown') "
+                                "OR (state='awaiting_owner' AND ?)",
+                                (isinstance(self.backend, PullBackend),),
                             )
                         ]
                     for task in tasks:

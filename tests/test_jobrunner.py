@@ -7,6 +7,7 @@ from pathlib import Path
 
 from agent_harness import jobrunner
 from agent_harness.common import read_json, write_json
+from agent_harness.execution_approvals import execution_digest
 
 
 class JobRunnerTests(unittest.TestCase):
@@ -86,6 +87,28 @@ class JobRunnerTests(unittest.TestCase):
                     "template": "sleep",
                 },
             )
+
+    def test_changed_delegated_execution_snapshot_is_refused_before_launch(self):
+        original = self._template()
+        digest = execution_digest(self.project, "sleep", original["sleep"])
+        jobrunner.rpc(
+            self.root,
+            {"action": "execution_templates", "project": "demo", "templates": self._template(seconds="100")},
+        )
+        with mock.patch.object(jobrunner, "_launch") as launch:
+            result = jobrunner.rpc(
+                self.root,
+                {
+                    "action": "execution_start",
+                    "project": "demo",
+                    "execution": "stale",
+                    "template": "sleep",
+                    "expected_execution_digest": digest,
+                },
+            )
+        launch.assert_not_called()
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse((self.root / "executions" / "stale").exists())
 
     def test_dead_supervisor_is_terminal_not_permanently_starting(self):
         jobrunner.rpc(

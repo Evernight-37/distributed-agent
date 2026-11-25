@@ -115,18 +115,19 @@ class Store:
             conversation_id=self._pair_conversation("human_agent", owner, agent["id"]),
         )
 
-    def permission_decide(self, user, project, request_id, approve):
+    def permission_decide(self, user, project, request_id, approve, *, db=None):
         if type(approve) is not bool:
             raise ValueError("授权决定必须为布尔值")
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            self.require_member(db, project, user)
-            request = db.execute(
+        with self.connect() if db is None else nullcontext(db) as connection:
+            if db is None:
+                connection.execute("BEGIN IMMEDIATE")
+            self.require_member(connection, project, user)
+            request = connection.execute(
                 "SELECT * FROM permission_requests WHERE id=? AND project_id=?", (request_id, project)
             ).fetchone()
             if not request or request["owner_id"] != user:
                 raise PermissionError("只有执行机器的所有者可以处理此申请")
-            return self._decide_permission(db, user, request, approve)
+            return self._decide_permission(connection, user, request, approve)
 
     def _decide_permission(self, db, user, request, approve):
         state, continuation = request["state"], request["continuation_task_id"]
@@ -149,7 +150,40 @@ class Store:
                 if not source or source["state"] not in {"needs_review", "failed"}:
                     raise ValueError("原任务不能续跑")
                 contract = json.loads(source["contract"])
-                continuation = self._task(db, project, agent, contract, user, cutoff=source["cutoff"])["id"]
+                work_execution = None
+                if contract.get("project_work_execution_id"):
+                    work_execution = db.execute(
+                        "SELECT e.* FROM project_work_executions e JOIN project_work_items w ON w.id=e.work_id "
+                        "WHERE e.task_id=? AND w.project_id=? AND w.revision=e.revision "
+                        "AND w.status IN ('waiting','blocked','queued') "
+                        "AND NOT EXISTS (SELECT 1 FROM project_work_executions newer WHERE newer.work_id=e.work_id "
+                        "AND newer.rowid>e.rowid)",
+                        (source["id"], project["id"]),
+                    ).fetchone()
+                    if not work_execution or work_execution["id"] != contract["project_work_execution_id"]:
+                        raise ValueError("项目任务已变更；请让当前执行重新申请权限")
+                    contract["project_work_execution_id"] = uid("work-execution")
+                continuation = self._task(
+                    db, project, agent, contract, user, cutoff=source["cutoff"], parent_task_id=source["id"]
+                )["id"]
+                if work_execution:
+                    started = time.time()
+                    db.execute(
+                        "INSERT INTO project_work_executions(id,work_id,task_id,state,revision,input_cutoff,created_at) "
+                        "VALUES(?,?,?,'running',?,?,?)",
+                        (
+                            contract["project_work_execution_id"],
+                            work_execution["work_id"],
+                            continuation,
+                            work_execution["revision"],
+                            work_execution["input_cutoff"],
+                            started,
+                        ),
+                    )
+                    db.execute(
+                        "UPDATE project_work_items SET status='running',updated_at=? WHERE id=?",
+                        (started, work_execution["work_id"]),
+                    )
                 state = "approved"
             else:
                 state = "denied"
@@ -886,6 +920,26 @@ class Store:
                 ).fetchall()
             ]
 
+    def _task_source(self, db, project, source_message_id):
+        if type(source_message_id) is not int or not 0 < source_message_id < 2**63:
+            raise ValueError("原消息编号无效")
+        source = db.execute(
+            "SELECT * FROM messages WHERE id=? AND project_id=? AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%')",
+            (source_message_id, project),
+        ).fetchone()
+        if not source:
+            raise PermissionError("无权引用此消息")
+        return source
+
+    @staticmethod
+    def task_reply_recipient(agent, contract):
+        if contract.get("private_turn"):
+            if contract.get("audience") == "group":
+                return None
+            if contract.get("audience") == "owner":
+                return agent["owner_id"]
+        return contract.get("reply_to")
+
     def task(self, user, data, delegate=None):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -896,15 +950,33 @@ class Store:
             audience = data.get("audience")
             if audience not in (None, "group", "private", "owner"):
                 raise ValueError("audience 只能是 group、private 或 owner")
+            contract = dict(data)
             if audience in {"private", "owner"}:
                 # The report goes to this person's private conversation with the
                 # agent instead of the project group; the identity stays the same.
                 # "owner" and "private" coincide here because the caller must own
                 # the agent, but both spellings reach this method.
-                data = {**data, "private_turn": True, "reply_to": user}
-            return self._task(db, project, agent, data, user, delegate)
+                contract.update(private_turn=True, reply_to=user)
+            source_message_id = contract.pop("source_message_id", None)
+            if source_message_id is not None:
+                source = self._task_source(db, project["id"], source_message_id)
+                self._conversation_access(db, project["id"], user, source["conversation_id"])
+            return self._task(db, project, agent, contract, user, delegate, source_message_id=source_message_id)
 
-    def _task(self, db, project, agent, data, actor, delegate=None, *, cutoff=None):
+    def _task(
+        self,
+        db,
+        project,
+        agent,
+        data,
+        actor,
+        delegate=None,
+        *,
+        cutoff=None,
+        source_message_id=None,
+        parent_task_id=None,
+        wake_source_id=None,
+    ):
         if agent.get("configuring"):
             raise ValueError("机器配置尚未确认；请所有者重新确认设置")
         if project["paused"]:
@@ -922,6 +994,18 @@ class Store:
             (agent["id"],),
         ).fetchone():
             raise ValueError("这个 agent 已有活动任务")
+        if parent_task_id is not None:
+            parent = db.execute(
+                "SELECT r.source_message_id FROM tasks t LEFT JOIN task_trace r ON r.task_id=t.id "
+                "WHERE t.id=? AND t.project_id=?",
+                (parent_task_id, project["id"]),
+            ).fetchone()
+            if parent is None:
+                raise ValueError("上级任务不属于当前项目")
+            if source_message_id is None:
+                source_message_id = parent["source_message_id"]
+        for message_id in {source_message_id, wake_source_id} - {None}:
+            self._task_source(db, project["id"], message_id)
         task = uid("task")
         if cutoff is None:
             cutoff = db.execute(
@@ -951,6 +1035,32 @@ class Store:
                 "sender_type": "agent",
                 "recipient_id": recipient,
             },
+        )
+        delivery = self._conversation_for_message(
+            db,
+            {
+                "project_id": project["id"],
+                "sender_id": agent["id"],
+                "sender_type": "agent",
+                "recipient_id": self.task_reply_recipient(agent, data),
+            },
+        )
+        from agent_harness.owner_backend import device_node
+
+        node_name = next(
+            (
+                row["name"]
+                for row in db.execute(
+                    "SELECT public_key,name FROM account_devices WHERE account_id=?", (agent["owner_id"],)
+                )
+                if device_node(row["public_key"]) == agent["node"]
+            ),
+            None,
+        )
+        db.execute(
+            "INSERT INTO task_trace(task_id,source_message_id,parent_task_id,wake_source_id,node,node_name,"
+            "delivery_conversation_id) VALUES(?,?,?,?,?,?,?)",
+            (task, source_message_id, parent_task_id, wake_source_id, agent["node"], node_name, delivery),
         )
         db.execute(
             "INSERT INTO messages(project_id,sender_id,sender_type,recipient_id,body,created_at,causal_task,conversation_id) VALUES(?,?,?,?,?,?,?,?)",
@@ -1150,6 +1260,48 @@ class Store:
             ).fetchone()
         )
 
+    def task_trace_for_human(self, db, task, user):
+        """Return only work links visible to the same project member as the task."""
+        project = task["project_id"]
+        agent = db.execute(
+            "SELECT name FROM agents WHERE id=? AND project_id=?", (task["agent_id"], project)
+        ).fetchone()
+        trace = {
+            "agent_id": task["agent_id"],
+            "agent_name": agent["name"] if agent else None,
+            "node": None,
+            "node_name": None,
+            "source_message_id": None,
+            "parent_task_id": None,
+            "delivery_conversation_id": None,
+        }
+        row = db.execute("SELECT * FROM task_trace WHERE task_id=?", (task["id"],)).fetchone()
+        if row is None:
+            return trace
+        trace.update(node=row["node"], node_name=row["node_name"])
+        if row["source_message_id"] is not None:
+            try:
+                source = self._task_source(db, project, row["source_message_id"])
+                self._conversation_access(db, project, user, source["conversation_id"])
+            except PermissionError:
+                pass
+            else:
+                trace["source_message_id"] = source["id"]
+        if row["parent_task_id"]:
+            parent = db.execute(
+                "SELECT * FROM tasks WHERE id=? AND project_id=?", (row["parent_task_id"], project)
+            ).fetchone()
+            if parent and self.task_visible_to_human(db, parent, user):
+                trace["parent_task_id"] = parent["id"]
+        if row["delivery_conversation_id"]:
+            try:
+                self._conversation_access(db, project, user, row["delivery_conversation_id"])
+            except PermissionError:
+                pass
+            else:
+                trace["delivery_conversation_id"] = row["delivery_conversation_id"]
+        return trace
+
     def local_task_recovery(self, db, task, user, delegate=None):
         """Identify an unknown pull job that its own machine owner can inspect."""
         if delegate is not None or task["state"] != "unknown" or not task["job"]:
@@ -1205,6 +1357,7 @@ class Store:
                 )
             ]
             messages = []
+            trace_cache = {}
             for row in self._human_visible_messages(db, project, user):
                 item = dict(row)
                 try:
@@ -1244,6 +1397,24 @@ class Store:
                     request_id = item["causal_task"][len(PERMISSION_REQUEST_PREFIX) :]
                     if request_id in permission_requests:
                         item["permission_request"] = permission_requests[request_id]
+                task_id = (item["causal_task"] or "").removeprefix("draft:")
+                if task_id.startswith("task-"):
+                    if task_id not in trace_cache:
+                        task = db.execute(
+                            "SELECT * FROM tasks WHERE id=? AND project_id=?", (task_id, project)
+                        ).fetchone()
+                        trace_cache[task_id] = (
+                            self.task_trace_for_human(db, task, user)
+                            if task and self.task_visible_to_human(db, task, user)
+                            else None
+                        )
+                    trace = trace_cache[task_id]
+                    if trace is None:
+                        item["causal_task"] = None
+                    else:
+                        item["task_id"] = task_id
+                        if trace["source_message_id"] is not None:
+                            item["reply_to_message_id"] = trace["source_message_id"]
                 messages.append(item)
             conversations = self._conversation_list(db, project, user, messages, members, people)
             tasks = []
@@ -1254,6 +1425,7 @@ class Store:
                 item = dict(row)
                 if not self.task_visible_to_human(db, item, user):
                     continue
+                item["trace"] = trace_cache.get(item["id"]) or self.task_trace_for_human(db, item, user)
                 item["can_cancel"] = (
                     item["state"] in ACTIVE_TASK_STATES
                     and not item["cancel_requested"]
