@@ -108,6 +108,24 @@ class McpAdapterTests(unittest.TestCase):
         state = self.backend.call("harness_task_get", {"project": self.project, "task": task["id"]})
         self.assertEqual(state["state"], "queued")
         self.assertEqual(__import__("json").loads(state["contract"])["requested_via"], "codex")
+        cancellation = self.backend.call("harness_task_cancel", {"project": "MCP project", "task": task["id"]})
+        self.assertEqual(cancellation["state"], "cancelled")
+
+    def test_project_names_are_sent_to_hub_as_ids(self):
+        sent = self.backend.call("harness_message_send", {"project": "MCP project", "body": "Addressed by name"})
+        view = self.backend.call("harness_project_read", {"project": "MCP project"})
+        self.assertEqual(sent["project"], self.project)
+        self.assertEqual(view["project"]["id"], self.project)
+        self.assertEqual(view["messages"][-1]["body"], "Addressed by name")
+
+    def test_incomplete_lookup_differs_from_project_not_visible(self):
+        self.assertEqual(self.backend._project_route("MCP project"), (self.project, self.url))
+        with patch.object(self.backend, "_rpc", side_effect=RuntimeError("offline")):
+            self.assertEqual(self.backend._project_route("MCP project"), (self.project, self.url))
+            with self.assertRaisesRegex(RuntimeError, "协作服务暂时无法查询"):
+                self.backend._project_route("missing")
+        with self.assertRaisesRegex(ValueError, "当前账户看不到这个项目"):
+            self.backend._project_route("missing")
 
     def test_private_audience_routes_the_result_to_this_person(self):
         account = self.bridge.identity["account_id"]

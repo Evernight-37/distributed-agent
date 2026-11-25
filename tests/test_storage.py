@@ -31,8 +31,24 @@ class StorageMigrationTests(unittest.TestCase):
                 db.commit()
             migrate_database(database)
             with closing(sqlite3.connect(database)) as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 7)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
                 self.assertTrue(db.execute("SELECT 1 FROM sqlite_master WHERE name='direct_transfers'").fetchone())
+
+    def test_version_seven_gains_no_implicit_permission_approvals(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(folder)
+            owner = provision_account(store, "owner", bootstrap=True)["id"]
+            project = store.project_create(owner, "Existing project")["id"]
+            with store.connect() as db:
+                db.execute("DROP TABLE permission_requests")
+                db.execute("PRAGMA user_version=7")
+            store.set_grant("existing-agent", "full_access", True, actor=owner)
+            result = migrate_database(store.database)
+            self.assertEqual((result["from"], result["to"]), (7, SCHEMA_VERSION))
+            self.assertTrue(Path(result["backup"]).is_file())
+            with store.connect() as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM permission_requests").fetchone()[0], 0)
+                self.assertEqual(db.execute("SELECT id FROM projects").fetchone()[0], project)
 
     def test_online_backup_and_offline_restore_preserve_service_data(self):
         with tempfile.TemporaryDirectory() as temporary:

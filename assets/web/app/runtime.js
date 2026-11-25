@@ -80,6 +80,7 @@ async function boot() {
     S.profiles = status.profiles || [];
     S.server = status.server || "";
     S.autologin = status.autologin || null;
+    S.autologinFailed ||= status.autologin_failed === true;
     if (status.unlocked) await enter();
     // One local account goes straight to its unlock form, so the remember-me
     // checkbox is the first thing on screen instead of one click away.

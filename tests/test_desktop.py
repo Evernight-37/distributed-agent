@@ -151,6 +151,50 @@ class DesktopServiceTests(unittest.TestCase):
         self.assertTrue(FakeConnector.waits)
         self.assertTrue(all(wait == 1 for wait in FakeConnector.waits))
 
+    def test_idle_stop_defers_while_the_receiver_is_claiming_and_after_it_starts_work(self):
+        runtime = desktop_runtime.DesktopRuntime(self.root)
+        entered, release = threading.Event(), threading.Event()
+        active = self.root / "projects" / "p" / "active.json"
+
+        def claim(connector, wait_seconds):
+            entered.set()
+            release.wait(3)
+            write_json(active, {"job": "active-job"})
+
+        with mock.patch.object(FakeConnector, "cycle", claim):
+            try:
+                self.assertTrue(entered.wait(3))
+                self.assertFalse(runtime._control("stop-if-idle", {})["stopping"])
+            finally:
+                release.set()
+        deadline = time.monotonic() + 3
+        while not active.is_file() and time.monotonic() < deadline:
+            time.sleep(0.03)
+        self.assertTrue(active.is_file())
+        self.assertFalse(runtime._control("stop-if-idle", {})["stopping"])
+
+    def test_task_resolution_requires_authenticated_explicit_confirmation(self):
+        action = {"action": "resolve-task", "job_id": "pull-job"}
+        confirmed = {**action, "confirm_no_job": True}
+        with mock.patch.object(FakeConnector, "resolve", create=True, return_value={"status": "cancelled"}) as resolve:
+            status, _, _ = self.request("POST", "/desktop/action", confirmed, origin=self.info["url"])
+            self.assertEqual(status, 403)
+            status, _, _ = self.request(
+                "POST",
+                "/desktop/action",
+                {**action, "confirm_no_job": 1},
+                key=self.info["key"],
+                origin=self.info["url"],
+            )
+            self.assertEqual(status, 400)
+            resolve.assert_not_called()
+            status, payload, _ = self.request(
+                "POST", "/desktop/action", confirmed, key=self.info["key"], origin=self.info["url"]
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["result"], {"status": "cancelled"})
+            resolve.assert_called_once_with("pull-job", confirm_no_job=True, kind="task")
+
 
 class DesktopRuntimeContractTests(unittest.TestCase):
     def test_team_service_probe_uses_public_healthz_not_retired_session_api(self):

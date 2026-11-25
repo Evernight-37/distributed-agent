@@ -85,6 +85,7 @@ def response_schema():
             ),
             "executions": array({"template": {"type": "string"}}),
             "memory_notes": {"type": "array", "items": {"type": "string"}},
+            "request": {"anyOf": [obj({"reason": {"type": "string"}}), {"type": "null"}]},
         }
     )
 
@@ -266,6 +267,7 @@ class WarmManager:
         project = config["project"]
         contract = json.loads(config["prompt"])
         stage = contract.get("stage", "discuss")
+        full_access = "full_access" in (worker.contract_spec(config).get("grants") or [])
         cwd = project["remote_path"]
         login = codex_login_status(cli_path(ROOT), ROOT)
         if not login["logged_in"]:
@@ -277,7 +279,9 @@ class WarmManager:
             "modelProvider": "openai",
             "cwd": cwd,
             "approvalPolicy": "never",
-            "sandbox": "workspace-write" if stage == "implement" else "read-only",
+            "sandbox": (
+                "danger-full-access" if full_access else "workspace-write" if stage == "implement" else "read-only"
+            ),
         }
         thread_id, replaced_thread = self.attach_thread(server, settings, existing)
         with lock(ROOT / "registry.lock"):
@@ -295,11 +299,12 @@ class WarmManager:
             + config["prompt"]
         )
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
-        sandbox = (
-            {"type": "workspaceWrite", "writableRoots": [cwd], "networkAccess": False}
-            if stage == "implement"
-            else {"type": "readOnly"}
-        )
+        if full_access:
+            sandbox = {"type": "dangerFullAccess"}
+        elif stage == "implement":
+            sandbox = {"type": "workspaceWrite", "writableRoots": [cwd], "networkAccess": False}
+        else:
+            sandbox = {"type": "readOnly"}
         started = now()
         self.update_state(
             path,
@@ -408,19 +413,19 @@ class WarmManager:
                     else "failed"
                 )
                 effective = effective_model(thread_id, started)
-                if effective and effective != project["model"]:
-                    status = "failed"
+                error = (turn.get("error") or {}).get("message") if status == "failed" else None
+                if status == "needs_review":
+                    if effective and effective != project["model"]:
+                        error = "Effective model differs from requested model"
+                    else:
+                        error = worker._check_strict_guard(config.get("strict_guard"))
+                    if error:
+                        status = "failed"
                 self.update_state(
                     path,
                     status=status,
                     finished_at=now(),
-                    error=(
-                        "Effective model differs from requested model"
-                        if effective and effective != project["model"]
-                        else (turn.get("error") or {}).get("message")
-                        if status == "failed"
-                        else None
-                    ),
+                    error=error,
                     effective_model=effective,
                     model_verified=bool(effective),
                 )

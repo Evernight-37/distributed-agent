@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 from agent_harness import owner_backend as backend
 from agent_harness import owner_worker as worker
+from agent_harness.broker import PullBackend
 from agent_harness.collaboration_store import Store
 from agent_harness.common import read_json, write_json
 
@@ -130,6 +131,141 @@ class OwnerTests(unittest.TestCase):
                 cid=cid,
             )
         )
+
+    def apply_owner_command(self, action, data):
+        envelope = self.envelope(action, data)
+        device = {"node": "n1", "owner_id": "u1"}
+        self.backend.enqueue("u1", envelope)
+        with self.store.connect() as db:
+            self.assertIn(envelope, self.backend.poll(db, device))
+        response = self.control.apply(envelope)
+        with self.store.connect() as db:
+            self.backend.report(db, device, envelope["body"]["id"], **response)
+        return response
+
+    def advertise_project_agents(self):
+        with self.store.connect() as db:
+            PullBackend(self.store)._advertise(db, {"node": "n1", "owner_id": "u1"}, self.connector.bindings())
+            return {row["project_id"]: dict(row) for row in db.execute("SELECT * FROM agents WHERE node='n1'")}
+
+    def test_project_agent_lifecycle_preserves_binding_and_needs_no_employee(self):
+        self.configure_workspace()
+        settings = {"model": "gpt-5.6-sol", "effort": "low", "enabled": True}
+        created = self.apply_owner_command(
+            "project-agent-create", {"id": "within-project", "project_id": "p1", "name": "Agent", "settings": settings}
+        )
+        self.assertEqual(created["state"], "applied", created)
+        self.assertEqual(self.backend.snapshot("u1")["employees"], [])
+        project = self.advertise_project_agents()["p1"]
+        target = {k: project[k] for k in ("project_id", "backend_project")}
+        target["agent_id"] = project["id"]
+        directory = self.connector.root / "projects" / target["backend_project"]
+        write_json(directory / "session.json", {"thread_id": "original-session"})
+        configured = self.apply_owner_command(
+            "project-agent-configure",
+            dict(target, name="Agent", settings=dict(settings, model="deepseek-flash", strict_worktree=True)),
+        )
+        self.assertEqual(configured["state"], "applied", configured)
+        with self.store.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT model FROM agents WHERE id=?", (target["agent_id"],)).fetchone()[0],
+                "deepseek-flash",
+            )
+        current = self.advertise_project_agents()["p1"]
+        self.assertEqual((current["id"], current["model"]), (target["agent_id"], "deepseek-flash"))
+        write_json(directory / "active.json", {"job": "running"})
+        attempt = self.apply_owner_command("project-agent-delete", target)
+        self.assertEqual(attempt["state"], "failed")
+        self.assertTrue(self.connector.bindings()[0]["enabled"])
+        write_json(directory / "active.json", None)
+        deleted = self.apply_owner_command("project-agent-delete", target)
+        self.assertEqual(deleted["state"], "applied", deleted)
+        current = self.advertise_project_agents()["p1"]
+        self.assertEqual(current["id"], target["agent_id"])
+        self.assertFalse(current["enabled"])
+        self.assertEqual(read_json(directory / "session.json"), {"thread_id": "original-session"})
+
+    def test_editing_a_legacy_assignment_detaches_it_from_global_configure(self):
+        self.assertEqual(self.apply_owner_command("create", {"id": "e1", "name": "Employee"})["state"], "applied")
+        self.configure()
+        self.configure_workspace()
+        with self.store.connect() as db:
+            db.execute("INSERT INTO projects(id,name,owner_id) VALUES('p2','Two','u1')")
+            db.execute("INSERT INTO project_users VALUES('p2','u1')")
+        self.configure_workspace("p2")
+        for project_id in ("p1", "p2"):
+            self.assertEqual(
+                self.control.apply(self.envelope("dispatch", {"id": "e1", "project_id": project_id}))["state"],
+                "applied",
+            )
+        first = self.advertise_project_agents()["p1"]
+        response = self.apply_owner_command(
+            "project-agent-configure",
+            {
+                "agent_id": first["id"],
+                "project_id": "p1",
+                "backend_project": first["backend_project"],
+                "name": "Project-specific",
+                "settings": {"model": "deepseek-flash", "effort": "low", "enabled": True},
+            },
+        )
+        self.assertEqual(response["state"], "applied", response)
+        self.assertEqual(self.configure()["state"], "applied")
+        second_dispatch = self.control.apply(self.envelope("dispatch", {"id": "e1", "project_id": "p1"}))
+        self.assertEqual(second_dispatch["state"], "failed")
+        projects = self.advertise_project_agents()
+        self.assertEqual(projects["p1"]["id"], first["id"])
+        self.assertEqual(projects["p1"]["model"], "deepseek-flash")
+        self.assertEqual(projects["p2"]["model"], "gpt-5.6-sol")
+        self.assertEqual(self.apply_owner_command("delete", {"id": "e1"})["state"], "applied")
+        projects = self.advertise_project_agents()
+        self.assertTrue(projects["p1"]["enabled"])
+        self.assertFalse(projects["p2"]["enabled"])
+
+    def test_project_agent_commands_validate_project_node_and_unsealed_identity(self):
+        data = {
+            "id": "within-project",
+            "project_id": "missing",
+            "name": "Agent",
+            "settings": {"model": "gpt-5.6-sol", "effort": "low", "enabled": True},
+        }
+        with self.assertRaises(PermissionError):
+            self.backend.enqueue("u1", self.envelope("project-agent-create", data))
+        with self.assertRaises(PermissionError):
+            self.backend.enqueue("u1", self.envelope("project-agent-create", dict(data, project_id="p1"), target="n2"))
+        sealed = self.envelope("project-agent-create", dict(data, project_id="p1"))
+        sealed["body"]["sealed"] = {}
+        with self.assertRaises(ValueError):
+            self.backend.enqueue("u1", sealed)
+        self.assertEqual(self.control.apply(sealed)["state"], "failed")
+
+    def test_project_remove_records_applied_tombstone_for_a_revoked_device(self):
+        node = backend.device_node("orphaned-project-key")
+        with self.store.connect() as db:
+            db.execute("INSERT INTO nodes VALUES(?,?)", (node, "u1"))
+            db.execute(
+                "INSERT INTO account_devices VALUES(?,?,?,?,1)",
+                ("orphaned-project-key", "u1", "Old machine", "[]"),
+            )
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) "
+                "VALUES ('orphan-agent','p1','Old Agent','u1',?,'old-agent','deepseek-flash','low',60)",
+                (node,),
+            )
+        delete = self.envelope(
+            "project-agent-delete",
+            {"agent_id": "orphan-agent", "backend_project": "old-agent", "project_id": "p1"},
+            target=node,
+        )
+        result = self.backend.enqueue("u1", delete)
+        self.assertEqual(result["state"], "applied")
+        self.assertEqual(
+            self.backend.command("u1", result["id"])["result"],
+            {"project_id": "p1", "backend_project": "old-agent", "enabled": False},
+        )
+        self.assertTrue(self.backend.enqueue("u1", delete)["duplicate"])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT enabled FROM agents WHERE id='orphan-agent'").fetchone()[0], 0)
 
     def test_strict_worktree_setting_propagates_to_binding_and_registration(self):
         self.create()
@@ -511,11 +647,19 @@ class OwnerTests(unittest.TestCase):
             "u1",
             self.envelope("create", {"id": "e-orphan", "name": "斯科特"}, target=node),
         )
+        with self.store.connect() as db:
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) "
+                "VALUES ('agent-orphan','p1','斯科特','u1',?,?,'deepseek-flash','medium',60)",
+                (node, worker.execution_project("e-orphan", "p1")),
+            )
+        self.store.set_grant("agent-orphan", "full_access", True, actor="u1")
         result = self.backend.enqueue(
             "u1",
             self.envelope("delete", {"id": "e-orphan"}, target=node),
         )
         self.assertTrue(result["applied"])
+        self.assertEqual(self.store.grants("agent-orphan"), [])
         self.assertEqual(self.backend.snapshot("u1")["employees"], [])
         with self.store.connect() as db:
             self.assertEqual(

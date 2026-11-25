@@ -8,7 +8,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agent_harness import warm_worker
 from agent_harness import worker
@@ -605,6 +605,78 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "interrupted")
             self.assertIn("No active worker owns", result["error"])
+
+    def test_warm_turns_use_current_grants_and_enforce_the_strict_result(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = self.runtime_root(folder)
+            warm_worker.configure_runtime(root)
+            manager = warm_worker.WarmManager("project")
+            server = Mock()
+            server.process.pid = 456
+            server.call.side_effect = lambda method, _params, _timeout: (
+                {"thread": {"id": "thread"}} if method == "thread/start" else {"turn": {"id": "turn"}}
+            )
+            project = {
+                "name": "project",
+                "remote_path": str(root),
+                "model": "gpt-5.6-sol",
+                "effort": "low",
+                "timeout": 30,
+                "local_control": True,
+            }
+            events = [
+                {"method": "item/completed", "params": {"item": {"type": "agentMessage", "text": '{"reply":"ok"}'}}},
+                {"method": "turn/completed", "params": {"turn": {"id": "turn", "status": "completed"}}},
+            ]
+            turns = (
+                ("initial", "discuss", [], {"type": "readOnly"}),
+                ("approved", "discuss", ["full_access"], {"type": "dangerFullAccess"}),
+                ("revoked", "discuss", [], {"type": "readOnly"}),
+                (
+                    "strict",
+                    "implement",
+                    [],
+                    {"type": "workspaceWrite", "writableRoots": [str(root)], "networkAccess": False},
+                ),
+            )
+            with (
+                patch.object(manager, "ensure_server", return_value=server),
+                patch.object(warm_worker, "cli_path", return_value="codex"),
+                patch.object(warm_worker, "codex_login_status", return_value={"logged_in": True}),
+                patch.object(warm_worker, "effective_model", return_value="gpt-5.6-sol"),
+                patch.object(
+                    worker, "_check_strict_guard", side_effect=lambda guard: "Outside allowed files" if guard else None
+                ),
+            ):
+                thread = None
+                for job, stage, grants, sandbox in turns:
+                    with self.subTest(job=job):
+                        path = root / "jobs" / job
+                        write_json(
+                            path / "request.json",
+                            {
+                                "project": project,
+                                "prompt": json.dumps({"stage": stage, "objective": json.dumps({"grants": grants})}),
+                                "managed_turn": True,
+                                "thread_id": thread,
+                                "memory": {},
+                                "strict_guard": {"allowed_files": ["allowed.txt"]} if job == "strict" else None,
+                            },
+                        )
+                        server.event.side_effect = events
+                        manager.run_job(job)
+                        method, params, _ = server.call.call_args.args
+                        self.assertEqual(method, "turn/start")
+                        self.assertEqual(params["sandboxPolicy"], sandbox)
+                        self.assertEqual(params["approvalPolicy"], "never")
+                        self.assertIn("request", params["outputSchema"]["properties"])
+                        state = read_json(path / "state.json")
+                        thread = state["thread_id"]
+                        self.assertEqual(thread, "thread")
+                        self.assertEqual(state["status"], "failed" if job == "strict" else "needs_review")
+                        if job == "strict":
+                            self.assertEqual(state["error"], "Outside allowed files")
+            self.assertEqual([call.args[0] for call in server.call.call_args_list].count("thread/start"), 1)
 
     def test_timeout_without_turn_completed_has_bounded_terminal_state_and_closes_server(
         self,

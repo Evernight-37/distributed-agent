@@ -6,7 +6,7 @@ import secrets
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from agent_harness.storage import migrate_database
@@ -15,6 +15,8 @@ from agent_harness.health import HealthCode, component, normalize_exception, rep
 
 MAX_EVENTS_PER_ACCOUNT = 512
 MAX_EVENT_WAIT_SECONDS = 20
+ACTIVE_TASK_STATES = {"queued", "starting", "running", "unknown"}
+PERMISSION_REQUEST_PREFIX = "permission-request:"
 
 
 def uid(prefix):
@@ -50,27 +52,116 @@ class Store:
     def _permission_command(self, user, project, verb, name):
         """Apply /allow or /deny and report it as a system message."""
         with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
             self.require_member(db, project, user)
-            agent = db.execute("SELECT * FROM agents WHERE project_id=? AND name=?", (project, name.strip())).fetchone()
-            if not agent:
+            agents = db.execute(
+                "SELECT id FROM agents WHERE project_id=? AND name=?", (project, name.strip())
+            ).fetchall()
+            if not agents:
                 raise ValueError("没有这个 Agent：" + name.strip())
-            owner = db.execute("SELECT owner_id FROM projects WHERE id=?", (project,)).fetchone()["owner_id"]
-            if user not in (owner, agent["owner_id"]):
-                raise PermissionError("只有项目所有者或该 Agent 的主人可以授权")
-        allow = verb == "/allow"
-        scopes = self.set_grant(agent["id"], "full_access", allow, actor=user)
-        listed = "、".join(scopes) if scopes else "无"
-        text = (
-            "已允许「" + agent["name"] + "」越出项目目录执行（下一回合生效）；当前授权：" + listed
-            if allow
-            else "已收回「" + agent["name"] + "」的额外权限；当前授权：" + listed
-        )
+            if len(agents) != 1:
+                raise ValueError("有多个同名 Agent，请从项目成员列表选择")
+        return self.agent_permission(user, project, agents[0]["id"], verb == "/allow")
+
+    def agent_permission(self, user, project, agent_id, allow):
+        """Compatibility entry point for an unambiguous pending request."""
+        if type(allow) is not bool:
+            raise ValueError("授权决定必须为布尔值")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            self._message(db, project, "scheduler", "system", text, None, None)
-            row = db.execute("SELECT * FROM messages ORDER BY id DESC LIMIT 1").fetchone()
-        return dict(row)
+            self.require_member(db, project, user)
+            requests = db.execute(
+                "SELECT * FROM permission_requests WHERE project_id=? AND agent_id=? AND owner_id=? "
+                "AND state='pending' LIMIT 2",
+                (project, agent_id, user),
+            ).fetchall()
+            if len(requests) != 1:
+                raise ValueError("请从 Agent 的私聊中选择一条待处理的提权申请")
+            return self._decide_permission(db, user, requests[0], allow)
+
+    def post_permission_request(self, db, project, agent, source_task, request):
+        if (
+            source_task["state"] not in {"needs_review", "failed"}
+            or source_task["project_id"] != project
+            or source_task["agent_id"] != agent["id"]
+            or not isinstance(request, dict)
+            or not isinstance(request.get("reason"), str)
+            or not request["reason"].strip()
+            or request.get("scope") not in (None, "full_access")
+        ):
+            return
+        reason = request["reason"].strip()[:12000]
+        owner = agent["owner_id"]
+        if not db.execute("SELECT 1 FROM project_users WHERE project_id=? AND user_id=?", (project, owner)).fetchone():
+            return
+        contract = json.loads(source_task["contract"])
+        if contract.get("private_turn") and contract.get("reply_to") != owner:
+            reason = "一条私有任务申请在本机单次提权。"
+        request_id = uid("permission")
+        inserted = db.execute(
+            "INSERT INTO permission_requests(id,source_task_id,project_id,agent_id,owner_id,node,reason,state,created_at) "
+            "VALUES(?,?,?,?,?,?,?,'pending',?) ON CONFLICT(source_task_id) DO NOTHING",
+            (request_id, source_task["id"], project, agent["id"], owner, agent["node"], reason, time.time()),
+        )
+        if not inserted.rowcount:
+            return
+        self._message(
+            db,
+            project,
+            "scheduler",
+            "system",
+            f"「{agent['name']}」申请本次续跑所需的额外权限：{reason}",
+            recipient=owner,
+            causal_task=PERMISSION_REQUEST_PREFIX + request_id,
+            conversation_id=self._pair_conversation("human_agent", owner, agent["id"]),
+        )
+
+    def permission_decide(self, user, project, request_id, approve):
+        if type(approve) is not bool:
+            raise ValueError("授权决定必须为布尔值")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self.require_member(db, project, user)
+            request = db.execute(
+                "SELECT * FROM permission_requests WHERE id=? AND project_id=?", (request_id, project)
+            ).fetchone()
+            if not request or request["owner_id"] != user:
+                raise PermissionError("只有执行机器的所有者可以处理此申请")
+            return self._decide_permission(db, user, request, approve)
+
+    def _decide_permission(self, db, user, request, approve):
+        state, continuation = request["state"], request["continuation_task_id"]
+        if state == "pending":
+            project = self.require_member(db, request["project_id"], user)
+            agent = self.require_agent_owner(db, request["agent_id"], user)
+            if (
+                agent["project_id"] != project["id"]
+                or agent["node"] != request["node"]
+                or not db.execute("SELECT 1 FROM nodes WHERE name=? AND owner_id=?", (agent["node"], user)).fetchone()
+            ):
+                raise PermissionError("此 Agent 的执行机器已变更")
+            if approve:
+                if not agent["enabled"]:
+                    raise ValueError("只能批准已启用的 Agent 续跑")
+                source = db.execute(
+                    "SELECT * FROM tasks WHERE id=? AND project_id=? AND agent_id=? AND processed=1",
+                    (request["source_task_id"], project["id"], agent["id"]),
+                ).fetchone()
+                if not source or source["state"] not in {"needs_review", "failed"}:
+                    raise ValueError("原任务不能续跑")
+                contract = json.loads(source["contract"])
+                continuation = self._task(db, project, agent, contract, user, cutoff=source["cutoff"])["id"]
+                state = "approved"
+            else:
+                state = "denied"
+            db.execute(
+                "UPDATE permission_requests SET state=?,continuation_task_id=?,decided_at=? WHERE id=?",
+                (state, continuation, time.time(), request["id"]),
+            )
+            self.log(db, user, "permission_decide", {"request": request["id"], "state": state})
+            self.emit_account_event(db, [user], "permission", project["id"])
+        elif approve != (state in {"approved", "consumed"}):
+            raise ValueError("此提权申请已经处理")
+        return {"id": request["id"], "agent_id": request["agent_id"], "state": state, "task_id": continuation}
 
     def grants(self, agent):
         """Scopes a human has granted one agent, e.g. full_access."""
@@ -80,27 +171,29 @@ class Store:
         entry = value.get(agent) if isinstance(value, dict) else None
         return sorted(entry) if isinstance(entry, list) else []
 
-    def set_grant(self, agent, scope, allow, actor="owner"):
+    def set_grant(self, agent, scope, allow, actor="owner", *, db=None):
         """Grant or revoke one scope; the file is small and written atomically."""
         from agent_harness.common import lock, read_json, write_json
 
-        with lock(self.root / "grants.lock"):
-            value = read_json(self.root / "grants.json", {})
-            if not isinstance(value, dict):
-                value = {}
-            current = set(value.get(agent) or []) if isinstance(value.get(agent), list) else set()
-            if allow:
-                current.add(scope)
-            else:
-                current.discard(scope)
-            if current:
-                value[agent] = sorted(current)
-            else:
-                value.pop(agent, None)
-            write_json(self.root / "grants.json", value)
-        with self.connect() as db:
-            self.log(db, actor, "agent_grant", {"agent": agent, "scope": scope, "allow": bool(allow)})
-        return self.grants(agent)
+        with self.connect() if db is None else nullcontext(db) as connection:
+            if db is None:
+                connection.execute("BEGIN IMMEDIATE")
+            with lock(self.root / "grants.lock"):
+                value = read_json(self.root / "grants.json", {})
+                if not isinstance(value, dict):
+                    value = {}
+                current = set(value.get(agent) or []) if isinstance(value.get(agent), list) else set()
+                if allow:
+                    current.add(scope)
+                else:
+                    current.discard(scope)
+                if current:
+                    value[agent] = sorted(current)
+                else:
+                    value.pop(agent, None)
+                write_json(self.root / "grants.json", value)
+            self.log(connection, actor, "agent_grant", {"agent": agent, "scope": scope, "allow": bool(allow)})
+        return sorted(current)
 
     @contextmanager
     def connect(self):
@@ -660,6 +753,8 @@ class Store:
         mention_agent_id=None,
         client_message_id=None,
         sender_client=None,
+        *,
+        conversation_id=None,
     ):
         if not isinstance(body, str) or not 1 <= len(body.strip()) <= 16000:
             raise ValueError("消息不能为空，最多 16000 字符")
@@ -681,7 +776,7 @@ class Store:
                 (mention_agent_id, project),
             ).fetchone():
                 raise ValueError("要呼叫的 Agent 不在项目中或尚未启用")
-        conversation = self._conversation_for_message(
+        conversation = conversation_id or self._conversation_for_message(
             db,
             {
                 "project_id": project,
@@ -782,7 +877,7 @@ class Store:
                     (
                         row["project_id"],
                         after,
-                        cutoff or 9223372036854775807,
+                        cutoff if cutoff is not None else 9223372036854775807,
                         agent,
                         agent,
                         agent,
@@ -791,7 +886,7 @@ class Store:
                 ).fetchall()
             ]
 
-    def task(self, user, data):
+    def task(self, user, data, delegate=None):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             project = self.require_member(db, data["project"], user)
@@ -807,9 +902,9 @@ class Store:
                 # "owner" and "private" coincide here because the caller must own
                 # the agent, but both spellings reach this method.
                 data = {**data, "private_turn": True, "reply_to": user}
-            return self._task(db, project, agent, data, user)
+            return self._task(db, project, agent, data, user, delegate)
 
-    def _task(self, db, project, agent, data, actor):
+    def _task(self, db, project, agent, data, actor, delegate=None, *, cutoff=None):
         if agent.get("configuring"):
             raise ValueError("机器配置尚未确认；请所有者重新确认设置")
         if project["paused"]:
@@ -828,10 +923,11 @@ class Store:
         ).fetchone():
             raise ValueError("这个 agent 已有活动任务")
         task = uid("task")
-        cutoff = db.execute(
-            "SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=?",
-            (project["id"],),
-        ).fetchone()[0]
+        if cutoff is None:
+            cutoff = db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=?",
+                (project["id"],),
+            ).fetchone()[0]
         db.execute(
             "INSERT INTO tasks(id,project_id,agent_id,title,contract,state,created_at,cutoff) VALUES(?,?,?,?,?,?,?,?)",
             (
@@ -870,8 +966,48 @@ class Store:
             ),
         )
         self.emit_conversation_event(db, project["id"], conversation, "task")
-        self.log(db, actor, "task", {"task": task, "agent": agent["id"]})
+        origin = {"task": task, "agent": agent["id"]}
+        if delegate is not None:
+            origin["delegate"] = digest(delegate)
+        self.log(db, actor, "task", origin)
         return {"id": task, "state": "queued"}
+
+    def _may_cancel_task(self, db, task, user, delegate=None):
+        if (
+            delegate is None
+            and db.execute("SELECT 1 FROM agents WHERE id=? AND owner_id=?", (task["agent_id"], user)).fetchone()
+        ):
+            return True
+        origin = db.execute(
+            "SELECT actor,json_extract(details,'$.delegate') AS delegate FROM audit "
+            "WHERE action='task' AND json_extract(details,'$.task')=? ORDER BY id LIMIT 1",
+            (task["id"],),
+        ).fetchone()
+        return bool(origin and origin["actor"] == user and (delegate is None or origin["delegate"] == digest(delegate)))
+
+    def cancel_task(self, user, project, task_id, delegate=None):
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self.require_member(db, project, user)
+            task = db.execute("SELECT * FROM tasks WHERE id=? AND project_id=?", (task_id, project)).fetchone()
+            if (
+                not task
+                or not self.task_visible_to_human(db, task, user)
+                or not self._may_cancel_task(db, task, user, delegate)
+            ):
+                raise PermissionError("无法取消此任务")
+            state = task["state"]
+            pending = bool(task["cancel_requested"])
+            if state in ACTIVE_TASK_STATES and not pending:
+                if state == "queued" and not task["job"]:
+                    state = "cancelled"
+                    db.execute("UPDATE tasks SET state=?,processed=0 WHERE id=?", (state, task_id))
+                else:
+                    pending = True
+                    db.execute("UPDATE tasks SET cancel_requested=1 WHERE id=?", (task_id,))
+                self.log(db, user, "task_cancel", {"task": task_id})
+                self.emit_task_event(db, task, "task")
+            return {"id": task_id, "state": state, "cancel_requested": pending and state in ACTIVE_TASK_STATES}
 
     def snapshot(self, user):
         from agent_harness.common import read_json
@@ -1014,7 +1150,19 @@ class Store:
             ).fetchone()
         )
 
-    def project_view(self, user, project):
+    def local_task_recovery(self, db, task, user, delegate=None):
+        """Identify an unknown pull job that its own machine owner can inspect."""
+        if delegate is not None or task["state"] != "unknown" or not task["job"]:
+            return None
+        row = db.execute(
+            "SELECT j.id AS job_id,j.node FROM pull_jobs j JOIN agents a ON a.id=j.agent_id "
+            "WHERE j.id=? AND j.kind='task' AND j.state IN ('running','unknown') "
+            "AND a.id=? AND a.project_id=? AND a.owner_id=? AND a.node=j.node",
+            (task["job"], task["agent_id"], task["project_id"], user),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def project_view(self, user, project, delegate=None):
         with self.connect() as db:
             p = self.require_member(db, project, user)
             members = []
@@ -1033,6 +1181,22 @@ class Store:
                     else ("idle" if row["enabled"] else "disabled"),
                 )
                 members.append(item)
+            permission_requests = (
+                {
+                    r["id"]: {
+                        "id": r["id"],
+                        "agent_id": r["agent_id"],
+                        "state": r["state"],
+                        "reason": r["reason"],
+                        "task_id": r["continuation_task_id"],
+                    }
+                    for r in db.execute(
+                        "SELECT * FROM permission_requests WHERE project_id=? AND owner_id=?", (project, user)
+                    )
+                }
+                if delegate is None
+                else {}
+            )
             people = [
                 dict(x)
                 for x in db.execute(
@@ -1074,6 +1238,12 @@ class Store:
                 from agent_harness.attachments import Attachments
 
                 item["attachments"] = Attachments(self).metadata(db, item["id"])
+                if item["sender_type"] == "system" and (item["causal_task"] or "").startswith(
+                    PERMISSION_REQUEST_PREFIX
+                ):
+                    request_id = item["causal_task"][len(PERMISSION_REQUEST_PREFIX) :]
+                    if request_id in permission_requests:
+                        item["permission_request"] = permission_requests[request_id]
                 messages.append(item)
             conversations = self._conversation_list(db, project, user, messages, members, people)
             tasks = []
@@ -1084,6 +1254,16 @@ class Store:
                 item = dict(row)
                 if not self.task_visible_to_human(db, item, user):
                     continue
+                item["can_cancel"] = (
+                    item["state"] in ACTIVE_TASK_STATES
+                    and not item["cancel_requested"]
+                    and self._may_cancel_task(db, item, user, delegate)
+                )
+                if item["state"] == "unknown":
+                    item["display_status"] = "待核对"
+                    recovery = self.local_task_recovery(db, item, user, delegate)
+                    if recovery:
+                        item["local_recovery"] = recovery
                 tasks.append(item)
             for task in tasks:
                 if task["state"] == "needs_review" and task["processed"]:

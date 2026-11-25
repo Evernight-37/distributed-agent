@@ -463,8 +463,39 @@ class HelperTests(unittest.TestCase):
     def test_the_unix_launcher_waits_unpacks_and_reopens(self):
         text = updates.unix_helper("/tmp/new.zip", "/Applications/Foolship.app", 99)
         self.assertIn("while kill -0 99", text)
-        self.assertIn('unzip -q "/tmp/new.zip"', text)
-        self.assertIn('open "/Applications/Foolship.app"', text)
+        self.assertIn('unzip -qo "$archive"', text)
+        self.assertIn('open "$target" || fail', text)
+
+    def test_windows_install_or_copy_failure_cannot_launch_the_app(self):
+        installed = updates.windows_helper("setup.exe", "Foolship.exe", 99, log="apply.log")
+        portable = updates.windows_zip_helper("bundle.zip", "program", "Foolship.exe", 99, "prune.txt", "apply.log")
+        self.assertLess(installed.index('if not "%result%"=="0" exit /b %result%'), installed.index('start ""'))
+        self.assertLess(portable.index("if errorlevel 1 goto unpack_failed"), portable.index('start ""'))
+        self.assertLess(portable.index("if errorlevel 1 goto prune_failed"), portable.index('start ""'))
+        self.assertIn('>> "apply.log" 2>&1', portable)
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch helper")
+    def test_real_portable_helper_logs_failed_extraction_without_relaunch(self):
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            attempt = root / "attempt"
+            launcher = root / "launch.cmd"
+            launcher.write_text(f'@echo launched > "{attempt}"\n', encoding="ascii")
+            log = root / "apply.log"
+            helper = root / "update.cmd"
+            helper.write_text(
+                updates.windows_zip_helper(
+                    str(root / "missing.zip"), str(root), str(launcher), 4294967294, log=str(log)
+                ),
+                encoding="utf-8",
+                newline="",
+            )
+            process = subprocess.run(["cmd.exe", "/c", str(helper)], capture_output=True, timeout=30)
+            self.assertNotEqual(process.returncode, 0)
+            self.assertIn(b"failed to unpack or copy", log.read_bytes())
+            self.assertFalse(attempt.exists())
 
     def test_the_portable_launcher_unwraps_the_archive_root(self):
         text = updates.windows_zip_helper(r"C:\d\u.zip", r"C:\app", r"C:\app\Foolship.exe", 7)
@@ -648,6 +679,19 @@ class MarkerTests(unittest.TestCase):
             result = updates.mark_running(folder)
             self.assertFalse(result["confirmed"])
             self.assertEqual(result["expected"], "9.9.9")
+
+    def test_matching_versions_require_the_declared_package_identity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            marker = updates.apply_marker_path(folder)
+            write_json(marker, {"to_version": updates.application_version(), "to_build": "a" * 64})
+            with mock.patch.object(updates, "_running_build", return_value="b" * 64):
+                result = updates.mark_running(folder)
+                self.assertFalse(result["confirmed"])
+                self.assertEqual(result["running_build"], "b" * 64)
+                self.assertTrue(marker.is_file())
+            with mock.patch.object(updates, "_running_build", return_value="a" * 64):
+                self.assertTrue(updates.mark_running(folder)["confirmed"])
+                self.assertFalse(marker.exists())
 
     def test_a_failed_apply_stays_offerable_until_the_user_decides(self):
         # The page offers "go back" exactly when the applied version is not

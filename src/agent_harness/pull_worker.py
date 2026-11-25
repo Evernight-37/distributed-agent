@@ -521,14 +521,22 @@ class Connector:
                     raise ValueError("Template changed; review the current command before approving")
             write_json(path, receipt)
 
-    def resolve(self, job_id, confirm_no_job=False):
+    def resolve(self, job_id, confirm_no_job=False, *, kind=None):
         """Owner-triggered reconciliation. Never launch or repeat an unknown job."""
         with lock(self.root / "pull-receipts.lock"):
             path = self.receipt_path(job_id)
             receipt = read_json(path)
-            if not receipt or receipt.get("result", {}).get("status") != "unknown":
+            if not receipt:
                 raise ValueError("This job is not awaiting local reconciliation")
-            execution = receipt["job"]["kind"] == "execution"
+            job = receipt["job"]
+            if kind is not None and job["kind"] != kind:
+                raise ValueError("This assignment is not the expected job type")
+            status = receipt.get("result", {}).get("status")
+            if kind == "task" and receipt["phase"] == "terminal" and status in TERMINAL - {"unknown"}:
+                return {"job_id": job_id, "status": status}
+            if status != "unknown":
+                raise ValueError("This job is not awaiting local reconciliation")
+            execution = job["kind"] == "execution"
             local_id = receipt["local_id"]
             try:
                 result = self.executor(
@@ -537,12 +545,22 @@ class Connector:
                         "execution" if execution else "job": local_id,
                     }
                 )
-            except Exception:
+            except Exception as exc:
                 local_directory = self.root / ("executions" if execution else "jobs") / local_id
-                if not confirm_no_job or local_directory.exists():
+                local_evidence = local_directory if execution else local_directory / "state.json"
+                if confirm_no_job is not True or local_evidence.exists():
                     raise ValueError(
-                        "No confirmed result. Inspect the local process/state; explicitly confirm no job only when its directory is absent"
-                    )
+                        "No confirmed result. Check the local process before confirming the job is missing"
+                    ) from exc
+                if not execution:
+                    if str(exc).strip() != "Unknown job":
+                        raise ValueError("The receiver could not verify whether this task exists") from exc
+                    backend = identifier(job["backend_project"])
+                    active = read_json(self.root / "projects" / backend / "active.json", {}) or {}
+                    if active.get("job") == local_id:
+                        raise ValueError(
+                            "This task still has a local active record; verify it has stopped before closing"
+                        )
                 result = {
                     "status": "cancelled",
                     "error": "Local owner confirmed no job exists; unknown assignment closed without restarting",
@@ -662,13 +680,25 @@ class Connector:
                         or context.get("project", {}).get("id") != job["project_id"]
                     ):
                         raise ValueError("Assignment identity does not match its local binding")
+                    if "full_access" in (context.get("grants") or []):
+                        approval = context.get("permission_request_id")
+                        continuation = context.get("approved_continuation")
+                        if (
+                            not isinstance(approval, str)
+                            or not re.fullmatch(r"permission-[0-9a-f]{32}", approval)
+                            or not isinstance(continuation, dict)
+                            or continuation.get("id") != approval
+                        ):
+                            raise PermissionError(
+                                "This task has no one-time approval; legacy full access is no longer accepted"
+                            )
                     self.configure(binding)
                     receipt["phase"] = "launching"
                     write_json(path, receipt)
                     contract = {
                         "stage": stage,
                         "objective": request["prompt"],
-                        "allowed_files_and_systems": request.get("scope", "No edits"),
+                        "allowed_files": request.get("scope", "" if stage == "implement" else "No edits"),
                         "acceptance": request.get("acceptance", ""),
                         "validation": request.get("validation", ""),
                     }
@@ -821,13 +851,15 @@ class Connector:
                     result["stdout"] = result.pop("stdout_tail")
                 if "stderr_tail" in result:
                     result["stderr"] = result.pop("stderr_tail")
+                status = result.get("status", "running")
+                unknown_task = job["kind"] == "task" and status == "unknown"
                 self.transport(
                     self.config,
                     "report",
                     {
                         "job_id": job_id,
                         "lease_id": job["lease_id"],
-                        "state": result.get("status", "running") if receipt["phase"] == "terminal" else "running",
+                        "state": status if receipt["phase"] == "terminal" or unknown_task else "running",
                         "result": result,
                     },
                 )

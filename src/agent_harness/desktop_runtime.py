@@ -13,7 +13,7 @@ import urllib.error
 from pathlib import Path
 
 from agent_harness.common import lock, read_json, rotate_log, write_json
-from agent_harness.pull_worker import NoRedirect, deploy_runtime
+from agent_harness.pull_worker import NoRedirect, TERMINAL, deploy_runtime
 from agent_harness.release_info import version_path
 
 SERVICE_RUNTIME_FILES = (
@@ -66,18 +66,10 @@ def assets():
 
 
 def web_assets():
-    """Where the window loads its HTML and scripts from.
-
-    A frozen build keeps the current web assets in ``_internal/web``, which every
-    installer and portable upgrade replaces. The deployed runtime bundle is a
-    content-addressed copy of the *service* files, so its ``web`` directory can
-    lag behind the UI: prefer the bundled one whenever it exists.
-    """
-    if getattr(sys, "frozen", False):
-        bundled = Path(sys.executable).resolve().parent / "_internal" / "web"
-        if (bundled / "app.html").is_file():
-            return bundled
+    """Load UI resources from the same verified bundle as the receiver."""
     root = assets()
+    if getattr(sys, "frozen", False) and not (root / "web" / "app.html").is_file():
+        raise RuntimeError("应用安装不完整：缺少界面资源")
     return root / "web" if (root / "web").is_dir() else root.parents[1] / "assets" / "web"
 
 
@@ -204,10 +196,22 @@ class DesktopRuntime:
             return path
 
         digest = hashlib.sha256()
+        if getattr(sys, "frozen", False):
+            from agent_harness.service_install import installed_bundle
+
+            bundle = installed_bundle()
+            digest.update((bundle / ".complete").read_bytes())
+            # A repaired generation has a different executable and import path
+            # even when the package contents match the original build digest.
+            digest.update(bundle.name.encode("utf-8"))
+        else:
+            for module in sorted(source.glob("*.py")):
+                digest.update(module.name.encode("utf-8"))
+                digest.update(hashlib.sha256(module.read_bytes()).digest())
         for name in SERVICE_RUNTIME_FILES:
             path = source_file(name)
             digest.update(name.encode())
-            digest.update(path.read_bytes() if path.is_file() else b"")
+            digest.update(hashlib.sha256(path.read_bytes()).digest() if path.is_file() else b"")
         snapshot = self.root / "service-runtime" / digest.hexdigest()[:16]
         if not snapshot.is_dir():
             snapshot.parent.mkdir(parents=True, exist_ok=True)
@@ -225,26 +229,51 @@ class DesktopRuntime:
                 shutil.rmtree(temporary)
         return snapshot
 
-    def start(self):
+    def _has_work(self):
+        if any(read_json(path) for path in (self.root / "projects").glob("*/active.json")):
+            return True
+        return any(
+            read_json(path, {}).get("status") not in TERMINAL - {"unknown"}
+            for pattern in ("jobs/*/state.json", "projects/*/executions/*/state.json")
+            for path in self.root.glob(pattern)
+        )
+
+    def start(self, *, refresh_only=False):
         if not self.config_path.exists():
+            if refresh_only:
+                return {"running": False}
             raise ValueError("请先填写地址和配对码，连接这台机器")
         self.root.mkdir(parents=True, exist_ok=True)
         with lock(self.root / "desktop-start.lock"):
-            snapshot = self._service_snapshot()
             existing = self.status()
+            if refresh_only and (not existing["running"] or existing.get("stopping")):
+                return existing
             if existing.get("stopping"):
                 raise RuntimeError("正在停止接收，请稍后再启动")
+            snapshot = self._service_snapshot()
             if existing["running"]:
                 info = read_json(self.control_path, {})
-                if info.get("assets") in {str(snapshot), str(assets())}:
+                running_assets = info.get("assets")
+                if running_assets == str(snapshot) or (not refresh_only and running_assets == str(assets())):
                     return existing
+                if self._has_work():
+                    return {**existing, "refresh_pending": True}
+                try:
+                    if not self._control("stop-if-idle", {}).get("stopping"):
+                        return {**existing, "refresh_pending": True}
+                except RuntimeError as exc:
+                    if str(exc) != "Unknown desktop operation":
+                        raise
+                    # Earlier observers already finish their current cycle and
+                    # leave active child processes alone during graceful stop.
+                    if self._has_work():
+                        return {**existing, "refresh_pending": True}
                 self.stop_and_wait()
             # A paired receiver keeps its identity and project state across
             # app upgrades, but its executable Python files must come from the
             # currently installed bundle before the new service starts.
             reconcile_orphaned_turns(self.root)
-            active = any(read_json(path) for path in (self.root / "projects").glob("*/active.json"))
-            if not active:
+            if not self._has_work():
                 deploy_runtime(self.root, assets())
             # Every receiver generation runs from an immutable snapshot. This
             # permits the observer service to restart while an old warm worker

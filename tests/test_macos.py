@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from agent_harness.desktop_runtime import web_assets
 from agent_harness.runtime_paths import application_home
 from agent_harness.service_install import (
     application_bundle,
@@ -15,6 +16,31 @@ from agent_harness.service_install import (
 )
 from agent_harness import worker
 from agent_harness.app_bridge import AppBridge
+
+
+class PackagedWebAssetsTests(unittest.TestCase):
+    def test_windows_and_macos_use_the_web_assets_from_the_verified_service(self):
+        for platform, launcher in (
+            ("win32", "Foolship.exe"),
+            ("darwin", "Foolship.app/Contents/MacOS/Foolship"),
+        ):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                bundle = root / "runtime-copy"
+                web = bundle / "client" / "agent_harness" / "web"
+                web.mkdir(parents=True)
+                (web / "app.html").write_text("current", encoding="utf-8")
+                executable = root / launcher
+                legacy = executable.parent / "_internal" / "web"
+                legacy.mkdir(parents=True)
+                (legacy / "app.html").write_text("stale", encoding="utf-8")
+                with (
+                    mock.patch.object(sys, "frozen", True, create=True),
+                    mock.patch.object(sys, "platform", platform),
+                    mock.patch.object(sys, "executable", str(executable)),
+                    mock.patch("agent_harness.service_install.installed_bundle", return_value=bundle),
+                ):
+                    self.assertEqual(web_assets(), web)
 
 
 @unittest.skipUnless(sys.platform == "darwin", "macOS packaging")

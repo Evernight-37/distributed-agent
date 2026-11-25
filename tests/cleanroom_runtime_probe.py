@@ -95,8 +95,17 @@ def main():
         raise RuntimeError("fresh MCP failed: " + result.stderr[-500:])
     responses = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     tools = next(item for item in responses if item.get("id") == 2)["result"]["tools"]
-    if len(tools) != 6:
-        raise RuntimeError("fresh MCP tool catalog is incomplete")
+    expected_tools = {
+        "harness_status",
+        "harness_projects_list",
+        "harness_project_read",
+        "harness_message_send",
+        "harness_task_assign",
+        "harness_task_get",
+        "harness_task_cancel",
+    }
+    if len(tools) != len(expected_tools) or {tool["name"] for tool in tools} != expected_tools:
+        raise RuntimeError("fresh MCP tool catalog differs from the release contract")
     print(
         json.dumps(
             {

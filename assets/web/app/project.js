@@ -79,6 +79,81 @@ async function selectConversation(conversation) {
   if (S.project === view.project?.id) S.view = view;
   renderProject();
 }
+
+function confirmTaskCancellation(project, task) {
+  modal("取消任务", (body, actions) => {
+    body.append(el("p", "", task.title || task.id));
+    note(body, "已交给设备的任务会在接收端确认后标记为已取消。");
+    actions.append(
+      button("返回", closeModal),
+      button(
+        "确认取消任务",
+        async () => {
+          await api("task-cancel", { project, task_id: task.id });
+          closeModal();
+          if (S.project === project) await refresh(true);
+        },
+        "danger",
+      ),
+    );
+  });
+}
+
+function confirmLocalTaskStopped(project, task) {
+  modal("核对本机任务", (body, actions) => {
+    body.append(el("p", "", task.title || task.id));
+    note(
+      body,
+      "请先在原执行电脑上检查任务进程及其子进程。确认都已停止后再继续。任务状态会在接收端回报后更新。",
+    );
+    actions.append(
+      button("返回", closeModal),
+      button(
+        "确认原任务已停止",
+        async () => {
+          await api("task-resolve-local", {
+            project,
+            task_id: task.id,
+            confirm_no_job: true,
+          });
+          closeModal();
+          if (S.project === project) await refresh(true);
+        },
+        "danger",
+      ),
+    );
+  });
+}
+
+function confirmPermissionRequest(project, agent, request, approve) {
+  modal(approve ? "批准本次提权" : "拒绝本次提权", (body, actions) => {
+    body.append(el("p", "", agent.name));
+    if (request.reason) body.append(el("p", "", request.reason));
+    note(
+      body,
+      approve
+        ? "只有这项任务的下一次续跑可以访问工作区外。续跑结束后恢复原有权限。"
+        : "这次申请会关闭，Agent 后续任务使用项目原有权限。",
+    );
+    actions.append(
+      button("返回", closeModal),
+      button(
+        approve ? "确认批准" : "确认拒绝",
+        async () => {
+          await api("permission-decide", {
+            project,
+            request_id: request.id,
+            approve,
+          });
+          closeModal();
+          if (S.project === project) await refresh(true);
+        },
+        approve ? "primary" : "danger",
+      ),
+    );
+  });
+}
+
 function startDirectConversation() {
   const v = S.view,
     me = S.dash.user.id,
@@ -323,6 +398,33 @@ function renderProject() {
     (m.attachments || []).forEach((file) =>
       bubble.append(attachmentCard(file, S.project)),
     );
+    const request = m.permission_request;
+    if (request?.id) {
+      const agent = v.members.find((item) => item.id === request.agent_id);
+      if (agent?.owner_id === me) {
+        const state = {
+          pending: "等待机器主人批准",
+          approved: "已批准一次续跑",
+          consumed: "单次授权已使用",
+          denied: "申请已拒绝",
+        }[request.state];
+        if (state) bubble.append(el("div", "muted small", state));
+        if (request.state === "pending") {
+          bubble.append(
+            button(
+              "批准本次",
+              () => confirmPermissionRequest(p.id, agent, request, true),
+              "link small",
+            ),
+            button(
+              "拒绝",
+              () => confirmPermissionRequest(p.id, agent, request, false),
+              "link small",
+            ),
+          );
+        }
+      }
+    }
     row.append(el("span", "avatar", sender.slice(0, 1)), bubble);
     msgs.append(row);
   });
@@ -575,18 +677,47 @@ function renderProject() {
           v.members.some((a) => a.id === t.agent_id && !a.online)
         ? " · 等待机器上线"
         : "";
-    tasks.append(
+    const active = ["queued", "starting", "running", "unknown"].includes(
+      t.state,
+    );
+    const status =
+      t.cancel_requested && active
+        ? "等待接收端取消"
+        : t.display_status ||
+          (t.state === "unknown" ? "待核对" : t.state || t.status || "");
+    const task = el("div", "task");
+    task.append(
       el(
         "div",
-        "task",
-        who +
-          " · " +
-          (t.title || t.body || t.id) +
-          " · " +
-          (t.display_status || t.state || t.status || "") +
-          issue,
+        "",
+        who + " · " + (t.title || t.body || t.id) + " · " + status + issue,
       ),
     );
+    if (t.can_cancel && !t.cancel_requested) {
+      task.append(
+        button(
+          "取消任务",
+          () => confirmTaskCancellation(p.id, t),
+          "link small",
+        ),
+      );
+    }
+    if (
+      t.state === "unknown" &&
+      t.local_recovery &&
+      (S.dash.devices || []).some(
+        (d) => d.local && (d.node || d.id) === t.local_recovery.node,
+      )
+    ) {
+      task.append(
+        button(
+          "核对本机任务",
+          () => confirmLocalTaskStopped(p.id, t),
+          "link small",
+        ),
+      );
+    }
+    tasks.append(task);
   });
   (v.executions || []).forEach((e) =>
     tasks.append(
@@ -661,24 +792,72 @@ function renderProject() {
   const members = el("details", "panel side-section");
   members.id = "projectMembers";
   members.open = membersOpen;
-  members.append(el("summary", "", "成员与员工"));
+  members.append(el("summary", "", "成员与项目 Agent"));
   v.users.forEach((u) =>
     members.append(
       el("div", "member", u.username + (u.id === p.owner_id ? " · 群主" : "")),
     ),
   );
-  v.members.forEach((a) =>
-    members.append(
+  const agentCommands = v.project_agent_commands || [];
+  for (const command of agentCommands) {
+    if (command.action === "project-agent-create") {
+      members.append(
+        el(
+          "div",
+          command.state === "failed" ? "member" : "member pending",
+          (command.name || "Agent") +
+            " · " +
+            (command.state === "failed"
+              ? command.error || "创建失败"
+              : command.state === "applied"
+                ? "已创建，等待设备同步"
+                : "等待目标设备创建"),
+        ),
+      );
+    }
+  }
+  v.members.forEach((a) => {
+    const row = el("div", "member");
+    row.append(
       el(
-        "div",
-        "member",
+        "span",
+        "",
         a.name +
           (a.id === p.admin_agent_id ? " · 管理员" : "") +
           (a.online ? "" : " · 机器离线"),
       ),
-    ),
-  );
-  members.append(button("派遣我的员工", dispatch));
+    );
+    if (a.can_manage_project_agent) {
+      const command = agentCommands.find(
+        (item) => item.backend_project === a.backend_project,
+      );
+      const pending = command && ["queued", "claimed"].includes(command.state);
+      const configure = button(
+        "设置",
+        () => openProjectAgentForm(a),
+        "link small",
+      );
+      const remove = button(
+        "移除",
+        () => removeProjectAgent(p.id, a),
+        "link small",
+      );
+      configure.disabled = remove.disabled = !!pending;
+      row.append(
+        el(
+          "span",
+          "muted small",
+          pending ? "等待目标设备确认" : a.enabled ? "已启用" : "已暂停",
+        ),
+        configure,
+        remove,
+      );
+      if (command?.state === "failed")
+        row.append(el("span", "muted small", command.error || "操作失败"));
+    }
+    members.append(row);
+  });
+  members.append(button("新增项目 Agent", () => openProjectAgentForm()));
   if (owner) {
     members.append(button("邀请成员", invite));
     const admin = field(members, "管理员 Agent", p.admin_agent_id || "", [
@@ -729,7 +908,7 @@ function renderProject() {
 }
 function invite() {
   modal("邀请成员", (b, a) => {
-    note(b, "邀请将授予对方项目成员权限，对方可派遣自己的员工。");
+    note(b, "对方加入后可在项目内创建自己的 Agent。");
     a.append(
       button("关闭", closeModal),
       button(
@@ -747,135 +926,314 @@ function invite() {
     );
   });
 }
-function dispatch() {
-  modal("派遣我的员工", (b, a) => {
-    const server = S.view.server || S.view.project.server || S.server;
-    const checks = [];
-    const eligible = S.dash.employees.filter(
-      (e) => employeeServer(e) === server,
+function removeProjectAgent(project, agent) {
+  modal("移除项目 Agent", (body, actions) => {
+    body.append(el("p", "", agent.name));
+    note(
+      body,
+      "Agent 将停止在此项目接收新任务。工作文件、会话和任务历史会保留。请先结束正在执行的任务。",
     );
-    if (!eligible.length)
-      note(
-        b,
-        "该服务还没有你的员工。请先在设置中将机器接入该服务，再添加员工。",
-      );
-    const workspaceState = new Map(
-      (S.view.workspaces || []).map((w) => [w.node, w.status === "ready"]),
+    actions.append(
+      button("取消", closeModal),
+      button(
+        "确认移除",
+        async () => {
+          await api("project-agent-delete", { project, agent_id: agent.id });
+          closeModal();
+          notify("移除请求已提交。");
+          if (S.project === project) await refresh(true);
+        },
+        "danger",
+      ),
     );
-    (S.view.members || [])
-      .filter((member) => member.owner_id === S.dash.user.id)
-      .forEach((member) => workspaceState.set(member.node, true));
-    [...new Set(eligible.map((e) => e.node))].forEach((node) => {
-      const local = (S.dash.devices || []).some(
-          (d) => d.local && (d.node || d.id) === node,
-        ),
-        block = el("div", "note workspace-row"),
-        status = el(
-          "span",
-          workspaceState.get(node) ? "success small" : "pending small",
-          workspaceState.get(node) ? "已配置" : "尚未配置",
+  });
+}
+
+function projectWorkspaceReady(view, node, user) {
+  return (
+    (view.workspaces || []).some(
+      (item) => item.node === node && item.status === "ready",
+    ) ||
+    view.members.some((item) => item.node === node && item.owner_id === user)
+  );
+}
+
+async function openProjectAgentForm(agent = null) {
+  const view = S.view;
+  const project = view.project.id;
+  const server = view.server || view.project.server || S.server;
+  const user = S.dash.user.id;
+  const devices = (S.dash.devices || []).filter(
+    (device) =>
+      (device.server || S.server) === server &&
+      (agent ? (device.node || device.id) === agent.node : !!device.last_seen),
+  );
+  const localConfig = devices.some((device) => device.local)
+    ? await api("settings-get").catch(() => null)
+    : null;
+  if (S.project !== project) return;
+  const models = localConfig?.executor?.models || [];
+  const current = agent?.project_agent_settings || {};
+
+  modal(agent ? "项目 Agent 设置" : "新增项目 Agent", (body, actions) => {
+    actions.append(button("取消", closeModal));
+    if (!agent && !devices.length) {
+      note(body, "请先将一台自己的机器接入该项目所在的协作服务。");
+      return;
+    }
+    const name = field(body, "Agent 名称", agent?.name || "");
+    name.maxLength = 120;
+    let machine;
+    if (agent) {
+      note(body, "执行机器 · " + deviceName(agent.node, server));
+    } else {
+      machine = field(body, "执行机器", "", [
+        ["", "选择已接入的机器"],
+        ...devices.map((device) => [
+          device.node || device.id,
+          device.name +
+            (device.local ? " · 本机" : "") +
+            (device.online ? "" : " · 离线"),
+        ]),
+      ]);
+    }
+    const selectedNode = () => agent?.node || machine.value;
+    const selectedDevice = () =>
+      devices.find((device) => (device.node || device.id) === selectedNode());
+    const workspace = el("div");
+    const modelFields = el("div");
+    body.append(workspace, modelFields);
+    let model;
+    const effort = field(
+      body,
+      "思考强度",
+      current.effort || "medium",
+      ["low", "medium", "high", "xhigh", "max", "ultra"].map((value) => [
+        value,
+        value,
+      ]),
+    );
+    const enabled = field(
+      body,
+      "接收项目任务",
+      String(current.enabled ?? true),
+      [
+        ["true", "启用"],
+        ["false", "暂停"],
+      ],
+    );
+    const stageBox = el("div");
+    stageBox.append(el("span", "label", "允许的工作阶段"));
+    const stages = [
+      ["discuss", "讨论"],
+      ["review", "审阅"],
+      ["implement", "实现"],
+    ].map(([value, label]) => {
+      const row = el("label", "setting-row", label);
+      const check = el("input", "check");
+      check.type = "checkbox";
+      check.checked = (current.stages || ["discuss", "review"]).includes(value);
+      row.append(check);
+      stageBox.append(row);
+      return [value, check];
+    });
+    body.append(stageBox);
+    const timeout = field(
+      body,
+      "每轮超时（秒）",
+      current.timeout || 600,
+      null,
+      "number",
+    );
+    timeout.min = "30";
+    timeout.max = "86400";
+    const strict = field(
+      body,
+      "实现任务安全模式",
+      String(!!current.strict_worktree),
+      [
+        ["false", "关闭"],
+        ["true", "仅允许 linked worktree 且限制变更文件"],
+      ],
+    );
+    const attachment = field(
+      body,
+      "附件发送权限",
+      current.attachment_policy || "ask",
+      [
+        ["ask", "请求批准"],
+        ["auto", "帮我批准"],
+        ["full", "直接发送"],
+      ],
+    );
+    const network = field(
+      body,
+      "模型请求代理",
+      current.network?.mode || "machine",
+      [
+        ["machine", "跟随执行机器设置"],
+        ["direct", "直连（不走代理）"],
+        ["custom", "自定义端口"],
+      ],
+    );
+    const port = field(
+      body,
+      "代理端口",
+      current.network?.port || "",
+      null,
+      "number",
+    );
+    port.min = "1";
+    port.max = "65535";
+    const syncPort = () => {
+      port.disabled = network.value !== "custom";
+    };
+    network.onchange = syncPort;
+    syncPort();
+
+    const workspaceStates = new Map();
+    const submit = button(
+      agent ? "保存设置" : "创建 Agent",
+      async () => {
+        const node = selectedNode();
+        const fields = {
+          project,
+          name: name.value.trim(),
+          model: model?.value.trim(),
+          effort: effort.value,
+          enabled: enabled.value === "true",
+          stages: stages
+            .filter(([, check]) => check.checked)
+            .map(([value]) => value),
+          timeout: Number(timeout.value),
+          strict_worktree: strict.value === "true",
+          attachment_policy: attachment.value,
+          network: { mode: network.value },
+        };
+        if (!node || !fields.name || !fields.model)
+          throw Error("请选择执行机器并填写名称和模型");
+        if (!agent && workspaceStates.get(node) !== "ready")
+          throw Error("请先设置这个项目在目标机器上的工作目录");
+        if (!fields.stages.length) throw Error("请至少选择一个工作阶段");
+        if (
+          !Number.isInteger(fields.timeout) ||
+          fields.timeout < 30 ||
+          fields.timeout > 86400
+        )
+          throw Error("每轮超时必须为 30 至 86400 秒");
+        if (network.value === "custom") {
+          const value = Number(port.value);
+          if (!Number.isInteger(value) || value < 1 || value > 65535)
+            throw Error("代理端口必须在 1 到 65535 之间");
+          fields.network.port = value;
+        }
+        if (agent)
+          await api("project-agent-configure", {
+            ...fields,
+            agent_id: agent.id,
+          });
+        else await api("project-agent-create", { ...fields, node });
+        closeModal();
+        notify(
+          agent ? "设置请求已提交。" : "创建请求已提交，等待目标设备确认。",
         );
-      block.prepend(
-        el("strong", "", deviceName(node, server) + " · 项目工作目录 "),
-        status,
+        if (S.project === project) await refresh(true);
+      },
+      "primary",
+    );
+    actions.append(submit);
+
+    function renderWorkspace() {
+      workspace.replaceChildren();
+      const node = selectedNode();
+      if (agent || !node) {
+        submit.disabled = !node;
+        return;
+      }
+      if (!workspaceStates.has(node))
+        workspaceStates.set(
+          node,
+          projectWorkspaceReady(view, node, user) ? "ready" : "unset",
+        );
+      const state = workspaceStates.get(node);
+      submit.disabled = state !== "ready";
+      if (state === "ready") {
+        workspace.append(el("div", "muted small", "项目工作目录已设置"));
+        return;
+      }
+      const row = el("div", "note workspace-row");
+      row.append(
+        el(
+          "span",
+          "",
+          state === "pending"
+            ? "目标设备正在配置项目工作目录"
+            : "请先设置项目工作目录",
+        ),
       );
-      if (local)
-        block.append(
+      if (state === "pending") {
+        row.append(
+          button("检查配置状态", async () => {
+            const latest = await api("project", { id: project });
+            if (projectWorkspaceReady(latest, node, user))
+              workspaceStates.set(node, "ready");
+            renderWorkspace();
+          }),
+        );
+      } else {
+        row.append(
           button(
-            workspaceState.get(node) ? "更换目录" : "选择目录",
+            selectedDevice()?.local ? "选择目录" : "使用默认目录",
             async () => {
               const result = await api("workspace-configure", {
-                project: S.project,
+                project,
                 node,
                 server,
               });
-              if (!result.configured) return;
-              workspaceState.set(node, true);
-              status.className = "success small";
-              status.textContent = "已配置";
-              notify("项目工作目录已保存在本机，不会上传到协作服务。");
+              if (result.pending) workspaceStates.set(node, "pending");
+              else if (result.configured) workspaceStates.set(node, "ready");
+              renderWorkspace();
             },
           ),
         );
-      else {
-        const configure = button(
-          workspaceState.get(node) ? "已使用本机目录" : "使用默认目录",
-          async () => {
-            configure.disabled = true;
-            try {
-              const result = await api("workspace-configure", {
-                project: S.project,
-                node,
-                server,
-              });
-              if (result.configured && !result.pending) {
-                workspaceState.set(node, true);
-                status.className = "success small";
-                status.textContent = "已配置";
-                configure.textContent = "已使用本机目录";
-                notify("目标机器已创建本机默认工作目录；目录路径不会上传。 ");
-              } else {
-                status.className = "pending small";
-                status.textContent = "配置中";
-                notify("配置指令已发送，目标机器在线后会在本机创建默认目录。 ");
-              }
-            } finally {
-              configure.disabled = workspaceState.get(node) || false;
-            }
-          },
-        );
-        configure.disabled = !!workspaceState.get(node);
-        block.append(configure);
+      }
+      workspace.append(row);
+    }
+
+    function renderMachine() {
+      renderWorkspace();
+      modelFields.replaceChildren();
+      const node = selectedNode();
+      if (!node) {
+        model = null;
+        return;
+      }
+      const saved = current.model || agent?.model || "";
+      if (selectedDevice()?.local && (models.length || saved)) {
+        const choices = models.map(({ name, executor }) => [
+          name,
+          name +
+            " · " +
+            (executor === "dsh" ? "DeepSeek Harness" : "Codex CLI"),
+        ]);
+        if (saved && !choices.some(([name]) => name === saved))
+          choices.push([saved, saved + " · 当前配置"]);
+        model = field(modelFields, "模型", saved, [
+          ["", "选择模型"],
+          ...choices,
+        ]);
+      } else {
+        model = field(modelFields, "模型 ID", saved);
         note(
-          block,
-          "目标机器会在本机创建默认目录；绝对路径不会经过协作服务。 ",
+          modelFields,
+          selectedDevice()?.local
+            ? "可在设置的本机可用模型列表中查看模型 ID。"
+            : "填写目标机器的可用模型列表中的模型 ID。",
         );
       }
-      b.append(block);
-    });
-    eligible.forEach((e) => {
-      const row = el(
-          "label",
-          "setting-row",
-          e.name + " · " + deviceName(e.node, server),
-        ),
-        check = el("input", "check");
-      check.type = "checkbox";
-      const assigned = S.view.members.find(
-        (m) => m.employee_id === e.id || m.id === e.id,
-      );
-      check.checked = !!assigned;
-      check.disabled = !!e.pending?.length;
-      row.append(check);
-      b.append(row);
-      checks.push([e, check, !!assigned]);
-    });
-    a.append(
-      button("取消", closeModal),
-      button(
-        "确认派遣",
-        async () => {
-          const missing = checks.find(
-            ([e, ch, old]) => ch.checked && !old && !workspaceState.get(e.node),
-          );
-          if (missing)
-            throw Error(
-              "请先为 " +
-                deviceName(missing[0].node, server) +
-                " 设置项目工作目录",
-            );
-          for (const [e, ch, old] of checks)
-            if (ch.checked !== old)
-              await api(
-                ch.checked ? "employee-dispatch" : "employee-withdraw",
-                { id: e.id, project: S.project },
-              );
-          closeModal();
-          notify("派遣变更已提交，等待目标设备确认。");
-          await refresh(true);
-        },
-        "primary",
-      ),
-    );
+    }
+
+    if (machine) machine.onchange = renderMachine;
+    renderMachine();
   });
 }

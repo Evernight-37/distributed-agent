@@ -11,31 +11,37 @@ from unittest import mock
 
 from agent_harness.app_lifecycle import Lifecycle
 from agent_harness.host_control import managed_handler
-from agent_harness.service_install import _prune, install_bundle
+from agent_harness.service_install import bundle_manifest, install_bundle
 
 
 class ServiceInstallTests(unittest.TestCase):
-    def test_runtimes_from_earlier_versions_are_cleaned_up(self):
+    def test_verified_package_repairs_without_overwriting_the_old_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("0123456789abcdef", "fedcba9876543210", "keep-me", "0123456789abcde"):
-                (root / name).mkdir()
-            current = root / "fedcba9876543210"
-            _prune(root, current)
-            self.assertTrue(current.is_dir())
-            # A directory that is not a runtime name is left alone.
-            self.assertTrue((root / "keep-me").is_dir())
-            self.assertFalse((root / "0123456789abcdef").exists())
-            self.assertTrue((root / "0123456789abcde").is_dir())
-
-    def test_a_runtime_that_cannot_be_deleted_is_left_alone(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            old = root / "0123456789abcdef"
-            old.mkdir()
-            with mock.patch("agent_harness.service_install.shutil.rmtree", side_effect=OSError("in use")):
-                _prune(root, root / "fedcba9876543210")
-            self.assertTrue(old.is_dir())
+            bundle, destination = root / "package", root / "installed"
+            (bundle / "runtime").mkdir(parents=True)
+            (bundle / "runtime/python.exe").write_bytes(b"python")
+            relative = Path("client/agent_harness/desktop_service.py")
+            (bundle / relative).parent.mkdir(parents=True)
+            (bundle / relative).write_bytes(b"service")
+            build, files = bundle_manifest(bundle)
+            (bundle / "app-manifest.json").write_text(
+                json.dumps({"service_build": build, "service_files": [path.as_posix() for path in files]}),
+                encoding="utf-8",
+            )
+            stale = bundle / "client/agent_harness/outdated.py"
+            stale.write_bytes(b"removed in this version")
+            first = install_bundle(bundle, destination)
+            (first / relative).write_bytes(b"corrupt")
+            repaired = install_bundle(bundle, destination)
+            self.assertNotEqual(repaired, first)
+            self.assertEqual((first / relative).read_bytes(), b"corrupt")
+            self.assertEqual((repaired / relative).read_bytes(), b"service")
+            self.assertFalse((repaired / stale.relative_to(bundle)).exists())
+            self.assertEqual(install_bundle(bundle, destination), repaired)
+            (bundle / relative).write_bytes(b"source changed")
+            with self.assertRaisesRegex(RuntimeError, "构建清单不一致"):
+                install_bundle(bundle, destination)
 
     def test_versioned_install_reuses_valid_copy_and_keeps_old_version(self):
         with tempfile.TemporaryDirectory() as directory:

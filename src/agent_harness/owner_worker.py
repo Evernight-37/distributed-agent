@@ -5,8 +5,8 @@ import os
 import re
 from pathlib import Path
 from agent_harness.account_identity import verify_owner_command
-from agent_harness.common import lock, read_json, write_json, validate_project
-from agent_harness.owner_backend import canonical
+from agent_harness.common import identifier, lock, read_json, write_json, validate_project
+from agent_harness.owner_backend import PROJECT_AGENT_ACTIONS, canonical, execution_project, project_agent_target
 
 END_STATES = {
     "needs_review",
@@ -20,10 +20,6 @@ END_STATES = {
 
 def key(value):
     return hashlib.sha256(value.encode()).hexdigest()
-
-
-def execution_project(employee, project):
-    return "e-" + key(employee + "\0" + project)[:56]
 
 
 class OwnerControl:
@@ -85,6 +81,8 @@ class OwnerControl:
         sealed = body.get("sealed")
         if sealed is None:
             return cleartext
+        if body["action"] in PROJECT_AGENT_ACTIONS:
+            raise PermissionError("项目 Agent 操作必须使用可核对的项目标识")
         from agent_harness import sealing
 
         pair = self.connector.config.get("encrypt_key")
@@ -286,7 +284,9 @@ class OwnerControl:
             write_json(path, record)
 
     def _bindings(self, employee):
-        return [b for b in self.connector.bindings() if b.get("employee_id") == employee]
+        return [
+            b for b in self.connector.bindings() if b.get("employee_id") == employee and not b.get("project_scoped")
+        ]
 
     def _idle(self, backend):
         if read_json(self.root / "projects" / backend / "active.json"):
@@ -357,6 +357,65 @@ class OwnerControl:
             "network": network,
         }
 
+    def _write_project_settings(self, backend, settings, workspace=None):
+        path = self.root / "projects" / backend / "project.json"
+        options = {k: settings[k] for k in ("model", "effort", "timeout", "strict_worktree")}
+        registered = read_json(path)
+        if registered is None:
+            if workspace is None:
+                raise ValueError("找不到项目 Agent 的本机配置")
+            self.connector.executor(
+                {
+                    "action": "register",
+                    "project": dict(name=backend, remote_path=workspace, **options),
+                    "memory": {"revision": 0, "facts": [], "decisions": [], "open_questions": []},
+                }
+            )
+        else:
+            if workspace is not None and Path(registered["remote_path"]).resolve() != Path(workspace).resolve():
+                raise ValueError("Existing project directory differs; choose the project workspace again")
+            self.connector.executor({"action": "configure", "project": backend, **options})
+        self._remember_network(backend, settings["network"])
+
+    def _project_agent(self, action, data):
+        project, _identity, backend = project_agent_target(action, data)
+        identifier(backend)
+        existing = next((b for b in self.connector.bindings() if b["backend_project"] == backend), None)
+        creating = action == "project-agent-create"
+        if creating:
+            if existing:
+                raise ValueError("项目 Agent 已存在")
+        elif not existing or existing["project_id"] != project:
+            raise ValueError("找不到这个项目 Agent 的本机绑定")
+        self._idle(backend)
+        result = {"project_id": project, "backend_project": backend}
+        if action == "project-agent-delete":
+            self.connector.save_binding(
+                dict(existing, assigned=False, enabled=False, project_scoped=True, project_deleted=True)
+            )
+            return dict(result, enabled=False)
+        if existing and existing.get("project_deleted"):
+            raise ValueError("项目 Agent 已经移除")
+        settings = self._settings(data["settings"])
+        if settings["enabled"]:
+            from agent_harness import executors
+
+            if executors.model_kind(self.root, settings["model"]) is None:
+                raise ValueError("执行机器的可用模型表中没有 " + settings["model"])
+        name = data["name"].strip()
+        self._write_project_settings(backend, settings, self._workspace(project) if creating else None)
+        self.connector.save_binding(
+            {
+                **(existing or {}),
+                **result,
+                **settings,
+                "name": name,
+                "assigned": True,
+                "project_scoped": True,
+            }
+        )
+        return dict(result, name=name, settings=settings, enabled=settings["enabled"])
+
     def _run(self, action, data):
         if not isinstance(data, dict):
             raise ValueError("Invalid command data")
@@ -368,6 +427,8 @@ class OwnerControl:
             return self._configure_default_workspace(data)
         if action == "transfer-receive-directory":
             return self._configure_receive_directory(data)
+        if action in PROJECT_AGENT_ACTIONS:
+            return self._project_agent(action, data)
         if action not in {"create", "configure", "dispatch", "withdraw", "delete"}:
             raise ValueError("Unsupported owner action")
         employee = data.get("id")
@@ -445,9 +506,11 @@ class OwnerControl:
             raise ValueError("Invalid shared project")
         backend = execution_project(employee, project_id)
         existing = next(
-            (b for b in self._bindings(employee) if b["backend_project"] == backend),
+            (b for b in self.connector.bindings() if b["backend_project"] == backend),
             None,
         )
+        if existing and existing.get("project_scoped"):
+            raise ValueError("该 Agent 已由项目单独管理，请在项目内修改")
         if action == "withdraw":
             if existing:
                 self.connector.save_binding(dict(existing, enabled=False, assigned=False))
@@ -461,36 +524,7 @@ class OwnerControl:
         settings = self._settings(current["settings"])
         workspace = self._workspace(project_id)
         self._idle(backend)
-        if not (self.root / "projects" / backend / "project.json").exists():
-            self.connector.executor(
-                {
-                    "action": "register",
-                    "project": dict(
-                        name=backend,
-                        remote_path=workspace,
-                        **{k: settings[k] for k in ("model", "effort", "timeout", "strict_worktree")},
-                    ),
-                    "memory": {
-                        "revision": 0,
-                        "facts": [],
-                        "decisions": [],
-                        "open_questions": [],
-                    },
-                }
-            )
-            self._remember_network(backend, settings["network"])
-        else:
-            registered = read_json(self.root / "projects" / backend / "project.json")
-            if Path(registered["remote_path"]).resolve() != Path(workspace).resolve():
-                raise ValueError("Existing project directory differs; choose the project workspace again")
-            self.connector.executor(
-                {
-                    "action": "configure",
-                    "project": backend,
-                    **{k: settings[k] for k in ("model", "effort", "timeout", "strict_worktree")},
-                }
-            )
-            self._remember_network(backend, settings["network"])
+        self._write_project_settings(backend, settings, workspace)
         binding = {
             "assigned": True,
             "employee_id": employee,

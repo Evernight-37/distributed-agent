@@ -73,8 +73,6 @@ def build(output_root, python_runtime):
             "webview.platforms.gtk",
             "--exclude-module",
             "webview.platforms.winforms",
-            "--add-data",
-            f"{WEB_SOURCE}:web",
             "--name",
             "Foolship",
             "--osx-bundle-identifier",
@@ -144,6 +142,9 @@ def build(output_root, python_runtime):
         shutil.copy2(APP_SOURCE / name, package / name)
     shutil.copy2(PROJECT_ROOT / "VERSION", package / "VERSION")
     shutil.copytree(WEB_SOURCE, package / "web")
+    from agent_harness.service_install import bundle_manifest
+
+    build, files = bundle_manifest(bundle)
     manifest = {
         "format": 1,
         "name": "Foolship",
@@ -151,6 +152,8 @@ def build(output_root, python_runtime):
         "platform": "macos",
         "architecture": platform.machine(),
         "python_runtime": platform.python_version(),
+        "service_build": build,
+        "service_files": [path.as_posix() for path in files],
     }
     (bundle / "app-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     (bundle / "VERSION").write_text(version + "\n", encoding="utf-8")

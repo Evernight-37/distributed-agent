@@ -80,10 +80,14 @@ def windows_user_sid():
 
 
 def serve(root):
+    from agent_harness.desktop_runtime import DesktopRuntime
+
     root = Path(root).resolve()
     runtime = receiver_runtime(root)
+    observer = DesktopRuntime(root)
     connector = Connector(root / "pull-config.json", executor=runtime.rpc)
     stop = threading.Event()
+    cycle_lock = threading.Lock()
     key, instance = secrets.token_urlsafe(48), secrets.token_urlsafe(24)
     # Share the existing lock with CLI receivers. Never run two receivers.
     with lock(root / "pull-worker.lock"):
@@ -123,11 +127,23 @@ def serve(root):
                                 data["approved"],
                                 data.get("expected_template"),
                             ) or {"updated": True}
+                        elif action == "resolve-task":
+                            if data.get("confirm_no_job") is not True:
+                                raise ValueError("请先确认本机原任务的进程已停止")
+                            result = connector.resolve(data["job_id"], confirm_no_job=True, kind="task")
                         else:
                             raise ValueError("Unknown desktop action")
                     elif route == "stop" and data is not None:
                         stop.set()
                         result = {"stopping": True}
+                    elif route == "stop-if-idle" and data is not None:
+                        if cycle_lock.acquire(blocking=False):
+                            try:
+                                if not observer._has_work():
+                                    stop.set()
+                            finally:
+                                cycle_lock.release()
+                        result = {"stopping": stop.is_set()}
                     else:
                         raise ValueError("Unknown desktop operation")
                     self.respond({"ok": True, "instance": instance, "result": result})
@@ -184,7 +200,10 @@ def serve(root):
                     # Keep the desktop control plane responsive to stop/restart.
                     # CLI and systemd receivers may use the full 10-second wait,
                     # but the in-process stop Event cannot cancel urllib mid-call.
-                    connector.cycle(wait_seconds=1)
+                    with cycle_lock:
+                        if stop.is_set():
+                            break
+                        connector.cycle(wait_seconds=1)
                 except Exception as exc:
                     write_json(
                         root / "connector-status.json",

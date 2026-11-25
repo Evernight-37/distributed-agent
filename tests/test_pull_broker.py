@@ -9,6 +9,7 @@ import unittest
 
 from agent_harness.broker import PullBackend
 from agent_harness.collaboration_store import Store, uid
+from agent_harness.coordinator import Coordinator
 from tests.helpers import provision_account
 
 
@@ -79,6 +80,84 @@ class PullBrokerTests(unittest.TestCase):
             ),
             token,
         )
+
+    def create_task(self, agent, delegate=None):
+        return self.store.task(
+            self.owner,
+            {
+                "project": self.project,
+                "agent": agent["id"],
+                "title": "Check status",
+                "instructions": "Explain status",
+                "acceptance": "Known result",
+                "validation": "Review",
+            },
+            delegate=delegate,
+        )["id"]
+
+    def test_unknown_task_stays_active_until_cancelled_by_the_receiver(self):
+        token, _ = self.enroll()
+        agent = self.advertise(token)
+        task = self.create_task(agent)
+        coordinator = Coordinator(self.store, self.backend)
+        coordinator.dispatch(task)
+        job = self.claim(token)
+        report = {"job_id": job["id"], "lease_id": job["lease_id"]}
+        self.backend.device_api(
+            "/api/device/report", {**report, "state": "running", "result": {"error": "Unknown job"}}, token
+        )
+        coordinator.collect(task)
+        row = self.store.project_view(self.owner, self.project)["tasks"][0]
+        self.assertEqual((row["state"], row["display_status"]), ("unknown", "待核对"))
+        self.assertTrue(row["can_cancel"])
+        self.assertEqual(row["local_recovery"], {"node": "worker", "job_id": job["id"]})
+        delegate_row = self.store.project_view(self.owner, self.project, delegate="delegate")["tasks"][0]
+        self.assertNotIn("local_recovery", delegate_row)
+        invite = self.store.invite(self.owner, self.project)["invite"]
+        peer = provision_account(self.store, "observer", invite=invite)["id"]
+        self.assertNotIn("local_recovery", self.store.project_view(peer, self.project)["tasks"][0])
+        with self.assertRaisesRegex(ValueError, "活动任务"):
+            self.create_task(agent)
+        self.backend.device_api("/api/device/report", {**report, "state": "running"}, token)
+        coordinator.collect(task)
+        self.assertEqual(self.store.project_view(self.owner, self.project)["tasks"][0]["state"], "running")
+        self.assertNotIn("local_recovery", self.store.project_view(self.owner, self.project)["tasks"][0])
+        self.backend.device_api(
+            "/api/device/report", {**report, "state": "unknown", "result": {"error": "Unknown job"}}, token
+        )
+        coordinator.collect(task)
+        result = self.store.cancel_task(self.owner, self.project, task)
+        self.assertEqual((result["state"], result["cancel_requested"]), ("unknown", True))
+        coordinator.collect(task)
+        self.assertIn(job["id"], self.backend.device_api("/api/device/poll", {}, token)["cancellations"])
+        self.backend.device_api("/api/device/report", {**report, "state": "cancelled"}, token)
+        coordinator.collect(task)
+        self.assertEqual(self.store.project_view(self.owner, self.project)["tasks"][0]["state"], "cancelled")
+
+    def test_delegate_can_cancel_only_its_own_submission(self):
+        token, _ = self.enroll()
+        agent = self.advertise(token)
+        task = self.create_task(agent, "submitting-delegate")
+        peer = provision_account(self.store, "peer", invite=self.store.invite(self.owner, self.project)["invite"])["id"]
+        with self.assertRaises(PermissionError):
+            self.store.cancel_task(peer, self.project, task)
+        with self.assertRaises(PermissionError):
+            self.store.cancel_task(self.owner, self.project, task, "different-delegate")
+        result = self.store.cancel_task(self.owner, self.project, task, "submitting-delegate")
+        self.assertEqual((result["state"], result["cancel_requested"]), ("cancelled", False))
+        Coordinator(self.store, self.backend).dispatch(task)
+        self.assertEqual(self.backend.device_api("/api/device/poll", {}, token)["jobs"], [])
+
+    def test_cancel_requested_after_dispatch_stops_assignment_before_claim(self):
+        token, _ = self.enroll()
+        task = self.create_task(self.advertise(token))
+        coordinator = Coordinator(self.store, self.backend)
+        coordinator.dispatch(task)
+        self.assertTrue(self.store.cancel_task(self.owner, self.project, task)["cancel_requested"])
+        # A device can poll before the coordinator's next tick.
+        self.assertEqual(self.backend.device_api("/api/device/poll", {}, token)["jobs"], [])
+        coordinator.collect(task)
+        self.assertEqual(self.store.project_view(self.owner, self.project)["tasks"][0]["state"], "cancelled")
 
     def test_idle_long_poll_wakes_when_a_job_is_submitted(self):
         token, _ = self.enroll()
@@ -202,22 +281,125 @@ class PullBrokerTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.backend.device_api("/api/device/task-inbound", {"ids": [file["id"]]}, token)
 
-    def test_a_human_allows_and_revokes_a_full_access_grant(self):
-        from tests.helpers import provision_account  # noqa: F401  (same account model)
+    def test_permission_request_does_not_create_a_standing_grant(self):
+        token, _ = self.enroll()
+        agent = self.advertise(token)
+        coordinator = Coordinator(self.store, self.backend)
+        source = self.create_task(agent)
+        coordinator.dispatch(source)
+        completed = self.claim(token)
+        self.complete(
+            token, completed, json.dumps({"reply": "Permission required", "request": {"reason": "Read report"}})
+        )
+        coordinator.collect(source)
+        messages = self.store.project_view(self.owner, self.project)["messages"]
+        request = next(m["permission_request"] for m in messages if "permission_request" in m)
+        self.assertEqual(request["state"], "pending")
+        invite = self.store.invite(self.owner, self.project)["invite"]
+        peer = provision_account(self.store, "permission observer", invite=invite)["id"]
+        view = self.store.project_view(peer, self.project)
+        self.assertFalse(any("permission_request" in m or "Read report" in m["body"] for m in view["messages"]))
+        with self.assertRaises(PermissionError):
+            self.store.permission_decide(peer, self.project, request["id"], True)
+        self.store.message(peer, self.project, "Unrelated later request")
 
+        granted = self.store.permission_decide(self.owner, self.project, request["id"], True)
+        self.assertEqual(self.store.permission_decide(self.owner, self.project, request["id"], True), granted)
+        self.assertEqual(self.store.grants(agent["id"]), [])
+        continuation = granted["task_id"]
+        coordinator.dispatch(continuation)
+        authorized = self.claim(token)
+        context = json.loads(authorized["request"]["prompt"])
+        self.assertEqual(context["grants"], ["full_access"])
+        self.assertEqual(context["permission_request_id"], request["id"])
+        self.assertEqual(context["approved_continuation"]["source_task_id"], source)
+        self.assertEqual(context["task"]["instructions"], "Explain status")
+        self.assertEqual(context["visible_messages"], [])
+        self.assertEqual(self.claim(token), authorized)
+        repeated = self.store.permission_decide(self.owner, self.project, request["id"], True)
+        self.assertEqual(repeated["state"], "consumed")
+        self.assertEqual(repeated["task_id"], continuation)
+        self.complete(token, authorized, json.dumps({"reply": "Finished"}))
+        coordinator.collect(continuation)
+        unrelated = self.create_task(agent)
+        coordinator.dispatch(unrelated)
+        self.assertEqual(json.loads(self.claim(token)["request"]["prompt"])["grants"], [])
         with self.store.connect() as db:
-            db.execute(
-                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout,enabled)"
-                " VALUES('agent-1',?,'tester',?,'node-1','backend-1','deepseek-flash','medium',600,1)",
-                (self.project, self.owner),
-            )
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 3)
+
+    def test_legacy_full_access_snapshot_cannot_be_claimed(self):
+        token, _ = self.enroll()
+        agent = self.advertise(token)
+        self.store.set_grant(agent["id"], "full_access", True, actor=self.owner)
+        context = Coordinator(self.store, self.backend).agent_context(agent, {"contract": "{}", "cutoff": 0})
+        snapshot = json.loads(context)
+        self.assertEqual(snapshot["grants"], [])
+        snapshot["grants"] = ["full_access"]
+        elevated = json.dumps(snapshot)
+        with self.assertRaises(PermissionError):
+            self.backend.submit("workspace", elevated, "discuss", "", "ok", "check", job_id="forged-elevation")
+        job = "legacy-elevation"
+        in_flight = "legacy-elevation-claimed"
+        with self.store.connect() as db:
+            self.backend._enqueue(db, job, agent, "task", {"prompt": elevated})
+            self.backend._enqueue(db, in_flight, agent, "task", {"prompt": elevated})
+            db.execute("UPDATE pull_jobs SET state='claimed' WHERE id=?", (in_flight,))
+        unprivileged = self.submit(agent)
+
+        poll = self.backend.device_api("/api/device/poll", {}, token)
+        self.assertEqual([item["id"] for item in poll["jobs"]], [unprivileged["job"]])
+        self.assertIn(in_flight, poll["cancellations"])
+        self.assertEqual(self.backend.status(in_flight)["status"], "unknown")
+        status = self.backend.status(job)
+        self.assertEqual(status["status"], "cancelled")
+        self.assertIn("one-time", status["error"])
+        with self.store.connect() as db:
+            saved = db.execute("SELECT request FROM pull_jobs WHERE id=?", (job,)).fetchone()[0]
+        self.assertEqual(json.loads(saved)["prompt"], elevated)
+
+    def test_private_permission_request_only_reaches_machine_owner_without_hidden_reason(self):
+        invite = self.store.invite(self.owner, self.project)["invite"]
+        peer = provision_account(self.store, "machine owner", invite=invite)["id"]
+        token, _ = self.enroll("peer-worker", peer)
+        agent = self.advertise(token, node="peer-worker")
+        coordinator = Coordinator(self.store, self.backend)
+        with self.store.connect() as db:
+            project = self.store.require_member(db, self.project, self.owner)
+            source = self.store._task(
+                db,
+                project,
+                agent,
+                {
+                    "title": "Private task",
+                    "instructions": "Handle the private task",
+                    "acceptance": "Done",
+                    "validation": "Review",
+                    "private_turn": True,
+                    "reply_to": self.owner,
+                },
+                self.owner,
+            )["id"]
+        coordinator.dispatch(source)
+        job = self.claim(token)
+        reason = "Private reason that belongs to the delegator"
+        self.complete(token, job, json.dumps({"reply": "", "request": {"reason": reason}}))
+        coordinator.collect(source)
+
+        messages = self.store.project_view(peer, self.project)["messages"]
+        approval_message = next(m for m in messages if "permission_request" in m)
+        self.assertEqual(approval_message["recipient_id"], peer)
+        self.assertNotIn(reason, approval_message["body"])
+        request_id = approval_message["permission_request"]["id"]
+        self.assertFalse(
+            any("permission_request" in m for m in self.store.project_view(self.owner, self.project)["messages"])
+        )
+        with self.assertRaises(PermissionError):
+            self.store.permission_decide(self.owner, self.project, request_id, True)
+        self.assertEqual(self.store.permission_decide(peer, self.project, request_id, False)["state"], "denied")
         with self.assertRaises(ValueError):
-            self.store.message(self.owner, self.project, "/allow nobody")
-        self.assertEqual(self.store.grants("agent-1"), [])
-        self.store.message(self.owner, self.project, "/allow tester")
-        self.assertEqual(self.store.grants("agent-1"), ["full_access"])
-        self.store.message(self.owner, self.project, "/deny tester")
-        self.assertEqual(self.store.grants("agent-1"), [])
+            self.store.permission_decide(peer, self.project, request_id, True)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 1)
 
     def test_a_corrupt_node_file_does_not_break_the_device_poll(self):
         """A crash can leave the node record full of zeros; polling must survive it."""

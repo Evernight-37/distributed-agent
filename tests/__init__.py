@@ -8,8 +8,14 @@ everywhere except where it is missing.
 """
 
 import os
+import re
 import tempfile
 from pathlib import Path
+
+# Temporary repositories should not inherit the caller's per-process Git config.
+for _key in list(os.environ):
+    if re.fullmatch(r"GIT_CONFIG_(?:COUNT|(?:KEY|VALUE)_[0-9]+)", _key):
+        del os.environ[_key]
 
 if not os.environ.get("CODEX_HOME"):
     _home = Path(tempfile.mkdtemp(prefix="harness-test-codex-"))

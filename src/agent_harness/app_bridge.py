@@ -76,6 +76,7 @@ class AppBridge:
         self.root.mkdir(parents=True, exist_ok=True)
         self.identity = None
         self.profile = None
+        self.autologin_failed = False
         self.window = None
         self.pending = None
         self.pending_restore = None
@@ -1190,36 +1191,37 @@ class AppBridge:
             write_json(path, executor)
 
     def _ensure_receivers(self):
-        """Restart receivers whose deployed code is from an earlier build.
-
-        A receiver keeps running across an upgrade, so its turn worker would stay
-        on the previous build until something restarts it. Comparing the version it
-        was deployed with against the running application makes the upgrade take
-        effect on the next login.
-        """
-        from agent_harness.desktop_runtime import DesktopRuntime, version_path
-
-        target = version_path()
-        if target is None:
+        """Refresh stale receiver builds once their locally owned work ends."""
+        identity = getattr(self, "identity", None)
+        watcher = getattr(self, "_receiver_refresh", None)
+        if watcher and watcher.is_alive() and getattr(self, "_receiver_refresh_identity", None) is identity:
             return
-        try:
-            wanted = target.read_text(encoding="utf-8").strip()
-        except OSError:
+
+        def refresh(paths):
+            pending = []
+            for path in paths:
+                try:
+                    if DesktopRuntime(path).start(refresh_only=True).get("refresh_pending") is True:
+                        pending.append(path)
+                except (OSError, ValueError, RuntimeError):
+                    logging.getLogger(__name__).exception("Automatic receiver refresh failed")
+            return pending
+
+        paths = sorted(path for path in (self.root / "receivers").glob("device-*") if path.is_dir())
+        pending = refresh(paths)
+        if not pending or identity is None:
             return
-        for path in sorted((self.root / "receivers").glob("device-*")):
-            if not path.is_dir():
-                continue
-            marker = path / "VERSION"
-            try:
-                recorded = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
-            except OSError:
-                recorded = ""
-            if recorded == wanted:
-                continue
-            try:
-                DesktopRuntime(path).start()
-            except Exception:
-                continue
+
+        def wait_for_idle():
+            remaining = pending
+            while remaining and self.identity is identity:
+                time.sleep(2)
+                if self.identity is identity:
+                    remaining = refresh(remaining)
+
+        self._receiver_refresh_identity = identity
+        self._receiver_refresh = threading.Thread(target=wait_for_idle, name="receiver-refresh", daemon=True)
+        self._receiver_refresh.start()
 
     def _enroll(self, server=None):
         server = server or self.profile["server"]
@@ -1421,18 +1423,24 @@ class AppBridge:
         """
         from agent_harness import autologin
 
+        if not (self.root / autologin.FILE).is_file():
+            return False
         remembered = autologin.load(self.root)
         if not remembered:
+            self.autologin_failed = True
             return False
         profile_id, password = remembered
         if not any(profile["id"] == profile_id for profile in self._profiles()):
             autologin.clear(self.root)
+            self.autologin_failed = True
             return False
-        try:
-            result = self.invoke("login", {"profile": profile_id, "password": password, "remember": True})
-        except Exception:
-            return False
-        return bool(isinstance(result, dict) and result.get("unlocked"))
+        result = self.invoke("login", {"profile": profile_id, "password": password, "remember": True})
+        if result.get("ok") and result.get("result", {}).get("unlocked"):
+            return True
+        if self.identity is not None:
+            self.invoke("logout")
+        self.autologin_failed = True
+        return False
 
     def invoke(self, action, data=None):
         try:

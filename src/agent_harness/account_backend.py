@@ -12,8 +12,7 @@ from agent_harness.account_identity import (
     canonical,
 )
 from agent_harness.collaboration_store import digest
-from agent_harness.owner_backend import OwnerBackend
-from agent_harness.owner_worker import execution_project
+from agent_harness.owner_backend import OwnerBackend, PROJECT_AGENT_ACTIONS, PROJECT_AGENT_SETTINGS, execution_project
 from agent_harness.protocol import hub_advertisement
 from agent_harness.hub_api import HubAccountAPI
 from agent_harness.health import HealthCode, safe_message
@@ -317,6 +316,7 @@ class AccountBackend:
                     "message": "collaboration.message",
                     "conversation-read": "collaboration.read",
                     "task": "collaboration.task",
+                    "task-cancel": "collaboration.task",
                     "task-status": "collaboration.read",
                 }.get(body["operation"])
                 if not required or required not in delegate_scopes:
@@ -364,6 +364,82 @@ class AccountBackend:
                     "INSERT INTO account_delegates VALUES(?,?,?,?,?,0)",
                     (public, user, device_name, encoded, json.dumps(chain)),
                 )
+
+    def _project_agent_controls(self, db, result, project, user, delegated):
+        employees = {
+            (row["node"], execution_project(row["id"], project)): row
+            for row in db.execute(
+                "SELECT id,node,status,settings FROM employees WHERE owner_id IN "
+                "(SELECT user_id FROM project_users WHERE project_id=?)",
+                (project,),
+            )
+        }
+        legacy_dispatch = {}
+        applied = {}
+        pending = {}
+        for row in db.execute(
+            "SELECT id,node,owner_id,state,envelope,result FROM owner_commands "
+            "WHERE json_extract(envelope,'$.body.data.project_id')=? ORDER BY created_at,rowid",
+            (project,),
+        ):
+            body = json.loads(row["envelope"])["body"]
+            action, data = body["action"], body["data"]
+            if row["state"] == "applied" and action in {"dispatch", "withdraw"}:
+                legacy_dispatch[data["id"]] = action
+            if action not in PROJECT_AGENT_ACTIONS:
+                continue
+            backend = (
+                execution_project(data["id"], project) if action == "project-agent-create" else data["backend_project"]
+            )
+            key = (row["node"], backend)
+            report = json.loads(row["result"] or "{}")
+            if row["state"] == "applied":
+                applied[key] = (action, report)
+            if not delegated and row["owner_id"] == user:
+                pending[key] = {
+                    "id": row["id"],
+                    "action": action,
+                    "state": row["state"],
+                    "backend_project": backend,
+                    "name": data.get("name", ""),
+                    "error": safe_message(report.get("error"), "操作失败") if row["state"] == "failed" else None,
+                }
+        members = []
+        for member in result["members"]:
+            key = (member["node"], member["backend_project"])
+            scoped = applied.get(key)
+            employee = employees.get(key) if scoped is None else None
+            if scoped and scoped[0] == "project-agent-delete":
+                continue
+            if employee and (employee["status"] == "deleted" or legacy_dispatch.get(employee["id"]) == "withdraw"):
+                continue
+            member["employee_id"] = employee["id"] if employee else None
+            last_seen = db.execute("SELECT last_seen FROM pull_devices WHERE node=?", (member["node"],)).fetchone()
+            member["online"] = bool(last_seen and last_seen["last_seen"] > time.time() - 45)
+            member["can_manage_project_agent"] = not delegated and member["owner_id"] == user
+            if member["can_manage_project_agent"]:
+                bound = db.execute("SELECT stages FROM pull_bindings WHERE agent_id=?", (member["id"],)).fetchone()
+                source = (
+                    scoped[1].get("settings", {}) if scoped else json.loads(employee["settings"]) if employee else {}
+                )
+                settings = {key: source[key] for key in PROJECT_AGENT_SETTINGS if key in source}
+                actual = {key: member[key] for key in ("model", "effort", "timeout")}
+                if scoped:
+                    settings = {**actual, **settings}
+                else:
+                    settings.update(actual)
+                settings.setdefault("enabled", bool(member["enabled"]))
+                settings.setdefault("stages", json.loads(bound["stages"]) if bound else ["discuss"])
+                member["project_agent_settings"] = settings
+            members.append(member)
+        result["members"] = members
+        visible = {member["backend_project"] for member in members}
+        result["project_agent_commands"] = [
+            item
+            for item in pending.values()
+            if item["state"] in {"failed", "queued", "claimed"}
+            or (item["action"] == "project-agent-create" and item["backend_project"] not in visible)
+        ]
 
     def _operation(self, user, public, op, p, delegate_scopes=None):
         if op == "attachment-approvals":
@@ -574,7 +650,7 @@ class AccountBackend:
             project = p.get("project", p.get("id"))
             if p.get("active_conversation_id"):
                 self.store.mark_conversation_read(user, project, p["active_conversation_id"])
-            result = self.store.project_view(user, project)
+            result = self.store.project_view(user, project, delegate=public if delegate_scopes is not None else None)
             from agent_harness.project_memory import ProjectMemory
 
             result["project_memory"] = ProjectMemory(self.store).snapshot(user, project)
@@ -584,40 +660,7 @@ class AccountBackend:
                         "INSERT INTO account_project_visits VALUES(?,?,?) ON CONFLICT(account_id,project_id) DO UPDATE SET visited=excluded.visited",
                         (user, project, time.time()),
                     )
-                employees = db.execute(
-                    "SELECT id,node,status FROM employees WHERE owner_id IN (SELECT user_id FROM project_users WHERE project_id=?)",
-                    (project,),
-                ).fetchall()
-                dispatch_state = {}
-                for command in db.execute(
-                    "SELECT envelope FROM owner_commands WHERE state='applied' AND owner_id IN (SELECT user_id FROM project_users WHERE project_id=?) ORDER BY created_at,rowid",
-                    (project,),
-                ):
-                    body = json.loads(command["envelope"])["body"]
-                    data = body["data"]
-                    if body["action"] in {"dispatch", "withdraw"} and data.get("project_id") == project:
-                        dispatch_state[data["id"]] = body["action"]
-                for member in result.get("members", []):
-                    member["employee_id"] = next(
-                        (
-                            e["id"]
-                            for e in employees
-                            if e["node"] == member["node"]
-                            and execution_project(e["id"], project) == member["backend_project"]
-                        ),
-                        None,
-                    )
-                    seen = db.execute(
-                        "SELECT last_seen FROM pull_devices WHERE node=?",
-                        (member["node"],),
-                    ).fetchone()
-                    member["online"] = bool(seen and seen["last_seen"] > time.time() - 45)
-                result["members"] = [
-                    m
-                    for m in result.get("members", [])
-                    if dispatch_state.get(m.get("employee_id")) != "withdraw"
-                    and not any(e["id"] == m.get("employee_id") and e["status"] == "deleted" for e in employees)
-                ]
+                self._project_agent_controls(db, result, project, user, delegate_scopes is not None)
                 result["workspaces"] = [
                     dict(row)
                     for row in db.execute(
@@ -634,6 +677,9 @@ class AccountBackend:
         if op == "invite":
             return self.store.invite(user, p["project"])
         if op == "message":
+            words = str(p.get("body") or "").strip().split(maxsplit=1)
+            if delegate_scopes is not None and words and words[0] in {"/allow", "/deny"}:
+                raise PermissionError("委托身份不能批准或撤销 Agent 权限")
             return self.store.message(
                 user,
                 p["project"],
@@ -705,7 +751,19 @@ class AccountBackend:
         if op == "task":
             if delegate_scopes is not None:
                 p = {**p, "requested_via": client_label(p.get("client")) or "codex"}
-            return self.store.task(user, p)
+            return self.store.task(user, p, delegate=public if delegate_scopes is not None else None)
+        if op == "task-cancel":
+            return self.store.cancel_task(
+                user, p["project"], p["task_id"], public if delegate_scopes is not None else None
+            )
+        if op == "agent-permission":
+            if delegate_scopes is not None:
+                raise PermissionError("委托身份不能批准或撤销 Agent 权限")
+            return self.store.agent_permission(user, p["project"], p["agent_id"], p["allow"])
+        if op == "permission-decide":
+            if delegate_scopes is not None:
+                raise PermissionError("委托身份不能批准 Agent 的提权请求")
+            return self.store.permission_decide(user, p["project"], p["request_id"], p["approve"])
         if op == "task-status":
             with self.store.connect() as db:
                 row = db.execute("SELECT * FROM tasks WHERE id=?", (p.get("task"),)).fetchone()
@@ -714,7 +772,13 @@ class AccountBackend:
                 self.store.require_member(db, row["project_id"], user)
                 if not self.store.task_visible_to_human(db, row, user):
                     raise PermissionError("无权查看此任务")
-                return dict(row)
+                result = dict(row)
+                recovery = self.store.local_task_recovery(
+                    db, row, user, public if delegate_scopes is not None else None
+                )
+                if recovery:
+                    result["local_recovery"] = recovery
+                return result
         if op == "memory-note-add":
             from agent_harness.project_memory import ProjectMemory
 

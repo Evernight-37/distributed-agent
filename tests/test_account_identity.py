@@ -17,7 +17,7 @@ from agent_harness.account_identity import (
     decrypt_identity,
     encrypt_profile,
 )
-from agent_harness.account_backend import AccountBackend
+from agent_harness.account_backend import AccountBackend, device_node
 from agent_harness.collaboration_store import Store
 from agent_harness.broker import PullBackend
 
@@ -393,6 +393,43 @@ class IdentityTests(unittest.TestCase):
             self.call(delegate, "revoke-device", {"public_key": self.root["public_key"]})
         with self.assertRaises(PermissionError):
             self.call(delegate, "memory-note-add", {"project": project, "body": "forged"})
+        with self.store.connect() as db:
+            node = device_node(self.root["public_key"])
+            db.execute("INSERT INTO pull_devices(node,token_hash) VALUES(?,?)", (node, "test-project-device"))
+            db.execute(
+                "INSERT INTO agents(id,project_id,name,owner_id,node,backend_project,model,effort,timeout) "
+                "VALUES ('agent-permissions',?,'Peer',?,?,'workspace','deepseek-flash','medium',60)",
+                (project, self.root["account_id"], node),
+            )
+        source_id = self.store.task(
+            self.root["account_id"],
+            {
+                "project": project,
+                "agent": "agent-permissions",
+                "title": "Check log",
+                "instructions": "Inspect",
+                "acceptance": "Explain",
+                "validation": "Review",
+            },
+        )["id"]
+        with self.store.connect() as db:
+            db.execute("UPDATE tasks SET state='needs_review',processed=1 WHERE id=?", (source_id,))
+            source = dict(db.execute("SELECT * FROM tasks WHERE id=?", (source_id,)).fetchone())
+            agent = dict(db.execute("SELECT * FROM agents WHERE id='agent-permissions'").fetchone())
+            self.store.post_permission_request(db, project, agent, source, {"reason": "Test"})
+        owner_view = self.call(self.root, "project", {"project": project})
+        request = next(m["permission_request"] for m in owner_view["messages"] if m.get("permission_request"))
+        self.assertEqual(request["agent_id"], "agent-permissions")
+        permission = {"project": project, "request_id": request["id"], "approve": False}
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "permission-decide", permission)
+        with self.assertRaises(PermissionError):
+            self.call(delegate, "message", {"project": project, "body": "/allow Peer"})
+        self.assertEqual(self.store.grants("agent-permissions"), [])
+        self.assertEqual(self.call(self.root, "permission-decide", permission)["state"], "denied")
+        delegate_view = self.call(delegate, "project", {"project": project})
+        self.assertFalse(delegate_view["members"][0]["can_manage_project_agent"])
+        self.assertFalse(any("permission_request" in m for m in delegate_view["messages"]))
         with self.assertRaises(PermissionError):
             self.call(
                 delegate,

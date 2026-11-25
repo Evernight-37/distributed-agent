@@ -51,12 +51,6 @@ def main():
     import webview
 
     bridge = AppBridge(args.data)
-    # A remembered account unlocks before the window appears; a failure simply
-    # leaves the login screen in place.
-    try:
-        bridge.auto_login()
-    except Exception:
-        pass
     holder = {}
 
     def raise_window():
@@ -79,6 +73,12 @@ def main():
     diagnostic_logger = logging.getLogger("agent_harness")
     diagnostic_logger.addHandler(diagnostic_handler)
     diagnostic_logger.setLevel(logging.ERROR)
+
+    # Only the process that owns the data directory can try the saved unlock.
+    try:
+        bridge.auto_login()
+    except Exception:
+        bridge.autologin_failed = True
 
     class API:
         def invoke(self, action, data=None):

@@ -115,14 +115,17 @@ class DesktopSessionActions:
                 threading.Timer(0.3, finish).start()
             return result
         if action == "local-status":
-            return {
+            status = {
                 "profiles": [
                     {"id": profile["id"], "username": profile["username"]} for profile in self.bridge._profiles()
                 ],
                 "unlocked": bool(self.bridge.identity),
                 "server": (self.bridge.profile or {}).get("server", "http://127.0.0.1:8765"),
                 "autologin": self._autologin_profile(),
+                "autologin_failed": self.bridge.autologin_failed,
             }
+            self.bridge.autologin_failed = False
+            return status
         self.bridge.identity = None
         self.bridge.profile = None
         self.bridge.activated_services = set()

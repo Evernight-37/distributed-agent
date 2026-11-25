@@ -20,17 +20,17 @@ Thus the fools gathered aboard a single ship, some of flesh, others of clockwork
 
 ## 安装
 
-当前稳定版为 **2.16.21**，有两种装法：
+当前稳定版为 **2.17.0**，有两种装法：
 
 - **自己装**：从 [GitHub Releases](https://github.com/Evernight-37/distributed-agent/releases/latest) 下载与系统和 CPU 架构相符的发布包。
 - **让那台机器上的 AI 装**：把对应的任务书交给它，由它下载、校验、安装（见下）。
 
 | 使用环境 | 下载文件 | 使用方法 |
 | --- | --- | --- |
-| Windows x64（推荐） | `Foolship-2.16.21-windows-x64-setup.exe` | 双击按向导安装，从开始菜单启动 |
-| Windows x64（便携） | `Foolship-2.16.21-windows-x64.zip` | 完整解压到独立目录，运行其中的 `Foolship.exe`；不要只复制 EXE |
-| macOS Apple Silicon | `Foolship-2.16.21-macos-arm64.zip` | 解压后把 `Foolship.app` 放进“应用程序”打开；未做 Apple 签名，系统可能要求在隐私与安全性中确认 |
-| Linux x64 / ARM64 | `Foolship-2.16.21-linux-x64.tar.gz` 或 `Foolship-2.16.21-linux-arm64.tar.gz` | 无界面接收端，见 [Linux 说明](docs/LINUX.md) |
+| Windows x64（推荐） | `Foolship-2.17.0-windows-x64-setup.exe` | 双击按向导安装，从开始菜单启动 |
+| Windows x64（便携） | `Foolship-2.17.0-windows-x64.zip` | 完整解压到独立目录，运行其中的 `Foolship.exe`；不要只复制 EXE |
+| macOS Apple Silicon | `Foolship-2.17.0-macos-arm64.zip` | 解压后把 `Foolship.app` 放进“应用程序”打开；未做 Apple 签名，系统可能要求在隐私与安全性中确认 |
+| Linux x64 / ARM64 | `Foolship-2.17.0-linux-x64.tar.gz` 或 `Foolship-2.17.0-linux-arm64.tar.gz` | 无界面接收端，见 [Linux 说明](docs/LINUX.md) |
 
 发布包自带运行时，不需要另行安装 Python、pip 或 venv。Windows 需要 Edge WebView2；每台实际执行 Agent 的机器仍需安装并登录 Codex 或 DeepSeek Harness。升级只替换程序文件，不动账户数据。
 
@@ -61,9 +61,9 @@ https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web
 1. 启动应用，创建账户；已有账户可以导入离线恢复包。
 2. **设置 → 协作服务 → 创建团队入口**，得到 `https://….ts.net` 形式的团队地址。
 3. 其他人在应用里用这个地址和项目邀请码加入；不需要为每个团队新建账户。
-4. 接入自己的机器与 Agent，派发任务；群主指定管理员 Agent。
+4. 接入自己的机器，在项目里新增并配置 Agent，然后派发任务。群主可以指定该项目的管理员 Agent。
 
-工作目录属于“项目 × 机器”，不属于 Agent：第一次向项目派遣本机 Agent 时选择，同机同项目的多个 Agent 共享该目录，但会话和项目记忆仍按项目隔离。
+工作目录按项目和机器设置。同一项目在同一台机器上的多个 Agent 共享工作目录，各自保留会话和配置。不同项目可以使用同一台机器，并分别配置 Agent。
 
 按钮级流程见 [新手教程](docs/QUICKSTART.md)。单机使用可以跳过 Tailscale。
 
@@ -73,7 +73,7 @@ https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web
 
 ## 模型与执行器
 
-桌面端按**模型**决定用哪个 CLI：**设置 → 本机可用模型** 里维护一张表，写明这台电脑能跑哪些模型、每个模型由 Codex 还是 DeepSeek Harness 执行。员工的模型必须从这张表里选，派发时按模型自动选执行器——所以同一台机器可以同时跑两种，不存在“默认执行器”。Linux 无界面接收端另有机器级的 `foolship executor set codex|dsh`，用来指定它默认用哪个 CLI。
+桌面端按**模型**决定用哪个 CLI。**设置 → 本机可用模型**列出这台电脑能跑哪些模型及对应的执行器。创建项目 Agent 时，从它所在机器的模型表选一个。同一台机器可以同时使用两种执行器。Linux 无界面接收端另有机器级的 `foolship executor set codex|dsh`，用来指定默认 CLI。
 
 | 对比项 | Codex CLI | DeepSeek Harness |
 | --- | --- | --- |
@@ -108,6 +108,7 @@ https://raw.githubusercontent.com/Evernight-37/distributed-agent/main/assets/web
 - 身份先用本地解锁密码加密，再优先交给系统安全存储（DPAPI / Keychain / Secret Service），不可用时退回 Scrypt + AES-GCM 文件；密钥不上传。
 - 根设备可以导出离线恢复包；导入时只在内存中解密，并重新生成子设备身份。恢复包不含服务地址、项目数据或消息。
 - Agent 在回复中附项目文件默认逐件批准，可改为“帮我批准”或“完全访问权限”；这只影响附件发送，不改变执行授权。详见[附件说明](docs/AGENT-ATTACHMENTS.md)。
+- Agent 请求额外执行权限时，由执行机器的所有者批准。每次批准只允许该申请对应的一个续跑任务，后续任务按正常权限启动。
 - 实现任务可开启“安全模式”，要求干净的 linked worktree 且只改 `allowed_files`；这是防误操作措施，不是文件系统沙箱。
 
 ## 数据、备份与更新

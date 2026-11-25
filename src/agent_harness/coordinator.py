@@ -117,6 +117,11 @@ class Coordinator:
                 {k: r[k] for k in ("id", "name", "owner_id", "model", "effort", "enabled")}
                 for r in db.execute("SELECT * FROM agents WHERE project_id=?", (agent["project_id"],))
             ]
+            approval = db.execute(
+                "SELECT id,source_task_id,reason FROM permission_requests WHERE continuation_task_id=? "
+                "AND project_id=? AND agent_id=? AND owner_id=? AND state IN ('approved','consumed')",
+                (task.get("id"), project["id"], agent["id"], agent["owner_id"]),
+            ).fetchone()
         contract = json.loads(task["contract"])
         visible = self.store.visible_messages(agent["id"], 0, task["cutoff"])[-150:]
         partner = contract.get("reply_to") if contract.get("private_turn") else None
@@ -145,12 +150,25 @@ class Coordinator:
                 "visible_messages": visible,
                 "project_memory": shared_memory,
                 "task": contract,
-                "grants": self.store.grants(agent["id"]),
+                "grants": ["full_access"] if approval else [],
+                **(
+                    {"permission_request_id": approval["id"], "approved_continuation": dict(approval)}
+                    if approval
+                    else {}
+                ),
                 # Files the humans attached to the message that woke this turn.
                 "attachments": contract.get("attachments") or [],
                 # The behavioural rules live once, in the worker prompt; the
                 # per-turn contract carries only what changes.
-                "protocol": "Delegation is admin-only; a task carries audience delegator (private report back to you), group (published to the project) or owner (to the executor's owner). Model capabilities are yours to use.",
+                "protocol": (
+                    "Delegation is admin-only; a task carries audience delegator (private report back to you), "
+                    "group (published to the project) or owner (to the executor's owner). Model capabilities are yours to use."
+                    + (
+                        " Only continue the approved source task using the one-time grant for this turn."
+                        if approval
+                        else ""
+                    )
+                ),
             },
             ensure_ascii=False,
         )
@@ -236,7 +254,7 @@ class Coordinator:
                     "title": "处理新消息",
                     "instructions": "处理收到的可见消息；管理员根据目标协调分工，必要时向同事定向发送消息或派任务。若无需回复，返回 done:true。",
                     "stage": "discuss",
-                    "allowed_files": "可以读写员工分配到的项目目录，使用执行器提供的工具；项目目录之外的写入需要机器主人授权。人类明确要求实现或跑实验时，管理员应分派 implement 任务，写明文件范围、验收与验证。",
+                    "allowed_files": "可以使用项目 Agent 的工作目录与执行工具；写入项目外路径需由机器主人批准一次续跑。人类明确要求实现或跑实验时，管理员应分派 implement 任务，写明文件范围、验收与验证。",
                     "acceptance": "回复针对消息且遵守收件权限，任务分工明确",
                     "validation": "核对可见消息与任务契约；不要编造执行结果",
                 }
@@ -349,13 +367,24 @@ class Coordinator:
             draft = result.get("reply_draft")
             if isinstance(draft, str) and len(draft) <= 16000:
                 self.update_reply_draft(task, draft)
-            if result.get("status") not in TERMINAL:
+            state = result.get("status")
+            if state == "running" and result.get("error") == "Unknown job":
+                # Existing hubs may already have stored a report from an older receiver.
+                state = "unknown"
+            if state not in TERMINAL:
+                if state in {"running", "unknown"} and state != task["state"]:
+                    with self.store.connect() as db:
+                        if db.execute(
+                            "UPDATE tasks SET state=?,error=? WHERE id=? AND state IN ('running','unknown')",
+                            (state, result.get("error") if state == "unknown" else None, task["id"]),
+                        ).rowcount:
+                            self.store.emit_task_event(db, task)
                 continue
             with self.store.connect() as db:
                 db.execute(
-                    "UPDATE tasks SET state=?,report=?,error=?,processed=0 WHERE id=?",
+                    "UPDATE tasks SET state=?,report=?,error=?,processed=0,cancel_requested=0 WHERE id=?",
                     (
-                        result["status"],
+                        state,
                         result.get("report", ""),
                         result.get("error"),
                         task["id"],
@@ -409,24 +438,8 @@ class Coordinator:
                 reply = (answer or {}).get("reply", "").strip()
                 if reply.casefold().startswith("[checkpoint]"):
                     reply = ""
-                request = (answer or {}).get("request")
-                if isinstance(request, dict) and str(request.get("reason") or "").strip():
-                    self.store._message(
-                        db,
-                        project["id"],
-                        "scheduler",
-                        "system",
-                        "「"
-                        + agent["name"]
-                        + "」申请更多权限："
-                        + str(request["reason"]).strip()
-                        + "。由机器主人或项目所有者发送 /allow "
-                        + agent["name"]
-                        + " 批准，或 /deny "
-                        + agent["name"]
-                        + " 拒绝。",
-                        causal_task="permission-request",
-                    )
+                if task["state"] == "failed":
+                    self.store.post_permission_request(db, project["id"], agent, task, (answer or {}).get("request"))
                 if reply:
                     if not self.store.finalize_draft(db, task_id, reply, reply_to):
                         self.store._message(
@@ -446,12 +459,15 @@ class Coordinator:
                     )
                 else:
                     self.store.clear_draft(db, task_id)
-                    notice = (
-                        agent["name"]
-                        + " 未能回复：本机执行状态为 "
-                        + task["state"]
-                        + "。请由机器所有者检查本机 Agent（Codex 或 DeepSeek Harness）、客户端版本和超时设置。"
-                    )
+                    if task["state"] == "cancelled":
+                        notice = agent["name"] + " 的任务已取消。"
+                    else:
+                        notice = (
+                            agent["name"]
+                            + " 未能回复：本机执行状态为 "
+                            + task["state"]
+                            + "。请由机器所有者检查本机 Agent（Codex 或 DeepSeek Harness）、客户端版本和超时设置。"
+                        )
                 self.store._message(
                     db,
                     project["id"],
@@ -488,24 +504,7 @@ class Coordinator:
             if reply.casefold().startswith("[checkpoint]"):
                 self.store.log(db, "scheduler", "suppressed_checkpoint", {"task": task_id})
                 reply = ""
-            request = answer.get("request")
-            if isinstance(request, dict) and str(request.get("reason") or "").strip():
-                self.store._message(
-                    db,
-                    project["id"],
-                    "scheduler",
-                    "system",
-                    "「"
-                    + agent["name"]
-                    + "」申请更多权限："
-                    + str(request["reason"]).strip()
-                    + "。由机器主人或项目所有者发送 /allow "
-                    + agent["name"]
-                    + " 批准，或 /deny "
-                    + agent["name"]
-                    + " 拒绝。",
-                    causal_task="permission-request",
-                )
+            self.store.post_permission_request(db, project["id"], agent, task, answer.get("request"))
             from agent_harness.attachments import Attachments
 
             files = Attachments(self.store)

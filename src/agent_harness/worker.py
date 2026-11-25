@@ -777,7 +777,7 @@ If a foolship_reply tool is available, call it once with {reply, messages, attac
 - reply is the human-facing answer, without private reasoning or progress logs. messages are for distinct follow-ups only and never repeat reply.
 - attachments are project-relative paths: existing ordinary files inside the project, at most five, each at most 5 MB; never hidden files, credentials or paths outside it.
 - memory_notes only for durable facts from the public group; empty in a private turn.
-Use the tools your executor gives you; the stage names the humans' intent, not a limit. You may spawn your own sub-agents and remain responsible for the combined result. If something you need is denied, put request:{"reason": "..."} in the reply so a human can approve it with /allow.
+Use the tools your executor gives you. Your task stage describes its intent; the executor and machine owner decide what is permitted. You may spawn your own sub-agents and remain responsible for the combined result. If this task needs extra execution permissions, put request:{"reason": "..."} in the reply. The machine owner can approve one continuation of this task.
 Never reveal a human's private message outside its conversation. Do not read credentials or contact outside parties unless the task says so.
 """
 

@@ -304,6 +304,48 @@ class ProductionFlow(unittest.TestCase):
                 connector.cycle()
                 connector.cycle()
                 self.assertFalse(connector.bindings()[0]["enabled"])
+                alpha_settings = {
+                    "name": "实现 Agent",
+                    "model": "gpt-5.6-sol",
+                    "effort": "medium",
+                    "enabled": True,
+                    "stages": ["discuss", "implement"],
+                    "timeout": 600,
+                    "strict_worktree": True,
+                }
+                second = call(a, "new-project", {"name": "独立评审项目"})["id"]
+                OwnerControl(connector)._configure_workspace({"project_id": second, "path": str(work)})
+                b._rpc("workspace-ready", {"project": second})
+                remote = b.profile["node"]
+                call(a, "project-agent-create", {**alpha_settings, "project": pid, "node": remote})
+                call(
+                    a,
+                    "project-agent-create",
+                    {**alpha_settings, "project": second, "node": remote, "name": "评审 Agent", "stages": ["review"]},
+                )
+                connector.cycle()
+                connector.cycle()
+                alpha = call(a, "project", {"id": pid})["members"][0]
+                beta = call(a, "project", {"id": second})["members"][0]
+                self.assertNotEqual(alpha["id"], beta["id"])
+                self.assertEqual(beta["project_agent_settings"]["stages"], ["review"])
+                call(
+                    a,
+                    "project-agent-configure",
+                    {**alpha_settings, "project": pid, "agent_id": alpha["id"], "timeout": 300},
+                )
+                connector.cycle()
+                connector.cycle()
+                changed = call(a, "project", {"id": pid})["members"][0]
+                unchanged = call(a, "project", {"id": second})["members"][0]
+                self.assertEqual(changed["id"], alpha["id"])
+                self.assertEqual(changed["project_agent_settings"]["timeout"], 300)
+                self.assertEqual(unchanged["project_agent_settings"]["timeout"], 600)
+                call(a, "project-agent-delete", {"project": pid, "agent_id": alpha["id"]})
+                connector.cycle()
+                connector.cycle()
+                self.assertEqual(call(a, "project", {"id": pid})["members"], [])
+                self.assertEqual(call(a, "project", {"id": second})["members"][0]["id"], beta["id"])
                 with self.assertRaisesRegex(ValueError, "existing absolute directory"):
                     OwnerControl(connector)._configure_workspace({"project_id": pid, "path": str(root / "missing")})
                 call(a, "device-revoke", {"id": b.profile["node"]})

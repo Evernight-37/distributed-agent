@@ -223,7 +223,7 @@ async function renderSettings() {
               b,
               "接入后可以在 " +
                 serviceName(service.server) +
-                " 上创建和派遣本机员工。接入只影响这台机器，不改动其它电脑。",
+                " 的项目里选择本机执行 Agent。接入只影响这台机器。",
             );
             a.append(
               button("取消", closeModal),
@@ -548,6 +548,14 @@ function updateCard() {
         "，当前是 " +
         s.apply.running +
         "。可以回到之前的版本。";
+      if (s.apply.expected_build) {
+        statusLine.textContent +=
+          " 期望构建 " +
+          s.apply.expected_build.slice(0, 12) +
+          "，实际构建 " +
+          (s.apply.running_build?.slice(0, 12) || "无法验证") +
+          "。";
+      }
       rollback.classList.remove("hidden");
       if (s.apply_log?.path) {
         statusLine.textContent +=

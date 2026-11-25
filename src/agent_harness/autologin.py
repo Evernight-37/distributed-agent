@@ -27,7 +27,10 @@ def save(root, profile_id, password):
 
 def status(root):
     """The remembered profile id, without unwrapping anything."""
-    value = read_json(Path(root) / FILE, {})
+    try:
+        value = read_json(Path(root) / FILE, {}, tolerant=True)
+    except OSError:
+        return None
     if not isinstance(value, dict):
         return None
     profile_id = value.get("profile_id")
@@ -36,14 +39,15 @@ def status(root):
 
 def load(root):
     """The remembered (profile_id, password), or None when absent or unreadable."""
-    value = read_json(Path(root) / FILE, {})
-    if not isinstance(value, dict):
-        return None
-    profile_id = value.get("profile_id")
-    envelope = value.get("envelope")
-    if not isinstance(profile_id, str) or not isinstance(envelope, dict):
-        return None
+    missing = object()
     try:
+        value = read_json(Path(root) / FILE, missing)
+        if value is missing:
+            return None
+        profile_id = value.get("profile_id") if isinstance(value, dict) else None
+        if not isinstance(profile_id, str) or not profile_id:
+            raise ValueError("Invalid remembered account")
+        envelope = value.get("envelope")
         password = os_secrets.unprotect(envelope).decode("utf-8")
     except Exception:
         clear(root)

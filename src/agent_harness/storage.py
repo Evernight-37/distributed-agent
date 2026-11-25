@@ -14,7 +14,7 @@ from pathlib import Path
 from agent_harness.common import lock
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 BACKUP_RETENTION = 5
 
 
@@ -143,6 +143,24 @@ CREATE INDEX IF NOT EXISTS attachment_approvals_owner
 SCHEMA_V7 = """
 DROP TABLE IF EXISTS file_transfers;
 DROP TABLE IF EXISTS file_transfer_tokens;
+"""
+
+SCHEMA_V8 = """
+CREATE TABLE IF NOT EXISTS permission_requests(
+    id TEXT PRIMARY KEY,
+    source_task_id TEXT NOT NULL UNIQUE,
+    project_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    node TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('pending','approved','denied','consumed')),
+    continuation_task_id TEXT UNIQUE,
+    claimed_job_id TEXT UNIQUE,
+    created_at REAL NOT NULL,
+    decided_at REAL
+);
+CREATE INDEX IF NOT EXISTS permission_requests_agent ON permission_requests(agent_id,state);
 """
 
 
@@ -323,6 +341,7 @@ def migrate_database(database, backup_root=None):
                 current == SCHEMA_VERSION
                 and layout_current
                 and connection.execute("SELECT 1 FROM sqlite_master WHERE name='attachment_approvals'").fetchone()
+                and connection.execute("SELECT 1 FROM sqlite_master WHERE name='permission_requests'").fetchone()
             ):
                 _integrity(connection)
                 _private(database)
@@ -440,6 +459,18 @@ def migrate_database(database, backup_root=None):
                         (7, time.time()),
                     )
                     connection.execute("PRAGMA user_version=7")
+                if (
+                    current < 8
+                    or not connection.execute("SELECT 1 FROM sqlite_master WHERE name='permission_requests'").fetchone()
+                ):
+                    for statement in SCHEMA_V8.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+                        (8, time.time()),
+                    )
+                    connection.execute("PRAGMA user_version=8")
                 connection.commit()
                 _integrity(connection)
                 connection.execute("PRAGMA journal_mode=WAL")

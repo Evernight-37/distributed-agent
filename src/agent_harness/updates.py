@@ -578,7 +578,7 @@ def helper_path(root, version):
     return Path(root) / PENDING_DIR / ("apply-" + str(version).lstrip("v") + suffix)
 
 
-def windows_helper(installer, target, pid, directory=None, log=""):
+def windows_helper(installer, target, pid, directory=None, log="NUL"):
     """A .cmd that waits for the caller, installs silently, then relaunches.
 
     ``/DIR`` pins the silent install to the directory that is already in use: the
@@ -604,11 +604,17 @@ def windows_helper(installer, target, pid, directory=None, log=""):
                 "ping -n 2 127.0.0.1 >nul",
                 "goto wait_for_exit",
                 ":run_install",
-                'echo [%date% %time%] installing {installer} >> "{log}"',
-                command,
-                'echo [%date% %time%] installer exit %errorlevel% >> "{log}"',
+                'echo [%date% %time%] installing "{installer}" >> "{log}"',
+                command + ' >> "{log}" 2>&1',
+                'set "result=%errorlevel%"',
+                'echo [%date% %time%] installer exit %result% >> "{log}"',
+                'if not "%result%"=="0" exit /b %result%',
                 'start "" "{target}"',
+                "if errorlevel 1 goto launch_failed",
                 "exit /b 0",
+                ":launch_failed",
+                'echo [%date% %time%] failed to start "{target}" >> "{log}"',
+                "exit /b 1",
                 ":give_up",
                 'echo [%date% %time%] gave up waiting for {pid} >> "{log}"',
                 "exit /b 1",
@@ -624,7 +630,7 @@ def windows_helper(installer, target, pid, directory=None, log=""):
     )
 
 
-def windows_zip_helper(archive, target, launcher, pid, prune=None, log=""):
+def windows_zip_helper(archive, target, launcher, pid, prune=None, log="NUL"):
     """Windows portable layout: unpack the zip over the directory, then relaunch.
 
     The release archive keeps everything under a single top-level directory, so
@@ -641,19 +647,22 @@ def windows_zip_helper(archive, target, launcher, pid, prune=None, log=""):
         'powershell -NoProfile -ExecutionPolicy Bypass -Command "'
         "$ErrorActionPreference='Stop'; "
         "$staging=Join-Path $env:TEMP ('ah-update-'+[guid]::NewGuid().ToString('N')); "
-        "Expand-Archive -LiteralPath '{archive}' -DestinationPath $staging -Force; "
-        "$items=@(Get-ChildItem -LiteralPath $staging); "
-        "if ($items.Count -eq 1 -and $items[0].PSIsContainer) {{ $staging=$items[0].FullName }}; "
-        "Copy-Item -Path (Join-Path $staging '*') -Destination '{target}' -Recurse -Force; "
-        'Remove-Item -LiteralPath $staging -Recurse -Force"'
+        "try {{ Expand-Archive -LiteralPath '{ps_archive}' -DestinationPath $staging -Force; "
+        "$items=@(Get-ChildItem -LiteralPath $staging); $source=$staging; "
+        "if ($items.Count -eq 1 -and $items[0].PSIsContainer) {{ $source=$items[0].FullName }}; "
+        "Get-ChildItem -LiteralPath $source -Force | ForEach-Object {{ "
+        "Copy-Item -LiteralPath $_.FullName -Destination '{ps_target}' -Recurse -Force }} }} "
+        "catch {{ [Console]::Error.WriteLine($_.ToString()); exit 1 }} "
+        "finally {{ if (Test-Path -LiteralPath $staging) {{ "
+        'Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }} }}" >> "{log}" 2>&1'
     )
     pruning = (
         'powershell -NoProfile -ExecutionPolicy Bypass -Command "'
-        "$ErrorActionPreference='SilentlyContinue'; "
-        "Get-Content -LiteralPath '{prune}' | ForEach-Object {{ "
+        "$ErrorActionPreference='Stop'; "
+        "Get-Content -LiteralPath '{ps_prune}' | ForEach-Object {{ "
         "$name=$_.Trim(); if ($name) {{ "
-        "$path=Join-Path '{target}' $name; "
-        "if (Test-Path -LiteralPath $path -PathType Leaf) {{ Remove-Item -LiteralPath $path -Force }} }} }}" + '"'
+        "$path=Join-Path '{ps_target}' $name; "
+        'if (Test-Path -LiteralPath $path -PathType Leaf) {{ Remove-Item -LiteralPath $path -Force }} }} }}" >> "{log}" 2>&1'
     )
     steps = [
         "@echo off",
@@ -670,53 +679,82 @@ def windows_zip_helper(archive, target, launcher, pid, prune=None, log=""):
         "ping -n 2 127.0.0.1 >nul",
         "goto wait_for_exit",
         ":run_update",
+        'echo [%date% %time%] unpacking "{archive}" >> "{log}"',
         extraction,
+        "if errorlevel 1 goto unpack_failed",
     ]
     if prune:
-        steps.append(pruning)
+        steps += [pruning, "if errorlevel 1 goto prune_failed"]
     steps += [
-        'echo [%date% %time%] unpacked over {target} >> "{log}"',
+        'echo [%date% %time%] unpacked over "{target}" >> "{log}"',
         'start "" "{launcher}"',
+        "if errorlevel 1 goto launch_failed",
         "exit /b 0",
+        ":unpack_failed",
+        'echo [%date% %time%] failed to unpack or copy "{archive}" >> "{log}"',
+        "exit /b 1",
+        ":launch_failed",
+        'echo [%date% %time%] failed to start "{launcher}" >> "{log}"',
+        "exit /b 1",
         ":give_up",
         'echo [%date% %time%] gave up waiting for {pid} >> "{log}"',
         "exit /b 1",
     ]
+    if prune:
+        steps += [
+            ":prune_failed",
+            'echo [%date% %time%] failed to remove old program files >> "{log}"',
+            "exit /b 1",
+        ]
     return (newline.join(steps) + newline).format(
         pid=int(pid),
         archive=archive,
         target=target,
+        ps_archive=archive.replace("'", "''"),
+        ps_target=target.replace("'", "''"),
+        ps_prune=(prune or "").replace("'", "''"),
         launcher=launcher,
-        prune=prune or "",
         log=log,
     )
 
 
-def unix_helper(archive, target, pid):
+def unix_helper(archive, target, pid, log="/dev/null"):
     """A sh script that waits for the caller, unpacks the zip, then reopens."""
+    from shlex import quote
+
     return (
         chr(10).join(
             [
                 "#!/bin/sh",
+                "target={target}",
+                "archive={archive}",
+                "log={log}",
+                'exec >>"$log" 2>&1',
+                'fail() {{ printf "%s\\n" "$1"; exit 1; }}',
                 "tries=0",
                 "while kill -0 {pid} 2>/dev/null; do",
                 "  tries=$((tries + 1))",
-                '  [ "$tries" -ge ' + str(WAIT_LIMIT) + " ] && exit 1",
+                '  [ "$tries" -ge ' + str(WAIT_LIMIT) + ' ] && fail "gave up waiting for {pid}"',
                 "  sleep 1",
                 "done",
-                "staging=$(mktemp -d) || exit 1",
-                'if ! ditto -x -k "{archive}" "$staging" 2>/dev/null; then',
-                '  unzip -q "{archive}" -d "$staging" || exit 1',
+                'staging=$(mktemp -d "$(dirname "$target")/.foolship-update.XXXXXX") || fail "cannot create staging"',
+                'mkdir "$staging/unpacked" || fail "cannot create extraction directory"',
+                'if ! ditto -x -k "$archive" "$staging/unpacked"; then',
+                '  unzip -qo "$archive" -d "$staging/unpacked" || fail "cannot extract update"',
                 "fi",
-                'bundle=$(find "$staging" -maxdepth 1 -name "*.app" | head -n 1)',
-                'if [ -z "$bundle" ]; then rm -rf "$staging"; exit 1; fi',
-                'rm -rf "{target}" && cp -R "$bundle" "{target}"',
-                'open "{target}"',
+                'bundle=$(find "$staging/unpacked" -maxdepth 1 -name "*.app" | head -n 1)',
+                '[ -n "$bundle" ] || fail "the archive does not contain an application"',
+                'mv "$target" "$staging/previous.app" || fail "cannot move installed application"',
+                'if ! mv "$bundle" "$target"; then',
+                '  mv "$staging/previous.app" "$target" || fail "could not restore previous app in $staging"',
+                '  fail "could not install the new application"',
+                "fi",
+                'open "$target" || fail "could not start the application; previous app is in $staging"',
                 'rm -rf "$staging"',
             ]
         )
         + chr(10)
-    ).format(pid=int(pid), archive=archive, target=target)
+    ).format(pid=int(pid), archive=quote(str(archive)), target=quote(str(target)), log=quote(str(log)))
 
 
 def _prune_helpers(root, keep=None):
@@ -772,7 +810,7 @@ def write_helper(root, version, installer, target, pid, layout=None, launcher=No
             str(log),
         )
     else:
-        text = unix_helper(str(installer), str(target), pid)
+        text = unix_helper(str(installer), str(target), pid, str(log))
     path.write_text(text, encoding="utf-8", newline="")
     if os.name != "nt":
         path.chmod(0o700)
@@ -787,6 +825,49 @@ def apply_state(root):
     return record
 
 
+def _archive_build(archive, version):
+    """Obtain the identity from the verified archive for builds that declare it."""
+    import zipfile
+    from pathlib import PurePosixPath
+    from agent_harness.service_install import MANIFEST_MAX_BYTES
+
+    if Path(archive).suffix.lower() != ".zip":
+        return None
+    try:
+        with zipfile.ZipFile(archive) as package:
+            candidates = [
+                item
+                for item in package.infolist()
+                if (parts := PurePosixPath(item.filename).parts)
+                and parts[-1] == "app-manifest.json"
+                and (len(parts) <= 2 or parts[-4:-1] == ("Contents", "Resources", "service-bundle"))
+            ]
+            if not candidates:
+                return None
+            if len(candidates) != 1 or candidates[0].file_size > MANIFEST_MAX_BYTES:
+                raise ValueError("更新包构建清单无效")
+            manifest = json.loads(package.read(candidates[0]))
+    except zipfile.BadZipFile:
+        return None
+    if not isinstance(manifest, dict):
+        raise ValueError("更新包构建清单无效")
+    build = manifest.get("service_build")
+    if build is None:
+        return None
+    if not isinstance(build, str) or not re.fullmatch("[0-9a-f]{64}", build) or manifest.get("version") != version:
+        raise ValueError("更新包的版本或构建摘要无效")
+    return build
+
+
+def _running_build():
+    import sys
+    from agent_harness.service_install import installed_bundle
+
+    if getattr(sys, "frozen", False):
+        return (installed_bundle() / ".complete").read_text(encoding="ascii")
+    return None
+
+
 def mark_running(root):
     """Confirm the applied version is the one now running, then forget it.
 
@@ -798,12 +879,24 @@ def mark_running(root):
     record = apply_state(root)
     if not record:
         return None
-    if str(record.get("to_version")).lstrip("v") == str(application_version()).lstrip("v"):
+    wanted, running = record["to_version"], application_version()
+    version_matches = str(wanted).lstrip("v") == str(running).lstrip("v")
+    expected_build = record.get("to_build")
+    running_build = None
+    if version_matches and expected_build:
+        try:
+            running_build = _running_build()
+        except (OSError, ValueError, RuntimeError):
+            pass
+    if version_matches and (not expected_build or expected_build == running_build):
         apply_marker_path(root).unlink(missing_ok=True)
         # The installed artifact is no longer an offer: it is this version.
         _forget_staged(root)
         return {"confirmed": True, "version": record.get("to_version")}
-    return {"confirmed": False, "expected": record.get("to_version"), "running": application_version()}
+    result = {"confirmed": False, "expected": wanted, "running": running}
+    if version_matches and expected_build:
+        result.update(expected_build=expected_build, running_build=running_build)
+    return result
 
 
 def helper_log_tail(root, lines=3):
@@ -877,6 +970,7 @@ def apply(root, installer=None, version=None, target=None, pid=None, force=False
         if active and not force:
             raise ValueError("正在进行的任务会中断：" + "、".join(active[:3]))
     to_version = str(version or record.get("version") or "").lstrip("v")
+    to_build = _archive_build(installer_path, to_version)
     snapshot = snapshot_before_update(root, to_version)
     target, launcher = apply_target(target)
     layout = install_layout(target)
@@ -898,6 +992,7 @@ def apply(root, installer=None, version=None, target=None, pid=None, force=False
         {
             "from_version": application_version(),
             "to_version": to_version,
+            **({"to_build": to_build} if to_build else {}),
             "installer": str(installer_path),
             "helper": str(script),
             "target": str(target),

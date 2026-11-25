@@ -197,7 +197,23 @@ class PullWorkerTests(unittest.TestCase):
         configured = self.starts("configure")[0]
         self.assertEqual((configured["model"], configured["effort"]), ("owner-model", "high"))
         self.assertTrue(read_json(self.root / "projects" / "local" / "project.json")["local_control"])
+        self.assertEqual(json.loads(self.starts()[0]["prompt"])["allowed_files"], "No edits")
         self.assertEqual(self.reports[-1]["state"], "needs_review")
+
+    def test_implementation_handoff_supplies_the_canonical_allowed_files(self):
+        self.connector.save_binding(dict(self.binding, stages=["implement"]))
+        request = {
+            "prompt": json.dumps({"identity": {"id": "agent1"}, "project": {"id": "p1"}}),
+            "stage": "implement",
+        }
+        scope = "README.md\nsrc/"
+        for name, fields, expected in (("specified", {"scope": scope}, scope), ("missing", {}, "")):
+            with self.subTest(scope=name):
+                job = self.job(name, request={**request, **fields})
+                receipt = self.connector.advance(self.connector.accept(job))
+                self.assertEqual(receipt["phase"], "running")
+                contract = json.loads(self.starts()[-1]["prompt"])
+                self.assertEqual(contract["allowed_files"], expected)
 
     def test_remote_configuration_and_identity_are_rejected(self):
         for index, request in enumerate(
@@ -347,6 +363,9 @@ class PullWorkerTests(unittest.TestCase):
         self.assertEqual(result["phase"], "running")
         self.assertEqual(result["result"]["status"], "unknown")
         self.assertEqual(calls, ["fetch"])
+        self.connector.cycle()
+        self.assertEqual(self.reports[-1]["state"], "unknown")
+        self.assertFalse(self.starts())
 
     def test_unknown_no_job_requires_explicit_owner_confirmation(self):
         receipt = self.connector.accept(self.job("missing"))
@@ -361,6 +380,67 @@ class PullWorkerTests(unittest.TestCase):
             self.connector.resolve("missing")
         self.assertEqual(self.connector.resolve("missing", True)["status"], "cancelled")
         self.assertFalse(self.starts())
+
+    def test_task_confirmation_preserves_logs_and_blocks_an_active_local_record(self):
+        receipt = self.connector.accept(self.job("missing"))
+        receipt.update(phase="running", result={"status": "unknown"})
+        write_json(self.connector.receipt_path("missing"), receipt)
+        log = self.root / "jobs" / receipt["local_id"] / "stderr.log"
+        log.parent.mkdir(parents=True)
+        log.write_text("preserve this evidence", encoding="utf-8")
+        active = self.root / "projects" / "local" / "active.json"
+        write_json(active, {"job": receipt["local_id"]})
+
+        def missing(_):
+            raise ValueError("Unknown job")
+
+        self.connector.executor = missing
+        with self.assertRaisesRegex(ValueError, "active record"):
+            self.connector.resolve("missing", True, kind="task")
+        with self.assertRaisesRegex(ValueError, "expected job type"):
+            self.connector.resolve("missing", True, kind="execution")
+        write_json(active, None)
+        result = self.connector.resolve("missing", True, kind="task")
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(self.connector.resolve("missing", True, kind="task"), result)
+        self.assertEqual(log.read_text(encoding="utf-8"), "preserve this evidence")
+        self.connector.cycle(wait_seconds=0)
+        self.assertEqual(self.reports[-1]["state"], "cancelled")
+        self.assertFalse(self.starts())
+
+    def test_confirmation_cannot_turn_an_observer_error_into_no_job(self):
+        receipt = self.connector.accept(self.job("unreachable"))
+        receipt.update(phase="running", result={"status": "unknown"})
+        write_json(self.connector.receipt_path("unreachable"), receipt)
+
+        def unreachable(_):
+            raise OSError("temporary connection failure")
+
+        self.connector.executor = unreachable
+        with self.assertRaisesRegex(ValueError, "verify whether this task exists"):
+            self.connector.resolve("unreachable", True, kind="task")
+        self.assertEqual(read_json(self.connector.receipt_path("unreachable"))["phase"], "running")
+
+    def test_elevated_assignment_requires_a_one_time_approval_marker(self):
+        approval = "permission-" + "a" * 32
+        for job_id, continuation in (
+            ("legacy", None),
+            ("mismatch", {"id": "permission-" + "b" * 32}),
+            ("approved", {"id": approval, "source_task_id": "task-original"}),
+        ):
+            with self.subTest(job=job_id):
+                context = {"identity": {"id": "agent1"}, "project": {"id": "p1"}, "grants": ["full_access"]}
+                if continuation is not None:
+                    context.update(permission_request_id=approval, approved_continuation=continuation)
+                job = self.job(job_id, request={"prompt": json.dumps(context), "stage": "discuss"})
+                receipt = self.connector.advance(self.connector.accept(job))
+                if job_id == "approved":
+                    self.assertEqual(receipt["phase"], "running")
+                    self.assertEqual(len(self.starts()), 1)
+                else:
+                    self.assertEqual(receipt["phase"], "terminal")
+                    self.assertEqual(receipt["result"]["status"], "failed")
+                    self.assertFalse(self.starts())
 
     def test_non_loopback_broker_requires_https(self):
         for url in (

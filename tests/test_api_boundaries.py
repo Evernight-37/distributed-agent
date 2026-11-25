@@ -1,5 +1,9 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from agent_harness.api_contracts import (
     API_CONTRACT_VERSION,
@@ -138,6 +142,58 @@ class BoundaryContractTests(unittest.TestCase):
                 self.assertNotIn(action, owner, f"{action} is owned by two Desktop groups")
                 owner[action] = group.__name__
         self.assertEqual(set(owner), set(DESKTOP_CONTROL.actions))
+
+    def test_task_recovery_checks_fresh_hub_status_and_local_receiver_pairing(self):
+        server = "https://project.example"
+        identity = {"account_id": "owner"}
+        recovery = {"node": "local-node", "job_id": "pull-job"}
+        task = {"id": "task", "project_id": "project", "state": "unknown", "local_recovery": recovery}
+        data = {"project": "project", "task_id": "task", "confirm_no_job": True}
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = SimpleNamespace(config_path=Path(directory) / "pull-config.json", _control=Mock())
+            bridge = SimpleNamespace(
+                identity=identity,
+                profile={"node": "local-node", "server": "https://home.example"},
+                project_servers={"project": server},
+                _rpc=Mock(return_value=task),
+                _runtime=Mock(return_value=runtime),
+            )
+            actions = DesktopProjectActions(bridge)
+            with self.assertRaises(ValueError):
+                actions.invoke("task-resolve-local", {**data, "confirm_no_job": 1})
+            bridge._rpc.assert_not_called()
+            for change in (
+                {"id": "other-task"},
+                {"project_id": "other-project"},
+                {"state": "cancelled"},
+                {"local_recovery": {**recovery, "node": "remote-node"}},
+                {"local_recovery": None},
+            ):
+                with self.subTest(task=change):
+                    bridge._rpc.return_value = {**task, **change}
+                    with self.assertRaises(PermissionError):
+                        actions.invoke("task-resolve-local", data)
+            bridge._runtime.assert_not_called()
+
+            bridge._rpc.return_value = task
+            config = {"node": "local-node", "owner_account_id": "owner", "server": server}
+            for change in (
+                {"node": "remote-node"},
+                {"owner_account_id": "other-account"},
+                {"server": "https://other.example"},
+            ):
+                with self.subTest(config=change):
+                    runtime.config_path.write_text(json.dumps({**config, **change}), encoding="utf-8")
+                    with self.assertRaises(PermissionError):
+                        actions.invoke("task-resolve-local", data)
+            runtime._control.assert_not_called()
+
+            runtime.config_path.write_text(json.dumps(config), encoding="utf-8")
+            self.assertIs(actions.invoke("task-resolve-local", data), runtime._control.return_value)
+            bridge._rpc.assert_called_with("task-status", {"task": "task"}, server=server)
+            runtime._control.assert_called_once_with(
+                "action", {"action": "resolve-task", "job_id": "pull-job", "confirm_no_job": True}
+            )
 
     def test_node_execution_actions_use_dedicated_handler(self):
         calls = []

@@ -306,6 +306,9 @@ class DesktopOwnerActions:
             "employee-configure",
             "employee-dispatch",
             "employee-withdraw",
+            "project-agent-create",
+            "project-agent-configure",
+            "project-agent-delete",
             "workspace-configure",
             "attachment-save",
         }
@@ -313,6 +316,29 @@ class DesktopOwnerActions:
 
     def __init__(self, bridge):
         self.bridge = bridge
+
+    def _agent_settings(self, data, *, local_model):
+        settings = {key: data[key] for key in ("model", "effort", "enabled", "stages", "timeout")}
+        settings["strict_worktree"] = data.get("strict_worktree", False)
+        settings["attachment_policy"] = data.get("attachment_policy", "ask")
+        network = data.get("network") or {"mode": "machine"}
+        if not isinstance(network, dict) or network.get("mode") not in {"machine", "direct", "custom"}:
+            raise ValueError("无效的网络设置")
+        settings["network"] = {"mode": network["mode"]}
+        if network["mode"] == "custom":
+            port = network.get("port")
+            if type(port) is not int or not 1 <= port <= 65535:
+                raise ValueError("代理端口必须在 1 到 65535 之间")
+            settings["network"]["port"] = port
+        settings["model"] = settings["model"].strip()
+        if not settings["model"]:
+            raise ValueError("请指定模型")
+        if local_model and settings["enabled"]:
+            from agent_harness import executors
+
+            if executors.model_kind(self.bridge.root, settings["model"]) is None:
+                raise ValueError("本机模型表里没有 " + settings["model"] + "；请先在本机可用模型设置中添加该模型")
+        return settings
 
     def invoke(self, action, data):
         bridge = self.bridge
@@ -345,6 +371,27 @@ class DesktopOwnerActions:
                 {"id": data.get("id"), "name": data.get("name")},
                 server=server,
             )
+        if action in {"project-agent-create", "project-agent-configure", "project-agent-delete"}:
+            project = data["project"]
+            server = bridge.project_servers.get(project, bridge.profile["server"])
+            payload = {"project_id": project}
+            if action == "project-agent-create":
+                node = data["node"]
+                if node == bridge.profile["node"] and server not in bridge._attached_services():
+                    raise ValueError("请先把本机接收端接入该项目的协作服务")
+                payload["id"] = "project-agent-" + secrets.token_hex(16)
+            else:
+                view = bridge._rpc("project", {"project": project}, server=server)
+                member = next((agent for agent in view.get("members", []) if agent["id"] == data["agent_id"]), None)
+                if not member or member["owner_id"] != bridge.identity["account_id"]:
+                    raise PermissionError("只能配置或移除你在此项目里的 Agent")
+                node = member["node"]
+                payload.update(agent_id=member["id"], backend_project=member["backend_project"])
+            if action != "project-agent-delete":
+                payload.update(
+                    name=data["name"], settings=self._agent_settings(data, local_model=node == bridge.profile["node"])
+                )
+            return bridge._owner(action, node, payload, server)
         if action == "employee-create":
             server = data.get("server") or bridge.profile["server"]
             if server not in bridge._services():
@@ -365,30 +412,7 @@ class DesktopOwnerActions:
             return bridge._owner("delete", employee["node"], {"id": employee["id"]}, employee["server"])
         if action == "employee-configure":
             employee = bridge._employee(data["id"])
-            settings = {k: data[k] for k in ("model", "effort", "enabled", "stages", "timeout")}
-            settings["strict_worktree"] = bool(data.get("strict_worktree", False))
-            settings["attachment_policy"] = data.get("attachment_policy", "ask")
-            # Where the proxy lives belongs to the machine; whether this agent uses
-            # it belongs here. The port is only carried for an explicit override.
-            network = data.get("network") or {"mode": "machine"}
-            if not isinstance(network, dict) or network.get("mode") not in {"machine", "direct", "custom"}:
-                raise ValueError("无效的网络设置")
-            if network.get("mode") == "custom":
-                port = network.get("port")
-                if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-                    raise ValueError("代理端口必须在 1 到 65535 之间")
-                settings["network"] = {"mode": "custom", "port": port}
-            else:
-                settings["network"] = {"mode": network["mode"]}
-            # The model decides which local CLI runs the turn, so it has to be one
-            # this machine's table lists; otherwise dispatch would fail later with
-            # a far less useful error.
-            from agent_harness import executors
-
-            model = settings.get("model")
-            if isinstance(model, str) and model.strip():
-                if executors.model_kind(bridge.root, model.strip()) is None:
-                    raise ValueError("本机模型表里没有 " + model.strip() + "；请先在本机可用模型设置中添加该模型")
+            settings = self._agent_settings(data, local_model=True)
             return bridge._owner(
                 "configure",
                 employee["node"],
@@ -636,6 +660,10 @@ class DesktopProjectActions:
             "project",
             "invite",
             "message",
+            "task-cancel",
+            "task-resolve-local",
+            "agent-permission",
+            "permission-decide",
             "set-admin",
             "conversation-read",
             "memory-note-add",
@@ -761,10 +789,46 @@ class DesktopProjectActions:
                 bridge._sync_mcp_delegate([server])
             bridge.project_servers[result["project"]] = server
             return dict(result, server=server)
+        if action == "task-resolve-local":
+            if data.get("confirm_no_job") is not True:
+                raise ValueError("请先确认本机原任务的进程已停止")
+            project = data["project"]
+            server = bridge.project_servers.get(project, bridge.profile["server"])
+            task = bridge._rpc("task-status", {"task": data["task_id"]}, server=server)
+            recovery = task.get("local_recovery") or {}
+            node = bridge.profile["node"]
+            job_id = recovery.get("job_id") if isinstance(recovery, dict) else None
+            if (
+                task.get("project_id") != project
+                or task.get("id") != data["task_id"]
+                or task.get("state") != "unknown"
+                or not isinstance(job_id, str)
+                or not 1 <= len(job_id) <= 160
+                or recovery.get("node") != node
+            ):
+                raise PermissionError("只能在原设备上核对由你负责且状态未知的任务")
+            runtime = bridge._runtime(server)
+            config = read_json(runtime.config_path, {})
+            server_urls = {server}
+            hosted = bridge.profile.get("hosted_service_url")
+            loopback = "http://127.0.0.1:8765"
+            if hosted and server in {hosted, loopback}:
+                server_urls.update((hosted, loopback))
+            if (
+                not isinstance(config, dict)
+                or config.get("node") != node
+                or config.get("owner_account_id") != bridge.identity["account_id"]
+                or config.get("server") not in server_urls
+            ):
+                raise PermissionError("本机接收服务与该任务的协作服务或账户不匹配")
+            return runtime._control("action", {"action": "resolve-task", "job_id": job_id, "confirm_no_job": True})
         if action in {
             "project",
             "invite",
             "message",
+            "task-cancel",
+            "agent-permission",
+            "permission-decide",
             "set-admin",
             "conversation-read",
             "memory-note-add",

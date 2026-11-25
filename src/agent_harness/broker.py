@@ -71,6 +71,31 @@ class PullBackend:
             )
         ]
 
+    def _elevation(self, db, job_id, agent_id):
+        return db.execute(
+            "SELECT p.id,p.state,p.claimed_job_id,p.node,a.enabled,a.configuring,t.state AS task_state "
+            "FROM permission_requests p JOIN tasks t ON t.id=p.continuation_task_id "
+            "JOIN agents a ON a.id=p.agent_id JOIN nodes n ON n.name=a.node "
+            "JOIN project_users m ON m.project_id=p.project_id AND m.user_id=p.owner_id "
+            "WHERE t.job=? AND t.agent_id=? AND p.agent_id=t.agent_id AND p.project_id=t.project_id "
+            "AND a.project_id=p.project_id AND a.node=p.node AND a.owner_id=p.owner_id AND n.owner_id=p.owner_id",
+            (job_id, agent_id),
+        ).fetchone()
+
+    @staticmethod
+    def _can_claim_elevation(approval):
+        return bool(
+            approval
+            and approval["state"] == "approved"
+            and approval["task_state"] in {"starting", "running"}
+            and approval["enabled"]
+            and not approval["configuring"]
+        )
+
+    @staticmethod
+    def _claimed_elevation(approval, job_id):
+        return bool(approval and approval["state"] == "consumed" and approval["claimed_job_id"] == job_id)
+
     def _poll_snapshot(self, db, device, claim=True):
         rows = db.execute(
             "SELECT * FROM pull_jobs WHERE node=? AND state NOT IN "
@@ -79,8 +104,53 @@ class PullBackend:
             (device["node"],),
         ).fetchall()
         jobs = []
+        cancellations = [row["id"] for row in rows if row["cancel_requested"]]
         for row in rows:
+            request = json.loads(row["request"])
+            context = json.loads(request["prompt"]) if row["kind"] == "task" else {}
+            elevated = "full_access" in (context.get("grants") or [])
+            approval = self._elevation(db, row["id"], row["agent_id"]) if elevated else None
+            if approval and (
+                approval["node"] != device["node"] or approval["id"] != context.get("permission_request_id")
+            ):
+                approval = None
+            if row["state"] != "queued" and elevated and not self._claimed_elevation(approval, row["id"]):
+                # An old Hub may have delivered a standing grant already. Never
+                # deliver it again, but keep the durable job until the owner or
+                # receiver can confirm what happened to any local receipt.
+                if not row["cancel_requested"]:
+                    cancellations.append(row["id"])
+                    if claim:
+                        db.execute("UPDATE pull_jobs SET cancel_requested=1,state='unknown' WHERE id=?", (row["id"],))
+                continue
             if claim and row["state"] == "queued":
+                cancelled = row["cancel_requested"] or (
+                    row["kind"] == "task"
+                    and db.execute("SELECT 1 FROM tasks WHERE job=? AND cancel_requested=1", (row["id"],)).fetchone()
+                )
+                revoked = elevated and not self._can_claim_elevation(approval)
+                if cancelled or revoked:
+                    result = {
+                        "error": "Cancelled before the device claimed this task"
+                        if cancelled
+                        else "No active one-time permission approval for this task"
+                    }
+                    db.execute(
+                        "UPDATE pull_jobs SET state='cancelled',result=? WHERE id=? AND state='queued'",
+                        (json.dumps(result), row["id"]),
+                    )
+                    continue
+                if elevated:
+                    consumed = db.execute(
+                        "UPDATE permission_requests SET state='consumed',claimed_job_id=? "
+                        "WHERE id=? AND state='approved' AND claimed_job_id IS NULL",
+                        (row["id"], approval["id"]),
+                    )
+                    if consumed.rowcount != 1:
+                        raise PermissionError("一次性任务授权已被领取")
+                    self.store.emit_account_event(
+                        db, [device["owner_id"]], "permission", self._job_binding(db, row)["project_id"]
+                    )
                 db.execute(
                     "UPDATE pull_jobs SET state='claimed' WHERE id=? AND state='queued'",
                     (row["id"],),
@@ -93,7 +163,7 @@ class PullBackend:
                     "kind": row["kind"],
                     "agent_id": row["agent_id"],
                     **self._job_binding(db, row),
-                    "request": json.loads(row["request"]),
+                    "request": request,
                 }
             )
         from agent_harness.owner_backend import OwnerBackend
@@ -123,7 +193,7 @@ class PullBackend:
             "node": device["node"],
             "projects": self._projects(db, device),
             "jobs": jobs,
-            "cancellations": [row["id"] for row in rows if row["cancel_requested"]],
+            "cancellations": cancellations,
             "attachment_decisions": decisions,
             "transfers": Transfers(self.store).visible(db, device["node"]),
         }
@@ -571,6 +641,19 @@ class PullBackend:
                 )
             )
         db.execute("UPDATE agents SET enabled=0 WHERE node=?", (device["node"],))
+        pending_project_agents = set()
+        removed_project_agents = set()
+        for change in db.execute(
+            "SELECT state,json_extract(envelope,'$.body.action') AS action,"
+            "json_extract(envelope,'$.body.data.agent_id') AS agent_id FROM owner_commands "
+            "WHERE node=? AND owner_id=? AND state IN ('queued','claimed','applied') "
+            "AND json_extract(envelope,'$.body.action') IN ('project-agent-configure','project-agent-delete')",
+            (device["node"], device["owner_id"]),
+        ):
+            if change["state"] != "applied":
+                pending_project_agents.add(change["agent_id"])
+            elif change["action"] == "project-agent-delete":
+                removed_project_agents.add(change["agent_id"])
         for (
             b,
             old,
@@ -584,11 +667,11 @@ class PullBackend:
             templates,
         ) in prepared:
             agent = old["id"] if old else uid("agent")
-            enabled = int(bool(b.get("enabled", False)))
+            enabled = int(agent not in removed_project_agents and bool(b.get("enabled", False)))
             if old:
                 db.execute(
-                    "UPDATE agents SET name=?,model=?,effort=?,timeout=?,enabled=?,configuring=0 WHERE id=?",
-                    (name, model, effort, timeout, enabled, agent),
+                    "UPDATE agents SET name=?,model=?,effort=?,timeout=?,enabled=?,configuring=? WHERE id=?",
+                    (name, model, effort, timeout, enabled, int(agent in pending_project_agents), agent),
                 )
             else:
                 db.execute(
@@ -657,6 +740,9 @@ class PullBackend:
         session_channel=None,
     ):
         context = json.loads(prompt)
+        grants = context.get("grants", [])
+        if not isinstance(grants, list) or any(grant != "full_access" for grant in grants):
+            raise ValueError("无效的一次性任务授权")
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             agent = db.execute(
@@ -669,6 +755,14 @@ class PullBackend:
             if not binding or stage not in json.loads(binding["stages"]):
                 raise PermissionError("本机所有者未授权这个任务阶段")
             job = job_id or uid("job")
+            if "full_access" in grants:
+                approval = self._elevation(db, job, agent["id"])
+                if (
+                    not approval
+                    or approval["id"] != context.get("permission_request_id")
+                    or not (self._can_claim_elevation(approval) or self._claimed_elevation(approval, job))
+                ):
+                    raise PermissionError("此任务没有机器所有者批准的一次性授权")
             self._enqueue(
                 db,
                 job,
@@ -735,10 +829,17 @@ class PullBackend:
         if action in {"cancel", "execution_cancel"}:
             job = data.get("job", data.get("execution"))
             with self.store.connect() as db:
-                row = db.execute("SELECT node FROM pull_jobs WHERE id=?", (job,)).fetchone()
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT node,state FROM pull_jobs WHERE id=?", (job,)).fetchone()
                 if not row or self.node and row["node"] != self.node:
                     raise PermissionError("未知任务")
-                db.execute("UPDATE pull_jobs SET cancel_requested=1 WHERE id=?", (job,))
+                if row["state"] == "queued":
+                    db.execute(
+                        "UPDATE pull_jobs SET state='cancelled',cancel_requested=1,result=? WHERE id=?",
+                        (json.dumps({"error": "Cancelled before the device claimed this task"}), job),
+                    )
+                elif row["state"] not in TERMINAL:
+                    db.execute("UPDATE pull_jobs SET cancel_requested=1 WHERE id=?", (job,))
             return self.status(job)
         if action == "execution_status":
             return self.status(data["execution"])

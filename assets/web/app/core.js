@@ -21,7 +21,6 @@ const S = (FoolshipDesktop.state = {
   project: null,
   profiles: [],
   server: "",
-  filter: "all",
   drafts: new Map(),
   streamTexts: new Map(),
   authMode: "login",
@@ -380,9 +379,6 @@ function serviceName(server) {
     return server;
   }
 }
-function employeeServer(e) {
-  return e.server || S.server;
-}
 function deviceName(node, server) {
   const d = S.dash?.devices.find(
     (d) =>
@@ -405,6 +401,11 @@ function authHeader(title, subtitle) {
     el("h1", "", title),
     el("p", "muted", subtitle),
   );
+  if (S.autologinFailed && ["home", "login"].includes(S.authMode)) {
+    const notice = el("p", "error", "自动登录未成功，请手动解锁本机账户。");
+    notice.setAttribute("role", "status");
+    root.append(notice);
+  }
   return root;
 }
 function renderAuth(mode = "home") {
@@ -640,6 +641,7 @@ async function enter() {
   const epoch = ++S.epoch;
   const dash = await api("dashboard");
   if (epoch !== S.epoch) return;
+  S.autologinFailed = false;
   S.dash = dash;
   S.server = dash.primary_server || S.server;
   $("login").classList.add("hidden");

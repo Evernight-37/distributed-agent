@@ -36,6 +36,7 @@ class FoolshipMcpBackend:
         )
         self.network_path = network_path
         self.project_servers = {}
+        self.project_names = {}
         self.last_dashboard = 0.0
         self.dashboard_cache = None
 
@@ -127,10 +128,12 @@ class FoolshipMcpBackend:
     def _services(self):
         services = list(dict.fromkeys(self.grant["servers"]))
         primary = services[0]
+        discovery_failed = False
         try:
             linked = self._rpc(primary, "service-links", timeout=5).get("servers", [])
         except (OSError, RuntimeError, PermissionError, ValueError):
             linked = []
+            discovery_failed = True
         for server in linked:
             try:
                 validate_server(server)
@@ -138,7 +141,7 @@ class FoolshipMcpBackend:
                 continue
             if server not in services:
                 services.append(server)
-        return services
+        return services, discovery_failed
 
     def _dashboards(self, force=False):
         if not force and self.dashboard_cache is not None and time.monotonic() - self.last_dashboard < 3:
@@ -148,7 +151,8 @@ class FoolshipMcpBackend:
         projects = {}
         names = {}
         service_ids = set()
-        for server in self._services():
+        services, discovery_failed = self._services()
+        for server in services:
             try:
                 data = self._rpc(server, "dashboard", timeout=6)
             except (OSError, RuntimeError, PermissionError, ValueError) as exc:
@@ -162,28 +166,38 @@ class FoolshipMcpBackend:
             available.append({"server": server, "data": data})
             for project in data.get("projects", []):
                 projects[project["id"]] = server
-                names[project.get("name") or project["id"]] = project["id"]
+                name = project.get("name")
+                if name:
+                    names.setdefault(name, set()).add(project["id"])
         self.project_servers = projects
         self.project_names = names
-        self.dashboard_cache = {"available": available, "unavailable": unavailable}
+        self.dashboard_cache = {
+            "available": available,
+            "unavailable": unavailable,
+            "discovery_failed": discovery_failed,
+        }
         self.last_dashboard = time.monotonic()
         return self.dashboard_cache
 
     def _resolve(self, project):
         """A project id, or the human-typed name mapped onto one."""
-        return self.project_names.get(project, project)
+        if project in self.project_servers:
+            return project
+        matches = self.project_names.get(project, ())
+        if len(matches) > 1:
+            raise ValueError("有多个同名项目，请使用项目编号")
+        return next(iter(matches), project)
 
-    def _project_server(self, project):
-        self._dashboards()
-        project = self._resolve(project)
-        server = self.project_servers.get(project)
-        if not server:
-            self._dashboards(force=True)
-            project = self._resolve(project)
-            server = self.project_servers.get(project)
-        if not server:
-            raise ValueError("当前账户看不到这个项目，或其协作服务暂时离线")
-        return server
+    def _project_route(self, project):
+        for force in (False, True):
+            dashboard = self._dashboards(force=force)
+            project_id = self._resolve(project)
+            server = self.project_servers.get(project_id)
+            if server:
+                return project_id, server
+        if dashboard["unavailable"] or dashboard["discovery_failed"]:
+            raise RuntimeError("有协作服务暂时无法查询，无法确认此项目是否可见")
+        raise ValueError("当前账户看不到这个项目")
 
     def tool_specs(self):
         obj = {"type": "object", "additionalProperties": False}
@@ -276,6 +290,18 @@ class FoolshipMcpBackend:
                     required=["project", "task"],
                 ),
             },
+            {
+                "name": "harness_task_cancel",
+                "description": "请求取消此 MCP 委托身份自己创建的任务。已经交给设备的任务须等待接收端确认。",
+                "inputSchema": dict(
+                    obj,
+                    properties={
+                        "project": {"type": "string"},
+                        "task": {"type": "string"},
+                    },
+                    required=["project", "task"],
+                ),
+            },
         ]
 
     def call(self, name, arguments):
@@ -310,8 +336,8 @@ class FoolshipMcpBackend:
                     )
             return {"projects": projects, "unavailable_services": data["unavailable"]}
         if name == "harness_project_read":
-            project = arguments["project"]
-            result = self._rpc(self._project_server(project), "project", {"project": project})
+            project, server = self._project_route(arguments["project"])
+            result = self._rpc(server, "project", {"project": project})
             messages = result.get("messages", [])
             conversation = arguments.get("conversation_id")
             if conversation:
@@ -324,14 +350,12 @@ class FoolshipMcpBackend:
             if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
                 raise ValueError("limit 必须是 1 到 200")
             result["messages"] = messages[-limit:]
-            result["server"] = self.project_servers[project]
+            result["server"] = server
             return result
         if name == "harness_message_send":
-            project = arguments["project"]
             payload = {
                 key: arguments[key]
                 for key in (
-                    "project",
                     "body",
                     "conversation_id",
                     "recipient_id",
@@ -346,23 +370,24 @@ class FoolshipMcpBackend:
                 raise ValueError("client_message_id 必须是 UUID") from None
             payload["client_message_id"] = message_id
             payload["client"] = self.client
-            result = self._rpc(self._project_server(project), "message", payload)
+            project, server = self._project_route(arguments["project"])
+            payload["project"] = project
+            result = self._rpc(server, "message", payload)
             return {"project": project, "client_message_id": message_id, **result}
         if name == "harness_task_assign":
-            project = arguments["project"]
-            payload = dict(arguments)
+            project, server = self._project_route(arguments["project"])
+            payload = dict(arguments, project=project)
             payload.setdefault("stage", "discuss")
             payload.setdefault("allowed_files", "只讨论，不修改文件")
             payload["client"] = self.client
-            result = self._rpc(self._project_server(project), "task", payload)
+            result = self._rpc(server, "task", payload)
             return {"project": project, **result}
         if name == "harness_task_get":
-            project = arguments["project"]
-            return self._rpc(
-                self._project_server(project),
-                "task-status",
-                {"task": arguments["task"]},
-            )
+            _, server = self._project_route(arguments["project"])
+            return self._rpc(server, "task-status", {"task": arguments["task"]})
+        if name == "harness_task_cancel":
+            project, server = self._project_route(arguments["project"])
+            return self._rpc(server, "task-cancel", {"project": project, "task_id": arguments["task"]})
         raise ValueError("Unknown Foolship tool")
 
 

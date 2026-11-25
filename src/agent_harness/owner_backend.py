@@ -11,6 +11,21 @@ def device_node(public):
     return "device-" + hashlib.sha256(public.encode()).hexdigest()[:24]
 
 
+def execution_project(identity, project):
+    return "e-" + hashlib.sha256((identity + "\0" + project).encode()).hexdigest()[:56]
+
+
+PROJECT_AGENT_ACTIONS = {"project-agent-create", "project-agent-configure", "project-agent-delete"}
+PROJECT_AGENT_SETTINGS = {
+    "model",
+    "effort",
+    "timeout",
+    "stages",
+    "enabled",
+    "strict_worktree",
+    "attachment_policy",
+    "network",
+}
 ACTIONS = {
     "create",
     "configure",
@@ -20,8 +35,30 @@ ACTIONS = {
     "delete",
     "workspace-default",
     "transfer-receive-directory",
-}
+} | PROJECT_AGENT_ACTIONS
 TERMINAL = {"applied", "failed"}
+
+
+def project_agent_target(action, data):
+    """Read the same clear identity and settings shape on Hub and device."""
+    create = action == "project-agent-create"
+    fields = {"project_id", "id"} if create else {"project_id", "agent_id", "backend_project"}
+    if action != "project-agent-delete":
+        fields |= {"name", "settings"}
+    if set(data) != fields:
+        raise ValueError("无效的项目 Agent 操作参数")
+    project = data["project_id"]
+    identity = data["id" if create else "agent_id"]
+    for value in (project, identity, data.get("backend_project", project)):
+        if not isinstance(value, str) or not 1 <= len(value) <= 120 or "\0" in value:
+            raise ValueError("无效的项目 Agent 标识")
+    if action != "project-agent-delete":
+        name, settings = data["name"], data["settings"]
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 120:
+            raise ValueError("Agent 名称必须为 1 到 120 个字符")
+        if not isinstance(settings, dict) or set(settings) - PROJECT_AGENT_SETTINGS:
+            raise ValueError("无效的项目 Agent 配置")
+    return project, identity, execution_project(identity, project) if create else data["backend_project"]
 
 
 def canonical(value):
@@ -90,6 +127,44 @@ class OwnerBackend:
                 if not isinstance(project_id, str) or not 1 <= len(project_id) <= 120:
                     raise ValueError("Invalid shared project")
                 self.store.require_member(db, project_id, user)
+            elif action in PROJECT_AGENT_ACTIONS:
+                if body.get("sealed") is not None:
+                    raise ValueError("项目 Agent 操作必须使用可核对的项目标识")
+                project, identity, backend = project_agent_target(action, data)
+                self.store.require_member(db, project, user)
+                agent = db.execute(
+                    "SELECT * FROM agents WHERE node=? AND backend_project=?", (target, backend)
+                ).fetchone()
+                if action == "project-agent-create":
+                    if (
+                        agent
+                        or db.execute(
+                            "SELECT 1 FROM owner_commands WHERE node=? AND state IN ('queued','claimed','applied') "
+                            "AND json_extract(envelope,'$.body.action')='project-agent-create' "
+                            "AND json_extract(envelope,'$.body.data.project_id')=? "
+                            "AND json_extract(envelope,'$.body.data.id')=?",
+                            (target, project, identity),
+                        ).fetchone()
+                    ):
+                        raise ValueError("这个项目 Agent 已经创建或正在创建")
+                else:
+                    if not agent or (agent["id"], agent["project_id"], agent["owner_id"]) != (identity, project, user):
+                        raise PermissionError("项目 Agent 不属于这个项目或设备")
+                    if self._agent_removed(db, target, identity):
+                        raise ValueError("项目 Agent 已经移除")
+                    if self._pending_agent_change(db, target, identity):
+                        raise ValueError("该项目 Agent 还有待确认的配置操作")
+                    self._require_agent_idle(db, identity)
+                    if action == "project-agent-delete" and not self._live_node(db, user, target):
+                        self._remove_agent(db, agent, user)
+                        result = {"project_id": project, "backend_project": backend, "enabled": False}
+                        db.execute(
+                            "INSERT INTO owner_commands VALUES(?,?,?,?,?,?,?)",
+                            (cid, user, target, encoded, "applied", canonical(result), time.time()),
+                        )
+                        self.store.emit_project_event(db, project, "agent")
+                        return {"id": cid, "state": "applied", "applied": True}
+                    db.execute("UPDATE agents SET configuring=1 WHERE id=?", (identity,))
             elif action == "transfer-receive-directory":
                 path = data.get("path")
                 if not isinstance(path, str) or not 1 <= len(path) <= 4096 or "\0" in path:
@@ -115,16 +190,7 @@ class OwnerBackend:
                     raise ValueError("员工已删除")
                 if action == "delete":
                     for agent in self._employee_agents(db, employee, user, target):
-                        if db.execute(
-                            "SELECT 1 FROM tasks WHERE agent_id=? AND state IN ('queued','starting','running','unknown')",
-                            (agent["id"],),
-                        ).fetchone():
-                            raise ValueError("员工有未完成任务，请等待任务结束后再删除")
-                        if db.execute(
-                            "SELECT 1 FROM executions WHERE agent_id=? AND state IN ('approved','starting','running','unknown')",
-                            (agent["id"],),
-                        ).fetchone():
-                            raise ValueError("员工有未完成执行，请等待执行结束后再删除")
+                        self._require_agent_idle(db, agent["id"])
                 if action in {"dispatch", "withdraw"}:
                     self.store.require_member(db, data.get("project_id"), user)
                 if action == "delete" and not self._live_node(db, user, target):
@@ -167,14 +233,7 @@ class OwnerBackend:
 
     def _apply_delete(self, db, employee, owner, node):
         for agent in self._employee_agents(db, employee, owner, node):
-            db.execute(
-                "UPDATE agents SET enabled=0,configuring=0 WHERE id=?",
-                (agent["id"],),
-            )
-            db.execute(
-                "UPDATE projects SET admin_agent_id=NULL WHERE admin_agent_id=?",
-                (agent["id"],),
-            )
+            self._remove_agent(db, agent, owner)
         db.execute(
             "UPDATE employees SET status='deleted',revision=revision+1 WHERE id=?",
             (employee,),
@@ -184,9 +243,50 @@ class OwnerBackend:
         return [
             a
             for a in db.execute("SELECT * FROM agents WHERE owner_id=? AND node=?", (owner, node))
-            if a["backend_project"]
-            == "e-" + hashlib.sha256((employee + "\0" + a["project_id"]).encode()).hexdigest()[:56]
+            if a["backend_project"] == execution_project(employee, a["project_id"])
+            and not db.execute(
+                "SELECT 1 FROM owner_commands WHERE node=? AND state IN ('queued','claimed','applied') "
+                "AND json_extract(envelope,'$.body.action') IN ('project-agent-configure','project-agent-delete') "
+                "AND json_extract(envelope,'$.body.data.agent_id')=?",
+                (node, a["id"]),
+            ).fetchone()
         ]
+
+    @staticmethod
+    def _agent_removed(db, node, agent):
+        return db.execute(
+            "SELECT 1 FROM owner_commands WHERE node=? AND state='applied' "
+            "AND json_extract(envelope,'$.body.action')='project-agent-delete' "
+            "AND json_extract(envelope,'$.body.data.agent_id')=?",
+            (node, agent),
+        ).fetchone()
+
+    @staticmethod
+    def _pending_agent_change(db, node, agent):
+        return db.execute(
+            "SELECT 1 FROM owner_commands WHERE node=? AND state IN ('queued','claimed') "
+            "AND json_extract(envelope,'$.body.action') IN ('project-agent-configure','project-agent-delete') "
+            "AND json_extract(envelope,'$.body.data.agent_id')=?",
+            (node, agent),
+        ).fetchone()
+
+    @staticmethod
+    def _require_agent_idle(db, agent):
+        if db.execute(
+            "SELECT 1 FROM tasks WHERE agent_id=? AND state IN ('queued','starting','running','unknown')", (agent,)
+        ).fetchone():
+            raise ValueError("Agent 有未完成任务，请等待任务结束后再操作")
+        if db.execute(
+            "SELECT 1 FROM executions WHERE agent_id=? AND state IN ('approved','starting','running','unknown')",
+            (agent,),
+        ).fetchone():
+            raise ValueError("Agent 有未完成执行，请等待执行结束后再操作")
+
+    def _remove_agent(self, db, agent, owner):
+        for scope in self.store.grants(agent["id"]):
+            self.store.set_grant(agent["id"], scope, False, actor=owner, db=db)
+        db.execute("UPDATE agents SET enabled=0,configuring=0 WHERE id=?", (agent["id"],))
+        db.execute("UPDATE projects SET admin_agent_id=NULL WHERE admin_agent_id=?", (agent["id"],))
 
     def poll(self, db, device, claim=True):
         # Revalidate ownership on every poll; no trust in a caller-supplied node alone.
@@ -227,7 +327,51 @@ class OwnerBackend:
         body = json.loads(row["envelope"])["body"]
         data = body["data"]
         action = body["action"]
-        if action == "workspace-default":
+        if action in PROJECT_AGENT_ACTIONS:
+            project, identity, backend = project_agent_target(action, data)
+            if state == "applied":
+                if result.get("project_id") != project or result.get("backend_project") != backend:
+                    raise ValueError("设备报告的项目 Agent 身份不一致")
+                if action != "project-agent-delete":
+                    settings = result.get("settings")
+                    if not isinstance(settings, dict) or set(settings) != PROJECT_AGENT_SETTINGS:
+                        raise ValueError("设备报告的项目 Agent 配置无效")
+                    if result.get("name") != data["name"].strip() or type(result.get("enabled")) is not bool:
+                        raise ValueError("设备报告的项目 Agent 名称或状态无效")
+                if action == "project-agent-create":
+                    db.execute(
+                        "INSERT INTO project_workspaces(project_id,owner_id,node,status,write_policy,updated_at) "
+                        "VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,node) DO UPDATE SET "
+                        "owner_id=excluded.owner_id,status=excluded.status,updated_at=excluded.updated_at",
+                        (project, row["owner_id"], row["node"], "ready", "single_writer", time.time()),
+                    )
+                elif action == "project-agent-delete":
+                    agent = db.execute("SELECT * FROM agents WHERE id=?", (identity,)).fetchone()
+                    if agent:
+                        self._remove_agent(db, agent, row["owner_id"])
+                else:
+                    model, stages, effort, timeout = (settings[k] for k in ("model", "stages", "effort", "timeout"))
+                    if (
+                        not isinstance(model, str)
+                        or not 1 <= len(model) <= 120
+                        or effort not in ("low", "medium", "high", "xhigh", "max", "ultra")
+                        or type(timeout) is not int
+                        or not 30 <= timeout <= 86400
+                        or not isinstance(stages, list)
+                        or not stages
+                        or any(stage not in ("discuss", "review", "implement") for stage in stages)
+                        or settings.get("enabled") is not result["enabled"]
+                    ):
+                        raise ValueError("设备报告的项目 Agent 配置无效")
+                    db.execute(
+                        "UPDATE agents SET name=?,model=?,effort=?,timeout=?,enabled=? WHERE id=?",
+                        (result["name"], model, effort, timeout, int(result["enabled"]), identity),
+                    )
+                    db.execute("UPDATE pull_bindings SET stages=? WHERE agent_id=?", (json.dumps(stages), identity))
+            if action != "project-agent-create":
+                db.execute("UPDATE agents SET configuring=0 WHERE id=?", (identity,))
+            self.store.emit_project_event(db, project, "agent")
+        elif action == "workspace-default":
             if state == "applied":
                 db.execute(
                     "INSERT INTO project_workspaces(project_id,owner_id,node,status,write_policy,updated_at) "
