@@ -6,11 +6,13 @@ import secrets
 import sqlite3
 import time
 import uuid
+from collections import Counter
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from agent_harness.storage import migrate_database
 from agent_harness.health import HealthCode, component, normalize_exception, report
+from agent_harness.run_history import run_details, task_run_details
 
 
 MAX_EVENTS_PER_ACCOUNT = 512
@@ -25,6 +27,10 @@ def uid(prefix):
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def account_display_name(user, username):
+    return username.removesuffix(" · " + user[-8:])
 
 
 class Store:
@@ -92,6 +98,8 @@ class Store:
         reason = request["reason"].strip()[:12000]
         owner = agent["owner_id"]
         if not db.execute("SELECT 1 FROM project_users WHERE project_id=? AND user_id=?", (project, owner)).fetchone():
+            return
+        if db.execute("SELECT 1 FROM projects WHERE id=? AND archived_at IS NOT NULL", (project,)).fetchone():
             return
         contract = json.loads(source_task["contract"])
         if contract.get("private_turn") and contract.get("reply_to") != owner:
@@ -526,7 +534,7 @@ class Store:
                 return kind, None
         raise PermissionError("无权访问此会话")
 
-    def require_member(self, db, project, user):
+    def require_member(self, db, project, user, *, active=False):
         row = db.execute("SELECT * FROM projects WHERE id=?", (project,)).fetchone()
         if (
             not row
@@ -536,6 +544,8 @@ class Store:
             ).fetchone()
         ):
             raise PermissionError("无权访问这个项目")
+        if active and row["archived_at"] is not None:
+            raise ValueError("项目已归档，请先恢复项目")
         return dict(row)
 
     def require_agent_owner(self, db, agent, user):
@@ -565,7 +575,8 @@ class Store:
     def invite(self, user, project):
         token = secrets.token_urlsafe(24)
         with self.connect() as db:
-            row = self.require_member(db, project, user)
+            db.execute("BEGIN IMMEDIATE")
+            row = self.require_member(db, project, user, active=True)
             if row["owner_id"] != user:
                 raise PermissionError("只有群主可以邀请成员")
             db.execute(
@@ -584,6 +595,9 @@ class Store:
             ).fetchone()
             if not invitation:
                 raise PermissionError("邀请无效或已使用")
+            archived = db.execute("SELECT archived_at FROM projects WHERE id=?", (invitation["project_id"],)).fetchone()
+            if not archived or archived["archived_at"] is not None:
+                raise ValueError("项目已归档，请先恢复项目")
             db.execute(
                 "INSERT OR IGNORE INTO project_users VALUES(?,?)",
                 (invitation["project_id"], user),
@@ -649,7 +663,8 @@ class Store:
 
     def set_admin(self, user, project, agent):
         with self.connect() as db:
-            row = self.require_member(db, project, user)
+            db.execute("BEGIN IMMEDIATE")
+            row = self.require_member(db, project, user, active=True)
             if row["owner_id"] != user:
                 raise PermissionError("只有群主可以指定管理员")
             previous = db.execute(
@@ -802,6 +817,7 @@ class Store:
                         "duplicate": True,
                     }
                 client_message_id = client_message_id.lower()
+            self.require_member(db, project, user, active=True)
             result = self._message(
                 db,
                 project,
@@ -1024,6 +1040,8 @@ class Store:
     ):
         if agent.get("configuring"):
             raise ValueError("机器配置尚未确认；请所有者重新确认设置")
+        if project.get("archived_at") is not None:
+            raise ValueError("项目已归档，请先恢复项目")
         if project["paused"]:
             raise ValueError("项目已暂停")
         stage = data.get("stage", "discuss")
@@ -1420,6 +1438,13 @@ class Store:
                     (project,),
                 )
             ]
+            for person in people:
+                person["display_name"] = account_display_name(person["id"], person["username"])
+            names = Counter(person["display_name"].casefold() for person in people)
+            for person in people:
+                name = person["display_name"]
+                person["username"] = name + " · " + person["id"][-8:] if names[name.casefold()] > 1 else name
+            people_names = {person["id"]: person["username"] for person in people}
             messages = []
             trace_cache = {}
             for row in self._human_visible_messages(db, project, user):
@@ -1437,7 +1462,9 @@ class Store:
                 )
                 recipient = db.execute("SELECT name FROM agents WHERE id=?", (item["recipient_id"],)).fetchone()
                 if not recipient:
-                    recipient = db.execute("SELECT username FROM users WHERE id=?", (item["recipient_id"],)).fetchone()
+                    recipient_name = people_names.get(item["recipient_id"])
+                else:
+                    recipient_name = recipient[0]
                 mention = (
                     db.execute(
                         "SELECT name FROM agents WHERE id=?",
@@ -1447,8 +1474,14 @@ class Store:
                     else None
                 )
                 item.update(
-                    sender_name=sender[0] if sender else "系统",
-                    recipient_name=recipient[0] if recipient else None,
+                    sender_name=(
+                        people_names.get(item["sender_id"], account_display_name(item["sender_id"], sender[0]))
+                        if sender and table == "users"
+                        else sender[0]
+                        if sender
+                        else "系统"
+                    ),
+                    recipient_name=recipient_name,
                     mention_agent_name=mention[0] if mention else None,
                     channel="direct" if item["recipient_id"] else "group",
                 )
@@ -1490,6 +1523,7 @@ class Store:
                 if not self.task_visible_to_human(db, item, user):
                     continue
                 item["trace"] = trace_cache.get(item["id"]) or self.task_trace_for_human(db, item, user)
+                item["run_details"] = task_run_details(db, item["job"])
                 item["can_cancel"] = (
                     item["state"] in ACTIVE_TASK_STATES
                     and not item["cancel_requested"]
@@ -1511,7 +1545,7 @@ class Store:
                         "已处理 · 未发言" if isinstance(reply, str) and not reply.strip() else "已回复"
                     )
             executions = [
-                dict(x)
+                {**dict(x), "run_details": run_details(x["result"])}
                 for x in db.execute(
                     """SELECT * FROM executions WHERE project_id=? AND
                 (reply_to IS NULL OR reply_to=? OR reply_to IN (SELECT id FROM agents WHERE project_id=?))

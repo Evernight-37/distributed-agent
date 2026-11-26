@@ -4,6 +4,7 @@ import json
 import hashlib
 import time
 from agent_harness.account_identity import verify_owner_command
+from agent_harness.common import REASONING_LEVELS
 
 
 def device_node(public):
@@ -25,6 +26,7 @@ PROJECT_AGENT_SETTINGS = {
     "strict_worktree",
     "attachment_policy",
     "network",
+    "model_config_version",
 }
 ACTIONS = {
     "create",
@@ -35,6 +37,7 @@ ACTIONS = {
     "delete",
     "workspace-default",
     "transfer-receive-directory",
+    "model-capabilities",
 } | PROJECT_AGENT_ACTIONS
 TERMINAL = {"applied", "failed"}
 
@@ -58,6 +61,8 @@ def project_agent_target(action, data):
             raise ValueError("Agent 名称必须为 1 到 120 个字符")
         if not isinstance(settings, dict) or set(settings) - PROJECT_AGENT_SETTINGS:
             raise ValueError("无效的项目 Agent 配置")
+        if "model_config_version" in settings and settings["model_config_version"] != 2:
+            raise ValueError("无效的模型配置版本")
     return project, identity, execution_project(identity, project) if create else data["backend_project"]
 
 
@@ -126,12 +131,12 @@ class OwnerBackend:
                 project_id = data.get("project_id")
                 if not isinstance(project_id, str) or not 1 <= len(project_id) <= 120:
                     raise ValueError("Invalid shared project")
-                self.store.require_member(db, project_id, user)
+                self.store.require_member(db, project_id, user, active=True)
             elif action in PROJECT_AGENT_ACTIONS:
                 if body.get("sealed") is not None:
                     raise ValueError("项目 Agent 操作必须使用可核对的项目标识")
                 project, identity, backend = project_agent_target(action, data)
-                self.store.require_member(db, project, user)
+                self.store.require_member(db, project, user, active=True)
                 agent = db.execute(
                     "SELECT * FROM agents WHERE node=? AND backend_project=?", (target, backend)
                 ).fetchone()
@@ -169,6 +174,15 @@ class OwnerBackend:
                 path = data.get("path")
                 if not isinstance(path, str) or not 1 <= len(path) <= 4096 or "\0" in path:
                     raise ValueError("Invalid receive directory")
+            elif action == "model-capabilities":
+                if data or body.get("sealed") is not None:
+                    raise ValueError("无效的设备模型查询参数")
+                seen = db.execute("SELECT last_seen FROM pull_devices WHERE node=?", (target,)).fetchone()
+                if not seen or seen["last_seen"] < time.time() - 45 or not self._live_node(db, user, target):
+                    return {"state": "offline"}
+                existing = self._recent_models(db, user, target)
+                if existing:
+                    return existing
             elif action != "browse":
                 employee = data.get("id")
                 if not isinstance(employee, str) or not 1 <= len(employee) <= 120:
@@ -192,7 +206,7 @@ class OwnerBackend:
                     for agent in self._employee_agents(db, employee, user, target):
                         self._require_agent_idle(db, agent["id"])
                 if action in {"dispatch", "withdraw"}:
-                    self.store.require_member(db, data.get("project_id"), user)
+                    self.store.require_member(db, data.get("project_id"), user, active=True)
                 if action == "delete" and not self._live_node(db, user, target):
                     # That machine is no longer an active device, so no command can
                     # ever be delivered; waiting for its acknowledgement is what
@@ -210,6 +224,18 @@ class OwnerBackend:
             )
             self.store.emit_account_event(db, [user], "owner-command")
             return {"id": cid, "state": "queued"}
+
+    @staticmethod
+    def _recent_models(db, user, node):
+        row = db.execute(
+            "SELECT id,state,result FROM owner_commands WHERE owner_id=? AND node=? AND created_at>? "
+            "AND json_extract(envelope,'$.body.action')='model-capabilities' "
+            "ORDER BY created_at DESC,rowid DESC LIMIT 1",
+            (user, node, time.time() - 120),
+        ).fetchone()
+        if row:
+            return {"id": row["id"], "state": row["state"], "result": json.loads(row["result"] or "{}")}
+        return None
 
     def _live_node(self, db, owner, node):
         """Whether a command to this node can still be delivered.
@@ -292,7 +318,9 @@ class OwnerBackend:
         # Revalidate ownership on every poll; no trust in a caller-supplied node alone.
         self._device(db, device)
         rows = db.execute(
-            "SELECT * FROM owner_commands WHERE node=? AND owner_id=? AND state IN ('queued','claimed') ORDER BY created_at,id LIMIT 20",
+            "SELECT c.* FROM owner_commands c WHERE c.node=? AND c.owner_id=? AND (c.state='claimed' OR "
+            "(c.state='queued' AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.archived_at IS NOT NULL "
+            "AND p.id=json_extract(c.envelope,'$.body.data.project_id')))) ORDER BY c.created_at,c.id LIMIT 20",
             (device["node"], device["owner_id"]),
         ).fetchall()
         if claim:
@@ -334,7 +362,12 @@ class OwnerBackend:
                     raise ValueError("设备报告的项目 Agent 身份不一致")
                 if action != "project-agent-delete":
                     settings = result.get("settings")
-                    if not isinstance(settings, dict) or set(settings) != PROJECT_AGENT_SETTINGS:
+                    required = PROJECT_AGENT_SETTINGS - {"model_config_version"}
+                    if (
+                        not isinstance(settings, dict)
+                        or not required <= set(settings) <= PROJECT_AGENT_SETTINGS
+                        or settings.get("model_config_version") != data["settings"].get("model_config_version")
+                    ):
                         raise ValueError("设备报告的项目 Agent 配置无效")
                     if result.get("name") != data["name"].strip() or type(result.get("enabled")) is not bool:
                         raise ValueError("设备报告的项目 Agent 名称或状态无效")
@@ -354,7 +387,7 @@ class OwnerBackend:
                     if (
                         not isinstance(model, str)
                         or not 1 <= len(model) <= 120
-                        or effort not in ("low", "medium", "high", "xhigh", "max", "ultra")
+                        or effort not in REASONING_LEVELS
                         or type(timeout) is not int
                         or not 30 <= timeout <= 86400
                         or not isinstance(stages, list)
@@ -379,7 +412,7 @@ class OwnerBackend:
                     "owner_id=excluded.owner_id,status=excluded.status,updated_at=excluded.updated_at",
                     (data["project_id"], row["owner_id"], row["node"], "ready", "single_writer", time.time()),
                 )
-        elif action not in {"browse", "transfer-receive-directory"}:
+        elif action not in {"browse", "transfer-receive-directory", "model-capabilities"}:
             if state == "applied" and action == "dispatch":
                 db.execute(
                     "INSERT INTO project_workspaces(project_id,owner_id,node,status,write_policy,updated_at) "

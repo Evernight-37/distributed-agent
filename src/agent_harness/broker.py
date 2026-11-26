@@ -9,9 +9,10 @@ import secrets
 import time
 from agent_harness.collaboration_store import uid, digest
 from agent_harness.protocol import hub_advertisement
-from agent_harness.common import read_json, write_json
+from agent_harness.common import REASONING_LEVELS, read_json, write_json
 from agent_harness.execution_approvals import execution_decisions, valid_execution_digest
 from agent_harness.health import report as health_report
+from agent_harness.usage import execution_telemetry
 
 TERMINAL = {
     "needs_review",
@@ -67,7 +68,7 @@ class PullBackend:
         return [
             dict(r)
             for r in db.execute(
-                "SELECT p.id,p.name FROM projects p JOIN project_users m ON m.project_id=p.id WHERE m.user_id=?",
+                "SELECT p.id,p.name,p.archived_at FROM projects p JOIN project_users m ON m.project_id=p.id WHERE m.user_id=?",
                 (device["owner_id"],),
             )
         ]
@@ -101,6 +102,9 @@ class PullBackend:
         rows = db.execute(
             "SELECT * FROM pull_jobs WHERE node=? AND state NOT IN "
             "('needs_review','completed','failed','cancelled','timed_out','interrupted') "
+            "AND (state<>'queued' OR cancel_requested=1 OR NOT EXISTS ("
+            "SELECT 1 FROM agents a JOIN projects p ON p.id=a.project_id "
+            "WHERE a.id=pull_jobs.agent_id AND p.archived_at IS NOT NULL)) "
             "ORDER BY created_at LIMIT 20",
             (device["node"],),
         ).fetchall()
@@ -538,6 +542,7 @@ class PullBackend:
                 result = data.get("result", {})
                 if not isinstance(result, dict):
                     raise ValueError("结果必须为对象")
+                telemetry = execution_telemetry(result)
                 result = {
                     k: v
                     for k, v in result.items()
@@ -550,18 +555,18 @@ class PullBackend:
                         "exit_code",
                         "stdout",
                         "stderr",
-                        "started_at",
-                        "finished_at",
                         "status",
                         "job",
                         "execution",
                         "requested_model",
                         "reasoning_effort",
+                        "effective_reasoning_effort",
                         "effective_model",
                         "model_verified",
                         "execution_approval_digest",
                     }
                 }
+                result.update(telemetry)
                 if "reply_draft" in result and (
                     not isinstance(result["reply_draft"], str) or len(result["reply_draft"]) > 16000
                 ):
@@ -577,15 +582,11 @@ class PullBackend:
                     value = result.get(key)
                     if value is not None and (not isinstance(value, str) or len(value) > 120):
                         raise ValueError("无效的模型审计字段")
-                if "reasoning_effort" in result and result["reasoning_effort"] not in {
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra",
-                }:
-                    raise ValueError("无效的思考强度审计字段")
+                for key in ("reasoning_effort", "effective_reasoning_effort"):
+                    if key not in result or key == "effective_reasoning_effort" and result[key] is None:
+                        continue
+                    if not isinstance(result[key], str) or result[key] not in REASONING_LEVELS:
+                        raise ValueError("无效的思考强度审计字段")
                 if "model_verified" in result and not isinstance(result["model_verified"], bool):
                     raise ValueError("无效的模型核验字段")
                 if "execution_approval_digest" in result and (

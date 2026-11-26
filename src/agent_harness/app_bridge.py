@@ -384,6 +384,10 @@ class AppBridge:
             raise RuntimeError("协作服务尚不支持文件速传。请将托管端升级到当前版本并重启后再试。")
         if operation == "project-work" and "project_work_v1" not in features:
             raise RuntimeError("协作服务尚不支持项目任务。请升级托管端并重启协作服务。")
+        if operation == "project-lifecycle" and "project_lifecycle_v1" not in features:
+            raise RuntimeError("协作服务尚不支持项目归档。请升级托管端并重启协作服务。")
+        if operation == "memory-note-review" and "project_memory_review_v1" not in features:
+            raise RuntimeError("协作服务尚不支持审核项目记忆。请升级托管端并重启协作服务。")
         if (
             operation
             in {

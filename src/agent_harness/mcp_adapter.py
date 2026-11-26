@@ -118,6 +118,8 @@ class FoolshipMcpBackend:
             raise RuntimeError("协作服务尚未启用 MCP 项目审批")
         if operation == "project-work" and "project_work_v1" not in features:
             raise RuntimeError("协作服务尚未启用项目任务")
+        if operation == "memory-note-review" and "project_memory_review_v1" not in features:
+            raise RuntimeError("协作服务尚未启用项目记忆审核")
         if operation == "task" and payload and "source_message_id" in payload and "task_trace_v1" not in features:
             raise RuntimeError("协作服务尚不支持用原消息关联任务")
         envelope = sign_envelope(
@@ -271,6 +273,29 @@ class FoolshipMcpBackend:
                         "limit": {"type": "integer", "minimum": 1, "maximum": 200},
                     },
                     required=["project"],
+                ),
+            },
+            {
+                "name": "harness_project_memory_review",
+                "description": (
+                    "按编号确认、归档或合并项目记忆。用 harness_project_read 查看项目记忆候选。"
+                    "需要当前账户在该项目启用 MCP 项目记忆审核权限。"
+                ),
+                "inputSchema": dict(
+                    obj,
+                    properties={
+                        "project": {"type": "string"},
+                        "ids": {
+                            "type": "array",
+                            "items": {"type": "integer", "minimum": 1},
+                            "minItems": 1,
+                            "maxItems": 30,
+                        },
+                        "action": {"type": "string", "enum": ["keep", "archive", "merge"]},
+                        "body": {"type": "string", "minLength": 1, "maxLength": 2000},
+                        "kind": {"type": "string", "enum": ["rule", "decision", "fact"]},
+                    },
+                    required=["project", "ids", "action"],
                 ),
             },
             {
@@ -469,6 +494,7 @@ class FoolshipMcpBackend:
                                 "owner_id",
                                 "admin_agent_id",
                                 "paused",
+                                "archived_at",
                                 "last_entered",
                             )
                         }
@@ -532,6 +558,10 @@ class FoolshipMcpBackend:
             project, server = self._project_route(arguments["project"])
             result = self._rpc(server, "project-work", dict(arguments, project=project))
             return {"project": project, **result}
+        if name == "harness_project_memory_review":
+            project, server = self._project_route(arguments["project"])
+            payload = {key: arguments[key] for key in ("ids", "action", "body", "kind") if key in arguments}
+            return self._rpc(server, "memory-note-review", {**payload, "project": project})
         if name == "harness_task_cancel":
             project, server = self._project_route(arguments["project"])
             return self._rpc(server, "task-cancel", {"project": project, "task_id": arguments["task"]})

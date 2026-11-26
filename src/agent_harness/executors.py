@@ -1,7 +1,7 @@
 """Local agent CLI executors: Codex and DeepSeek Harness.
 
-A machine runs exactly one local executor, selected in its receiver
-``executor.json``.  The executor owns the argument vector, the permission
+A receiver selects a local executor for each turn from its model table in
+``executor.json``. The executor owns the argument vector, the permission
 environment and the provider event vocabulary.  Everything above this module
 (the worker loop, the broker, the coordinator and the desktop UI) only sees the
 normalized events below, so adding an executor never means teaching the rest of
@@ -31,7 +31,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_harness.common import read_json, write_json
+from agent_harness.common import PROXY_ENV_KEYS, read_json, write_json
 
 CODEX = "codex"
 DSH = "dsh"
@@ -163,7 +163,7 @@ def supports_managed_turns(root):
     return MANAGED_TURNS.get(selected(root), False)
 
 
-def version(exe):
+def version(exe, *, timeout=8):
     """Probe a candidate binary without making a model request."""
     try:
         result = subprocess.run(
@@ -172,7 +172,7 @@ def version(exe):
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=8,
+            timeout=timeout,
             creationflags=_no_window(),
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -323,7 +323,7 @@ def status_of(root, kind, probe=None):
     }
 
 
-def login(root, exe, kind=None):
+def login(root, exe, kind=None, *, network=None):
     """Report whether the executor that will run this turn can authenticate.
 
     DeepSeek Harness resolves its own credentials, either from the Models page or
@@ -342,7 +342,7 @@ def login(root, exe, kind=None):
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=child_environment(root),
+            env=child_environment(root, network=network, kind=kind),
             timeout=12,
             creationflags=_no_window(),
         )
@@ -363,12 +363,10 @@ def login(root, exe, kind=None):
 
 
 def resolve_network(root, network=None):
-    """Which proxy, if any, this turn may use.
+    """Resolve the proxy override for this turn, or None to inherit the environment.
 
-    Two facts, deliberately kept apart: the machine owns the endpoint (a loopback
-    address only means something there), the agent owns the policy. A policy of
-    "machine" defers to the machine's saved endpoint, "direct" bypasses it even
-    when one exists, and "custom" carries its own port.
+    The machine owns the default loopback endpoint and the agent chooses whether
+    to use it, clear proxies, or choose a custom loopback port.
     """
     if network is None:
         policy = {"mode": "machine"}
@@ -378,7 +376,7 @@ def resolve_network(root, network=None):
         policy = network
     mode = policy.get("mode", "machine")
     if mode == "direct":
-        return None
+        return {"enabled": False, "port": None}
     if mode == "custom":
         port = policy.get("port")
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
@@ -412,14 +410,7 @@ def child_environment(root, stage=None, full_access=False, network=None, kind=No
     if setting is None:
         setting = {}
     network_env = setting.get("network_env", {})
-    if not isinstance(network_env, dict) or set(network_env) - {
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "WS_PROXY",
-        "WSS_PROXY",
-    }:
+    if not isinstance(network_env, dict) or set(network_env) - PROXY_ENV_KEYS:
         raise ValueError("Unsupported worker network environment")
     for key, value in network_env.items():
         if not isinstance(value, str) or "\n" in value or "\r" in value:
@@ -450,12 +441,10 @@ def environment(root, stage=None, full_access=False, kind=None):
 
 
 def requested_model(root, project_model, kind=None):
-    """The model this machine actually asks for when a turn is dispatched.
+    """Resolve the model for a legacy agent configuration.
 
-    Only DeepSeek Harness takes a receiver-level override, because its provider
-    routes are configured per machine.  The override is ignored for Codex: a
-    leftover value from a previous DeepSeek Harness selection must not make the
-    effective-model check fail every turn.
+    DeepSeek Harness legacy agents may still rely on a receiver-level override.
+    Codex always uses the registered project's model.
     """
     if (kind or selected(root)) != DSH:
         return project_model
@@ -487,17 +476,27 @@ def kind_for(root, model):
     return kind
 
 
-# DeepSeek Harness validates the reasoning effort against the model's own
-# catalog, and providers advertise a smaller vocabulary than the six Codex
-# levels (deepseek-flash accepts off/low/high). ``medium`` is the Foolship
-# default and is deliberately omitted so the model keeps its own default
-# instead of failing on a level the provider may not advertise.
+# Preserve the former DeepSeek Harness mapping for saved legacy configurations.
+# Current configurations send the exact level advertised by the selected model.
 EFFORT_MAP = {"low": "low", "medium": None, "high": "high", "xhigh": "high", "max": "high", "ultra": "high"}
 
 
 def reasoning_effort(effort):
     """Project one Foolship effort level onto DeepSeek Harness, or None to omit."""
     return EFFORT_MAP.get(effort if isinstance(effort, str) else "", None)
+
+
+def dsh_provider(root):
+    return settings(root).get("provider") or DSH_PROVIDER
+
+
+def effective_request(root, project, kind=None):
+    """Return the model and explicit reasoning level the adapter will request."""
+    kind = kind or selected(root)
+    model, effort = project["model"], project.get("effort")
+    if kind == DSH and project.get("model_config_version") != 2:
+        return requested_model(root, model, kind), reasoning_effort(effort)
+    return model, None if effort == "default" else effort
 
 
 def _dsh_patch(root, model, effort=None, scratch=None, full_access=False):
@@ -510,13 +509,12 @@ def _dsh_patch(root, model, effort=None, scratch=None, full_access=False):
     The collaboration MCP entry needs no handling here: it lives in the desktop
     profile's layer, and this one-shot turn runs the ``headless`` profile.
     """
-    selection = {"provider": settings(root).get("provider") or DSH_PROVIDER, "model": model}
+    selection = {"provider": dsh_provider(root), "model": model}
     # Present only when the worker staged it: an in-process tool that writes the
     # structured reply, so the turn never depends on parsing model prose.
     plugin = Path(scratch) / "foolship_reply.js" if scratch is not None else None
-    level = reasoning_effort(effort)
-    if level:
-        selection["reasoningEffort"] = level
+    if effort:
+        selection["reasoningEffort"] = effort
     patch = []
     patch.extend(
         [
@@ -594,11 +592,10 @@ def codex_command(exe, project, thread_id, managed=False, schema_path=None, *, p
         "--json",
         "-m",
         project["model"],
-        "-c",
-        'model_reasoning_effort="' + project["effort"] + '"',
-        "-C",
-        project["remote_path"],
     ]
+    if project["effort"] != "default":
+        args += ["-c", 'model_reasoning_effort="' + project["effort"] + '"']
+    args += ["-C", project["remote_path"]]
     if project_tool_path is not None:
         from agent_harness.project_tool_mcp import server_override, server_settings
 
@@ -628,14 +625,14 @@ def codex_command(exe, project, thread_id, managed=False, schema_path=None, *, p
 
 def dsh_command(root, exe, project, thread_id, scratch):
     """DSH one-shot invocation that reads the task from stdin."""
-    model = requested_model(root, project["model"])
+    model, effort = effective_request(root, project, DSH)
     full_access = bool(project.get("_full_access"))
     scratch = Path(scratch)
     scratch.mkdir(parents=True, exist_ok=True)
     patch_path = scratch / "dsh-patch.json"
     write_json(
         patch_path,
-        _dsh_patch(root, model, project.get("effort"), scratch, full_access),
+        _dsh_patch(root, model, effort, scratch, full_access),
     )
     args = [exe, "--profile", DSH_PROFILE, "--patch", str(patch_path), "--json"]
     # A resumed session's saved permissions outrank the deployment defaults.
@@ -722,10 +719,7 @@ def explain_failure(text):
     """Translate a provider-specific failure into an actionable Chinese message."""
     lowered = (text or "").lower()
     if "unsupported_reasoning_effort" in lowered or "does not support reasoning effort" in lowered:
-        return (
-            "所选模型不支持这个思考强度；请在员工设置里换一个档位，或改用该模型支持的模型。"
-            "Foolship 会把 medium 视为“用模型默认档”，xhigh/max/ultra 按 high 发送"
-        )
+        return "所选模型不支持这个思考强度。请在项目 Agent 设置里选择该设备支持的档位，或使用执行器默认值。"
     if "missing_credential" in lowered or "no api key" in lowered:
         return (
             "DeepSeek Harness 没有可用的 API Key：请在 DeepSeek Harness 的 Models 页面保存密钥，"

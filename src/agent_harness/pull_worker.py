@@ -28,6 +28,7 @@ from agent_harness.release_info import version_path
 from agent_harness.broker_transport import broker_opener
 from agent_harness.execution_approvals import execution_digest, valid_execution_digest
 from agent_harness.health import HealthCode, component, report
+from agent_harness.usage import execution_telemetry
 from agent_harness.workspace_ownership import DIRTY_WORKTREE
 
 TERMINAL = {
@@ -518,6 +519,8 @@ class Connector:
             receipt = read_json(path)
             if not receipt or receipt["job"]["kind"] != "execution" or receipt["phase"] != "waiting_local_approval":
                 raise ValueError("No execution awaiting local approval")
+            if approved and receipt.get("project_archived"):
+                raise ValueError("项目已归档，恢复项目前不能启动登记命令")
             receipt["approval"] = bool(approved)
             if approved:
                 project = receipt["job"]["backend_project"]
@@ -833,7 +836,14 @@ class Connector:
                 )
 
     def advance(
-        self, receipt, cancelled=False, execution_decision=None, project_tools=False, project_file_delivery=False
+        self,
+        receipt,
+        cancelled=False,
+        execution_decision=None,
+        project_tools=False,
+        project_file_delivery=False,
+        *,
+        project_archived=False,
     ):
         job = receipt["job"]
         request = job["request"]
@@ -841,6 +851,7 @@ class Connector:
         path = self.receipt_path(str(job.get("job_id", job.get("id"))))
         if receipt["phase"] == "terminal":
             return receipt
+        receipt["project_archived"] = project_archived
         try:
             execution = job["kind"] == "execution"
             if job["kind"] not in {"task", "execution"}:
@@ -861,6 +872,8 @@ class Connector:
             binding = self.binding_for(job) if receipt["phase"] in {"received", "waiting_local_approval"} else None
             if cancelled and receipt["phase"] in {"received", "waiting_local_approval"}:
                 receipt.update(phase="terminal", result={"status": "cancelled"})
+            elif receipt["phase"] == "received" and project_archived:
+                pass
             elif receipt["phase"] == "received":
                 if execution:
                     _, snapshot = self.execution_snapshot(binding["backend_project"], request.get("template"))
@@ -955,7 +968,7 @@ class Connector:
                             "error": "Rejected by delegated approval" if delegated else "Rejected by local owner",
                         },
                     )
-                elif receipt.get("approval") is True:
+                elif receipt.get("approval") is True and not project_archived:
                     if not current or current != receipt.get("approved_template"):
                         raise ValueError("Template changed after local approval; submit a new request")
                     self.configure(binding)
@@ -1008,11 +1021,13 @@ class Connector:
                         "stderr_tail",
                         "requested_model",
                         "reasoning_effort",
+                        "effective_reasoning_effort",
                         "effective_model",
                         "model_verified",
                     )
                     if k in result and (k != "reply_draft" or isinstance(result[k], str) and len(result[k]) <= 16000)
                 }
+                receipt["result"].update(execution_telemetry(result))
                 if not execution and receipt["phase"] == "terminal":
                     self._finalize_project_delivery(receipt, cancelled)
         except Exception as exc:
@@ -1074,6 +1089,11 @@ class Connector:
         execution_decisions = {
             item.get("job_id"): item for item in data.get("execution_decisions", []) if isinstance(item, dict)
         }
+        archived_projects = {
+            item.get("id")
+            for item in data.get("projects", [])
+            if isinstance(item, dict) and item.get("archived_at") is not None
+        }
         features = data.get("features") or []
         with lock(self.root / "pull-receipts.lock"):
             for job in data.get("jobs", []):
@@ -1105,6 +1125,7 @@ class Connector:
                         execution_decisions.get(job_id),
                         project_tools="project_action_tools_v1" in features,
                         project_file_delivery="project_file_delivery_v1" in features,
+                        project_archived=job.get("project_id") in archived_projects,
                     )
                 if receipt["phase"] in {"terminal", "waiting_attachment_approval"}:
                     from agent_harness.agent_attachments import prepare_reply

@@ -374,8 +374,7 @@
 }
 
 .project-composer-toolbar,
-.project-composer-tools,
-.project-composer-submit {
+.project-composer-tools {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -407,19 +406,22 @@
   text-overflow: ellipsis;
 }
 
-.project-composer-submit {
-  flex-shrink: 0;
-}
-
 .project-send {
+  flex-shrink: 0;
   min-height: 34px;
   padding: 4px 13px;
 }
 
-.project-composer-shortcut {
-  color: var(--project-muted);
-  white-space: nowrap;
-  font-size: 11px;
+.project-agent-proxy-port input:disabled {
+  border-color: var(--line);
+  background: var(--hover);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.project-agent-proxy-port input:disabled::placeholder {
+  color: var(--muted);
+  opacity: 1;
 }
 
 .project-workspace .attachment-draft {
@@ -659,8 +661,22 @@
     grid-template-columns: minmax(0, 1fr);
     gap: 1px;
   }
+}
+.project-modal-tabs,
+.project-run-filters {
+  margin-bottom: 12px;
+}
 
-  .project-composer-shortcut {
-    display: none;
-  }
+.project-run-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 10px;
+}
+
+.project-run-detail {
+  overflow-wrap: anywhere;
+}
+
+.dashboard-archived-projects .dashboard-project-grid {
+  margin-top: 12px;
 }

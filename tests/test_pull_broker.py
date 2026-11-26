@@ -294,7 +294,11 @@ class PullBrokerTests(unittest.TestCase):
                     "requested_model": "deepseek-flash",
                     "effective_model": None,
                     "model_verified": False,
-                    "reasoning_effort": "high",
+                    "reasoning_effort": "default",
+                    "effective_reasoning_effort": None,
+                    "started_at": 10,
+                    "finished_at": 11.5,
+                    "usage": {"input_tokens": 20, "cached_input_tokens": 12, "output_tokens": 2, "private": "drop"},
                 },
             },
             token,
@@ -303,7 +307,27 @@ class PullBrokerTests(unittest.TestCase):
         with self.store.connect() as db:
             row = db.execute("SELECT state, result FROM pull_jobs WHERE id=?", (job["id"],)).fetchone()
         self.assertEqual(row["state"], "needs_review")
-        self.assertIn("deepseek-flash", row["result"])
+        result = json.loads(row["result"])
+        self.assertEqual(result["requested_model"], "deepseek-flash")
+        self.assertIsNone(result["effective_reasoning_effort"])
+        self.assertEqual((result["started_at"], result["finished_at"]), (10, 11.5))
+        self.assertEqual(result["usage"], {"input_tokens": 20, "cached_input_tokens": 12, "output_tokens": 2})
+
+    def test_archiving_holds_queued_work_but_leaves_claimed_work_reachable(self):
+        token, _ = self.enroll()
+        agent = self.advertise(token)
+        self.submit(agent, job="claimed")
+        claimed = self.claim(token)
+        self.submit(agent, job="queued")
+        with self.store.connect() as db:
+            db.execute("UPDATE projects SET archived_at=? WHERE id=?", (time.time(), self.project))
+        poll = self.backend.device_api("/api/device/poll", {}, token)
+        self.assertEqual([job["id"] for job in poll["jobs"]], [claimed["id"]])
+        self.complete(token, claimed)
+        self.assertEqual(self.backend.device_api("/api/device/poll", {}, token)["jobs"], [])
+        with self.store.connect() as db:
+            db.execute("UPDATE projects SET archived_at=NULL WHERE id=?", (self.project,))
+        self.assertEqual(self.claim(token)["id"], "queued")
 
     def test_a_device_can_fetch_a_conversation_attachment(self):
         import base64
@@ -603,6 +627,10 @@ class PullBrokerTests(unittest.TestCase):
                     decide_execution(db, other, self.project, execution, True, snapshot)
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE projects SET archived_at=? WHERE id=?", (time.time(), self.project))
+            with self.assertRaisesRegex(PermissionError, "已归档"):
+                decide_execution(db, self.owner, self.project, execution, True, snapshot)
+            db.execute("UPDATE projects SET archived_at=NULL WHERE id=?", (self.project,))
             decision = decide_execution(db, self.owner, self.project, execution, True, snapshot)
             self.assertEqual(decide_execution(db, self.owner, self.project, execution, True, snapshot), decision)
             self.assertEqual(decision["state"], "approved")
@@ -613,6 +641,9 @@ class PullBrokerTests(unittest.TestCase):
         self.assertEqual(
             pending_on_worker["execution_decisions"], [{"job_id": execution, "digest": snapshot, "approved": True}]
         )
+        with self.store.connect() as db:
+            db.execute("UPDATE projects SET archived_at=? WHERE id=?", (time.time(), self.project))
+        self.assertEqual(self.backend.device_api("/api/device/poll", {}, token)["execution_decisions"], [])
         self.assertEqual(self.backend.device_api("/api/device/poll", {}, other_token)["execution_decisions"], [])
         self.backend.for_node("worker").rpc({"action": "execution_cancel", "execution": execution})
         self.assertEqual(self.backend.device_api("/api/device/poll", {}, token)["execution_decisions"], [])

@@ -12,7 +12,7 @@ from agent_harness.account_identity import (
     verify_envelope,
     canonical,
 )
-from agent_harness.collaboration_store import digest
+from agent_harness.collaboration_store import account_display_name, digest
 from agent_harness.owner_backend import OwnerBackend, PROJECT_AGENT_ACTIONS, PROJECT_AGENT_SETTINGS, execution_project
 from agent_harness.protocol import hub_advertisement
 from agent_harness.hub_api import HubAccountAPI
@@ -24,6 +24,7 @@ MAX_ACTIVE_CHALLENGES = 4096
 MAX_PENDING_DEVICE_REQUESTS = 1000
 MAX_PENDING_REQUESTS_PER_KEY = 5
 MCP_APPROVAL_KINDS = frozenset({"permission", "attachment", "execution"})
+MCP_POLICY_KINDS = MCP_APPROVAL_KINDS | {"memory"}
 MCP_PROJECT_APPROVALS = "mcp_project_approvals_v1"
 
 
@@ -121,6 +122,9 @@ class AccountBackend:
                     "task_trace_v1",
                     "project_work_v1",
                     "project_work_cards_v1",
+                    "project_lifecycle_v1",
+                    "project_memory_review_v1",
+                    "project_model_capabilities_v1",
                     "anchored_reply_draft",
                     "conversation_privacy_v2",
                     "service_host_owner_v1",
@@ -269,6 +273,11 @@ class AccountBackend:
                 ).fetchone()
                 if not invitation:
                     raise PermissionError("邀请无效或已使用")
+                archived = db.execute(
+                    "SELECT archived_at FROM projects WHERE id=?", (invitation["project_id"],)
+                ).fetchone()
+                if not archived or archived["archived_at"] is not None:
+                    raise ValueError("项目已归档，请先恢复项目")
                 if not db.execute("SELECT 1 FROM users WHERE id=?", (user,)).fetchone():
                     db.execute(
                         "INSERT INTO users(id,username) VALUES(?,?)",
@@ -330,6 +339,7 @@ class AccountBackend:
                     "task-cancel": "collaboration.task",
                     "task-status": "collaboration.read",
                     "project-work": "collaboration.task",
+                    "memory-note-review": "collaboration.task",
                     "mcp-approvals": "collaboration.read",
                     "mcp-approval-decide": "collaboration.task",
                 }.get(body["operation"])
@@ -559,7 +569,7 @@ class AccountBackend:
             not isinstance(project, str)
             or not project
             or not isinstance(kinds, list)
-            or any(not isinstance(kind, str) or kind not in MCP_APPROVAL_KINDS for kind in kinds)
+            or any(not isinstance(kind, str) or kind not in MCP_POLICY_KINDS for kind in kinds)
         ):
             raise ValueError("无效的项目委托审批设置")
         kinds = sorted(set(kinds))
@@ -821,6 +831,11 @@ class AccountBackend:
                 self._project_agent_controls(db, result, project, user, delegate_scopes is not None)
                 if delegate_scopes is None:
                     result["mcp_approval_kinds"] = self._mcp_approval_kinds(db, user, project)
+                result["project_memory"]["can_review"] = result["project"]["archived_at"] is None and (
+                    delegate_scopes is None
+                    or "collaboration.task" in delegate_scopes
+                    and "memory" in self._mcp_approval_kinds(db, user, project)
+                )
                 result["workspaces"] = [
                     dict(row)
                     for row in db.execute(
@@ -832,6 +847,10 @@ class AccountBackend:
             return result
         if op == "create-project":
             return self.store.project_create(user, p["name"])
+        if op == "project-lifecycle":
+            from agent_harness.project_lifecycle import ProjectLifecycle
+
+            return ProjectLifecycle(self.store).command(user, p["project"], p["action"], p.get("confirmation"))
         if op in {"join", "join-project"}:
             return self.store.join(user, p["invite"])
         if op == "invite":
@@ -938,6 +957,9 @@ class AccountBackend:
                     raise PermissionError("无权查看此任务")
                 result = dict(row)
                 result["trace"] = self.store.task_trace_for_human(db, row, user)
+                from agent_harness.run_history import task_run_details
+
+                result["run_details"] = task_run_details(db, row["job"])
                 recovery = self.store.local_task_recovery(
                     db, row, user, public if delegate_scopes is not None else None
                 )
@@ -947,7 +969,19 @@ class AccountBackend:
         if op == "memory-note-add":
             from agent_harness.project_memory import ProjectMemory
 
-            return ProjectMemory(self.store).add_note(user, p["project"], p["body"])
+            return ProjectMemory(self.store).add_note(user, p["project"], p["body"], kind=p.get("kind"))
+        if op == "memory-note-review":
+            from agent_harness.project_memory import ProjectMemory
+
+            return ProjectMemory(self.store).review_notes(
+                user,
+                p["project"],
+                p["ids"],
+                p["action"],
+                body=p.get("body"),
+                kind=p.get("kind"),
+                delegate=public if delegate_scopes is not None else None,
+            )
         if op == "memory-note-delete":
             from agent_harness.project_memory import ProjectMemory
 
@@ -956,7 +990,8 @@ class AccountBackend:
             if p.get("agent"):
                 return self.store.set_admin(user, p["project"], p["agent"]) or {"updated": True}
             with self.store.connect() as db:
-                project = self.store.require_member(db, p["project"], user)
+                db.execute("BEGIN IMMEDIATE")
+                project = self.store.require_member(db, p["project"], user, active=True)
                 if project["owner_id"] != user:
                     raise PermissionError("只有群主可以指定管理员")
                 db.execute(
@@ -1215,8 +1250,7 @@ class AccountBackend:
 
     def _username(self, db, user):
         name = db.execute("SELECT username FROM users WHERE id=?", (user,)).fetchone()["username"]
-        suffix = " · " + user[-8:]
-        return name[: -len(suffix)] if name.endswith(suffix) else name
+        return account_display_name(user, name)
 
     def _node(self, db, public, user):
         node = device_node(public)

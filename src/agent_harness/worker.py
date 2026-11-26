@@ -24,6 +24,7 @@ from agent_harness.common import (
     write_json,
 )
 from agent_harness.node_api import NodeExecutionAPI, NodeJobActions, NodeLocalActions, NodeProjectActions
+from agent_harness.usage import CliUsage
 
 ROOT = Path(__file__).resolve().parent
 TERMINAL = {"needs_review", "failed", "cancelled", "timed_out", "interrupted"}
@@ -107,14 +108,14 @@ def executor_environment(root=None, stage=None, full_access=False, network=None,
     return executors.child_environment(root, stage, full_access, network, kind)
 
 
-def codex_login_status(exe, root=None, kind=None):
+def codex_login_status(exe, root=None, kind=None, *, network=None):
     """Check the executor that will run this turn, without reading credentials.
 
     The historical name is kept because the worker, the desktop settings API and
     the Linux receiver all call it through this module.
     """
     root = ROOT if root is None else Path(root)
-    return executors.login(root, exe, kind)
+    return executors.login(root, exe, kind, network=network)
 
 
 def cli_status(root=None):
@@ -642,11 +643,15 @@ def _rpc(request, managed_runtime=None):
             # table does not list falls back to the machine's own executor, so an
             # existing agent keeps working before its model is added to the table.
             kind = executors.kind_for(ROOT, project.get("model"))
-            session_file = "session-" + kind + ".json"
+            # Native sessions can remember the last explicit effort. Isolate
+            # engine defaults so subsequent turns cannot inherit that override.
+            native_default = project.get("effort") == "default"
+            session_kind = kind + "-default" if native_default else kind
+            session_file = "session-" + session_kind + ".json"
             if channel:
                 identifier(channel)
-                session_file = "channels/" + channel + "-" + kind + ".json"
-            elif (ROOT / "projects").joinpath(project["name"]).joinpath(session_file).is_file() is False:
+                session_file = "channels/" + channel + "-" + session_kind + ".json"
+            elif not native_default and not (directory / session_file).is_file():
                 # Older installs kept one thread id for the single executor the
                 # machine ran before routing existed; adopt it only for that one.
                 legacy = directory / "session.json"
@@ -874,9 +879,9 @@ def build_command(exe, project, thread_id):
     return executors.codex_command(exe, project, thread_id)
 
 
-def effective_model(thread_id, since=None):
+def effective_model(thread_id, since=None, *, kind=None):
     """The model the executor actually used, when it records one."""
-    return executors.effective_model(executors.selected(ROOT), thread_id, since)
+    return executors.effective_model(kind or executors.selected(ROOT), thread_id, since)
 
 
 def final_action_schema(policy, project_tools=False):
@@ -1310,7 +1315,7 @@ def run(job):
         directory = project_dir(config["project"]["name"])
         kind = executors.kind_for(ROOT, config["project"].get("model"))
         exe = cli_path(ROOT, kind)
-        login = codex_login_status(exe, ROOT, kind=kind)
+        login = codex_login_status(exe, ROOT, kind=kind, network=config["project"].get("network"))
         if not login["logged_in"]:
             raise RuntimeError(login["login_error"])
         kind_hint = executors.kind_for(ROOT, config["project"].get("model"))
@@ -1338,6 +1343,8 @@ def run(job):
         granted_full = "full_access" in granted
         full_access = not command_project.get("local_control") or granted_full
         command_project["_full_access"] = bool(full_access)
+        requested_model, actual_effort = executors.effective_request(ROOT, command_project, kind=kind)
+        usage = CliUsage(kind, resumed=bool(config.get("thread_id")))
         # Only Codex can enforce the structured reply with a JSON schema; DSH
         # managed turns rely on the GROUP_RULES prompt contract alone.
         managed = bool(config.get("managed_turn"))
@@ -1431,8 +1438,9 @@ def run(job):
                 status="running",
                 started_at=now(),
                 codex_pid=proc.pid,
-                requested_model=executors.requested_model(ROOT, config["project"]["model"], kind=kind),
+                requested_model=requested_model,
                 reasoning_effort=config["project"]["effort"],
+                effective_reasoning_effort=actual_effort,
                 command=command,
                 thread_id=config["thread_id"],
             )
@@ -1449,6 +1457,7 @@ def run(job):
                         output.write(raw)
                         output.flush()
                         for provider_event in events(raw.decode("utf-8", errors="replace")):
+                            usage.observe(provider_event)
                             for event in executors.normalize(kind, provider_event):
                                 seen.append(event)
                                 if event["type"] == "thread.started":
@@ -1506,12 +1515,14 @@ def run(job):
                 status=outcome(code, seen, cancelled, timed_out),
                 exit_code=code,
                 finished_at=now(),
-                effective_model=effective_model(state.get("thread_id"), state["started_at"]),
+                effective_model=effective_model(state.get("thread_id"), state["started_at"], kind=kind),
             )
             if reader.is_alive():
                 state.update(status="failed", error="Event reader did not drain")
             if reader_errors:
                 state.update(status="failed", error="Event reader failed: " + reader_errors[0])
+            if not reader.is_alive() and not reader_errors and (totals := usage.result()):
+                state["usage"] = totals
             state["model_verified"] = bool(state.get("effective_model"))
             # The reply tool writes the structured answer itself; prefer it over
             # whatever prose the model also produced.

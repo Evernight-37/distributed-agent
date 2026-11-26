@@ -34,6 +34,20 @@ async function refresh(force = false) {
     const dash = await api("dashboard");
     let view = null;
     if (page === "project") {
+      const service = S.view?.server || S.view?.project?.server;
+      if (
+        service &&
+        !dash.unavailable_services?.includes(service) &&
+        dash.services?.some((item) => item.server === service) &&
+        !dash.projects.some((item) => item.id === project)
+      ) {
+        if (epoch === S.epoch && project === S.project) {
+          closeModal();
+          S.dash = dash;
+          renderDashboard();
+        }
+        return;
+      }
       const selected = S.chatSelection?.get(project);
       view = await api("project", {
         id: project,

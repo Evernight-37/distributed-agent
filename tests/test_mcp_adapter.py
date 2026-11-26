@@ -61,6 +61,31 @@ class McpAdapterTests(unittest.TestCase):
         self.thread.join(timeout=2)
         self.temp.cleanup()
 
+    def test_memory_review_requires_a_project_grant_and_honors_archive(self):
+        with Store(self.state).connect() as db:
+            note = db.execute(
+                "INSERT INTO project_memory_notes(project_id,author_id,body,created_at,state) VALUES(?,?,?,?,?)",
+                (self.project, "admin", "A proposed project rule", 100, "pending"),
+            ).lastrowid
+        payload = {"project": self.project, "ids": [note], "action": "keep", "kind": "rule"}
+        view = self.backend.call("harness_project_read", {"project": self.project})
+        self.assertFalse(view["project_memory"]["can_review"])
+        self.assertEqual(view["project_memory"]["candidates"][0]["id"], note)
+        with self.assertRaises((RuntimeError, PermissionError)):
+            self.backend.call("harness_project_memory_review", payload)
+        self.bridge._rpc("mcp-approval-policy", {"project": self.project, "kinds": ["memory"]}, server=self.url)
+        response = self.backend.call("harness_project_memory_review", payload)
+        self.assertEqual(response, {"ids": [note], "state": "active"})
+
+        self.bridge._rpc("project-lifecycle", {"project": self.project, "action": "archive"}, server=self.url)
+        view = self.backend.call("harness_project_read", {"project": self.project})
+        self.assertFalse(view["project_memory"]["can_review"])
+        self.assertEqual(view["project_memory"]["notes"][0]["id"], note)
+        with self.assertRaises((RuntimeError, PermissionError, ValueError)):
+            self.backend.call(
+                "harness_project_memory_review", {"project": self.project, "ids": [note], "action": "archive"}
+            )
+
     def test_lists_reads_and_sends_without_browser_session(self):
         status = self.backend.call("harness_status", {})
         self.assertEqual(status["account"], "Owner")

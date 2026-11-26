@@ -61,7 +61,7 @@ class Attachments:
         name, data = safe_name(name), decode_file(encoded)
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            self.store.require_member(db, project, user)
+            self.store.require_member(db, project, user, active=True)
             db.execute(
                 "DELETE FROM attachments WHERE message_id IS NULL AND created_at<?",
                 (time.time() - 86400,),

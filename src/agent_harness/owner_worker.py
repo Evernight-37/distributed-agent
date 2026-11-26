@@ -5,7 +5,15 @@ import os
 import re
 from pathlib import Path
 from agent_harness.account_identity import verify_owner_command
-from agent_harness.common import identifier, lock, read_json, write_json, validate_project
+from agent_harness.common import (
+    LEGACY_REASONING_LEVELS,
+    REASONING_LEVELS,
+    identifier,
+    lock,
+    read_json,
+    validate_project,
+    write_json,
+)
 from agent_harness.owner_backend import PROJECT_AGENT_ACTIONS, canonical, execution_project, project_agent_target
 
 END_STATES = {
@@ -311,6 +319,7 @@ class OwnerControl:
             "strict_worktree",
             "attachment_policy",
             "network",
+            "model_config_version",
         }
         if not isinstance(settings, dict) or set(settings) - allowed:
             raise ValueError("Unsupported employee setting")
@@ -318,7 +327,11 @@ class OwnerControl:
         if not isinstance(model, str) or not re.fullmatch(r"[a-zA-Z0-9_.-]+", model):
             raise ValueError("An explicit model is required")
         effort = settings.get("effort")
-        if effort not in {"low", "medium", "high", "xhigh", "max", "ultra"}:
+        model_version = settings.get("model_config_version")
+        if model_version is not None and model_version != 2:
+            raise ValueError("Unsupported model configuration version")
+        allowed_levels = REASONING_LEVELS if model_version == 2 else LEGACY_REASONING_LEVELS
+        if not isinstance(effort, str) or effort not in allowed_levels:
             raise ValueError("Invalid reasoning effort")
         timeout = settings.get("timeout", 1800)
         if not isinstance(timeout, int) or isinstance(timeout, bool) or not 30 <= timeout <= 86400:
@@ -355,11 +368,14 @@ class OwnerControl:
             "strict_worktree": settings.get("strict_worktree", False),
             "attachment_policy": attachment_policy,
             "network": network,
+            **({"model_config_version": model_version} if model_version is not None else {}),
         }
 
     def _write_project_settings(self, backend, settings, workspace=None):
         path = self.root / "projects" / backend / "project.json"
         options = {k: settings[k] for k in ("model", "effort", "timeout", "strict_worktree")}
+        if "model_config_version" in settings:
+            options["model_config_version"] = settings["model_config_version"]
         registered = read_json(path)
         if registered is None:
             if workspace is None:
@@ -396,12 +412,23 @@ class OwnerControl:
             return dict(result, enabled=False)
         if existing and existing.get("project_deleted"):
             raise ValueError("项目 Agent 已经移除")
-        settings = self._settings(data["settings"])
-        if settings["enabled"]:
-            from agent_harness import executors
+        requested = data["settings"]
+        if existing and existing.get("model_config_version") == 2 and requested.get("model_config_version") != 2:
+            raise ValueError("请更新应用后修改此项目 Agent 的模型设置")
+        settings = self._settings(requested)
+        model, effort = settings["model"], settings["effort"]
+        from agent_harness import executors
 
-            if executors.model_kind(self.root, settings["model"]) is None:
-                raise ValueError("执行机器的可用模型表中没有 " + settings["model"])
+        if settings["enabled"] and executors.model_kind(self.root, model) is None:
+            raise ValueError("执行机器的可用模型表中没有 " + model)
+        if settings.get("model_config_version") == 2 and effort != "default":
+            from agent_harness.model_capabilities import for_model
+
+            capability = for_model(self.root, model)
+            if not capability or capability["efforts"] is None:
+                raise ValueError("无法验证该模型的思考强度；请选择执行器默认")
+            if effort not in capability["efforts"]:
+                raise ValueError("执行机器上的该模型不支持思考强度 " + effort)
         name = data["name"].strip()
         self._write_project_settings(backend, settings, self._workspace(project) if creating else None)
         self.connector.save_binding(
@@ -427,6 +454,16 @@ class OwnerControl:
             return self._configure_default_workspace(data)
         if action == "transfer-receive-directory":
             return self._configure_receive_directory(data)
+        if action == "model-capabilities" and not data:
+            from agent_harness import executors
+            from agent_harness.model_capabilities import snapshot
+
+            override = executors.settings(self.root).get("model")
+            return {
+                "models": snapshot(self.root),
+                "default_executor": executors.selected(self.root),
+                "legacy_model_override": (override.strip() or None) if isinstance(override, str) else None,
+            }
         if action in PROJECT_AGENT_ACTIONS:
             return self._project_agent(action, data)
         if action not in {"create", "configure", "dispatch", "withdraw", "delete"}:

@@ -29,14 +29,16 @@ function renderDashboard() {
   renderAttachmentApprovals(approvals);
   if (approvals.childElementCount) page.append(approvals);
 
+  const active = S.dash.projects.filter((project) => !project.archived_at);
+  const archived = S.dash.projects.filter((project) => project.archived_at);
   const section = el("section", "dashboard-projects");
   const heading = el("div", "section-head");
   heading.append(
     el("h2", "", t("我的项目", "My projects")),
-    el("span", "muted small", String(S.dash.projects.length)),
+    el("span", "muted small", String(active.length)),
   );
   const projects = el("div", "dashboard-project-grid");
-  if (!S.dash.projects.length) {
+  if (!active.length) {
     projects.classList.add("panel", "dashboard-empty");
     empty(
       projects,
@@ -46,35 +48,62 @@ function renderDashboard() {
       ),
     );
   }
-  for (const project of S.dash.projects) {
-    const entry = button("", () => openProject(project.id), "project");
-    const mark = el(
-      "span",
-      "project-mark",
-      Array.from(project.name.trim())[0] || t("项", "P"),
+  active.forEach((project) => projects.append(dashboardProjectEntry(project)));
+  section.append(heading, projects);
+  page.append(section);
+  if (archived.length) {
+    const previous = c.querySelector("#archivedProjects");
+    const archive = el(
+      "details",
+      "panel side-section dashboard-archived-projects",
     );
-    mark.setAttribute("aria-hidden", "true");
-    const info = el("div");
-    info.append(el("div", "project-name", project.name));
-    const context = [
-      S.dash.services?.length > 1 ? serviceName(project.server) : "",
-      project.last_entered
+    archive.id = "archivedProjects";
+    archive.open = previous?.open || false;
+    archive.append(
+      el(
+        "summary",
+        "",
+        `${t("已归档项目", "Archived projects")} (${archived.length})`,
+      ),
+    );
+    const list = el("div", "dashboard-project-grid");
+    archived.forEach((project) => list.append(dashboardProjectEntry(project)));
+    archive.append(list);
+    page.append(archive);
+  }
+  c.replaceChildren(page);
+}
+
+function dashboardProjectEntry(project) {
+  const entry = button("", () => openProject(project.id), "project");
+  const mark = el(
+    "span",
+    "project-mark",
+    Array.from(project.name.trim())[0] || t("项", "P"),
+  );
+  mark.setAttribute("aria-hidden", "true");
+  const info = el("div");
+  info.append(el("div", "project-name", project.name));
+  const context = [
+    S.dash.services?.length > 1 ? serviceName(project.server) : "",
+    project.archived_at
+      ? t(
+          `归档于 ${date(project.archived_at)}`,
+          `Archived ${date(project.archived_at)}`,
+        )
+      : project.last_entered
         ? t(
             `最近打开 ${date(project.last_entered)}`,
             `Last opened ${date(project.last_entered)}`,
           )
         : "",
-    ].filter(Boolean);
-    if (context.length)
-      info.append(el("div", "muted small", context.join(" · ")));
-    const arrow = el("span", "project-arrow", "›");
-    arrow.setAttribute("aria-hidden", "true");
-    entry.append(mark, info, arrow);
-    projects.append(entry);
-  }
-  section.append(heading, projects);
-  page.append(section);
-  c.replaceChildren(page);
+  ].filter(Boolean);
+  if (context.length)
+    info.append(el("div", "muted small", context.join(" · ")));
+  const arrow = el("span", "project-arrow", "›");
+  arrow.setAttribute("aria-hidden", "true");
+  entry.append(mark, info, arrow);
+  return entry;
 }
 
 function renderAttachmentApprovals(parent) {

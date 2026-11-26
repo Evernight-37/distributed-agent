@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agent_harness.app_bridge import AppBridge
 from agent_harness.common import (
@@ -51,11 +51,52 @@ class ProxySettingsTests(unittest.TestCase):
                 run.return_value.stderr = ""
                 self.assertEqual(codex_login_status("codex.exe", root), {"logged_in": True})
                 self.assertEqual(run.call_args.kwargs["env"]["HTTPS_PROXY"], "http://127.0.0.1:7897")
+                self.assertEqual(
+                    codex_login_status("codex.exe", root, network={"mode": "custom", "port": 1080}),
+                    {"logged_in": True},
+                )
+                self.assertEqual(run.call_args.kwargs["env"]["HTTPS_PROXY"], "http://127.0.0.1:1080")
                 run.return_value.returncode = 1
                 run.return_value.stdout = "Not logged in"
                 status = codex_login_status("codex.exe", root)
                 self.assertFalse(status["logged_in"])
                 self.assertIn("尚未登录", status["login_error"])
+
+    def test_warm_server_restarts_when_the_effective_proxy_changes(self):
+        def mock_server(command, cwd, env, stderr):
+            server = Mock()
+            server.process.poll.return_value = None
+            server.call.return_value = {"config": {"mcp_servers": {}}}
+            server.env = env
+            return server
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            executor = root / "executor.json"
+            write_json(executor, {"proxy": {"enabled": True, "port": 7897}})
+            with (
+                patch.object(warm_worker, "ROOT", root),
+                patch.object(warm_worker, "project_dir", return_value=root),
+                patch.object(warm_worker, "server_command", return_value=["codex"]),
+                patch.object(warm_worker, "mcp_names", return_value=[]),
+                patch.object(warm_worker, "AppServer", side_effect=mock_server),
+            ):
+                manager = warm_worker.WarmManager("project")
+                try:
+                    first = manager.ensure_server("discuss", folder)
+                    self.assertIs(manager.ensure_server("discuss", folder), first)
+                    self.assertEqual(first.env["HTTPS_PROXY"], "http://127.0.0.1:7897")
+
+                    write_json(executor, {"proxy": {"enabled": True, "port": 7898}})
+                    second = manager.ensure_server("discuss", folder)
+                    first.close.assert_called_once()
+                    self.assertEqual(second.env["HTTPS_PROXY"], "http://127.0.0.1:7898")
+
+                    direct = manager.ensure_server("discuss", folder, network={"mode": "direct"})
+                    second.close.assert_called_once()
+                    self.assertNotIn("HTTPS_PROXY", direct.env)
+                finally:
+                    manager.close_server()
 
     def test_app_setting_updates_local_receivers_without_touching_cli_path(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
+from agent_harness.common import REASONING_LEVELS
 from agent_harness.desktop_locale import LANGUAGE_PREFERENCES
 
 
@@ -150,7 +151,11 @@ class BoundaryContract:
 
 _TEXT = lambda maximum: {"type": "string", "max_length": maximum}
 _ID = {"type": "string", "min_length": 1, "max_length": 120}
-_EFFORT = {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max", "ultra"]}
+_EFFORT = {
+    "type": "string",
+    "enum": sorted(REASONING_LEVELS),
+}
+_MEMORY_KIND = {"type": "string", "enum": ["rule", "decision", "fact"]}
 _TIMEOUT = {"type": "integer", "minimum": 30, "maximum": 86400}
 _STAGES = {
     "type": "array",
@@ -167,6 +172,7 @@ _AGENT_FIELDS = {
     "strict_worktree": {"type": "boolean"},
     "attachment_policy": {"type": "string", "enum": ["ask", "auto", "full"]},
     "network": {"type": "object"},
+    "model_config_version": {"type": "integer", "minimum": 2, "maximum": 2},
 }
 _REQUIRED_AGENT_FIELDS = {"name", "model", "effort", "enabled", "stages", "timeout"}
 
@@ -202,7 +208,7 @@ DESKTOP_FIELDS = {
     "task-resolve-local": {"project": _ID, "task_id": _ID, "confirm_no_job": {"type": "boolean"}},
     "agent-permission": {"project": _ID, "agent_id": _ID, "allow": {"type": "boolean"}},
     "permission-decide": {"project": _ID, "request_id": _ID, "approve": {"type": "boolean"}},
-    "mcp-approval-policy": {"project": _ID, "kinds": {"type": "array", "max_items": 3, "item_type": "string"}},
+    "mcp-approval-policy": {"project": _ID, "kinds": {"type": "array", "max_items": 4, "item_type": "string"}},
     "attachment-decide": {"server": _TEXT(2048), "id": _ID, "approve": {"type": "boolean"}},
     "attachment-upload": {"project": _ID, "name": _TEXT(120), "base64": _TEXT(16_000_000)},
     "attachment-get": {"project": _ID, "id": _ID},
@@ -216,11 +222,24 @@ DESKTOP_FIELDS = {
         "path": _TEXT(4096),
     },
     "message": {"project": _ID, "body": _TEXT(20_000)},
-    "memory-note-add": {"project": _ID, "body": _TEXT(20_000)},
+    "memory-note-add": {"project": _ID, "body": _TEXT(2000), "kind": _MEMORY_KIND},
+    "memory-note-review": {
+        "project": _ID,
+        "ids": {"type": "array", "max_items": 30, "item_type": "integer"},
+        "action": {"type": "string", "enum": ["keep", "archive", "merge"]},
+        "body": _TEXT(2000),
+        "kind": _MEMORY_KIND,
+    },
+    "project-lifecycle": {
+        "project": _ID,
+        "action": {"type": "string", "enum": ["archive", "restore", "delete-preview", "delete"]},
+        "confirmation": _TEXT(120),
+    },
     "employee-configure": {"id": _ID, **_AGENT_FIELDS},
     "project-agent-create": {"project": _ID, "node": _ID, **_AGENT_FIELDS},
     "project-agent-configure": {"project": _ID, "agent_id": _ID, **_AGENT_FIELDS},
     "project-agent-delete": {"project": _ID, "agent_id": _ID},
+    "project-agent-models": {"project": _ID, "node": _ID, "command_id": _ID},
     "workspace-configure": {"project": _ID, "node": _ID, "server": _TEXT(2048)},
     "executor-save": {
         "models": {"type": "array"},
@@ -250,6 +269,7 @@ DESKTOP_FIELDS = {
 NODE_FIELDS = {
     "configure": {
         "project": _ID,
+        "model_config_version": {"type": "integer", "minimum": 2, "maximum": 2},
         "model": _TEXT(100),
         "effort": _EFFORT,
         "timeout": _TIMEOUT,
@@ -329,13 +349,16 @@ DESKTOP_CONTROL = BoundaryContract(
             "logout",
             "memory-note-add",
             "memory-note-delete",
+            "memory-note-review",
             "message",
             "new-project",
             "project",
+            "project-lifecycle",
             "project-work",
             "project-agent-create",
             "project-agent-configure",
             "project-agent-delete",
+            "project-agent-models",
             "proxy-save",
             "recovery-export",
             "recovery-import",
@@ -402,12 +425,15 @@ DESKTOP_CONTROL = BoundaryContract(
         "ai-setup-prompt": frozenset({"server", "platform"}),
         "memory-note-add": frozenset({"project", "body"}),
         "memory-note-delete": frozenset({"project"}),
+        "memory-note-review": frozenset({"project", "ids", "action"}),
         "message": frozenset({"project", "body"}),
         "new-project": frozenset({"name"}),
         "project": frozenset({"id"}),
+        "project-lifecycle": frozenset({"project", "action"}),
         "project-agent-create": frozenset({"project", "node", *_REQUIRED_AGENT_FIELDS}),
         "project-agent-configure": frozenset({"project", "agent_id", *_REQUIRED_AGENT_FIELDS}),
         "project-agent-delete": frozenset({"project", "agent_id"}),
+        "project-agent-models": frozenset({"project", "node"}),
         "receiver-attach": frozenset({"server"}),
         "recovery-export": frozenset({"recovery_password"}),
         "recovery-import": frozenset({"server", "recovery_password", "password"}),

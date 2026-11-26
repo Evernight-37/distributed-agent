@@ -84,15 +84,17 @@ class PullWorkerTests(unittest.TestCase):
         self.calls = []
         self.reports = []
         self.jobs = []
+        self.projects = []
         self.cancellations = []
         self.execution_decisions = []
         self.fail_report = False
         self.local_state = "needs_review"
+        self.local_result = {}
 
         def executor(request):
             self.calls.append(request)
             if request["action"] == "fetch":
-                return {"status": self.local_state, "report": "local-report"}
+                return {"status": self.local_state, "report": "local-report", **self.local_result}
             if request["action"] == "execution_status":
                 return {"status": "completed", "exit_code": 0}
             return {"status": "running"}
@@ -101,7 +103,7 @@ class PullWorkerTests(unittest.TestCase):
             if operation == "poll":
                 return {
                     "jobs": self.jobs,
-                    "projects": [],
+                    "projects": self.projects,
                     "cancellations": self.cancellations,
                     "execution_decisions": self.execution_decisions,
                 }
@@ -229,6 +231,12 @@ class PullWorkerTests(unittest.TestCase):
         self.assertFalse(self.starts())
 
     def test_local_settings_and_duplicate_assignment(self):
+        self.local_result = {
+            "started_at": "1970-01-01T00:00:10+00:00",
+            "finished_at": "1970-01-01T00:00:15+00:00",
+            "usage": {"input_tokens": 20, "output_tokens": 2, "cached_input_tokens": 12, "unsupported": "ignore"},
+            "effective_reasoning_effort": None,
+        }
         self.jobs = [self.job("turn")]
         for _ in range(4):
             self.connector.cycle()
@@ -238,6 +246,10 @@ class PullWorkerTests(unittest.TestCase):
         self.assertTrue(read_json(self.root / "projects" / "local" / "project.json")["local_control"])
         self.assertEqual(json.loads(self.starts()[0]["prompt"])["allowed_files"], "No edits")
         self.assertEqual(self.reports[-1]["state"], "needs_review")
+        result = self.reports[-1]["result"]
+        self.assertEqual((result["started_at"], result["finished_at"]), (10, 15))
+        self.assertEqual(result["usage"], {"input_tokens": 20, "output_tokens": 2, "cached_input_tokens": 12})
+        self.assertIsNone(result["effective_reasoning_effort"])
 
     def test_project_tool_uses_task_mailbox_and_returns_hub_result(self):
         self.local_state = "running"
@@ -422,6 +434,21 @@ class PullWorkerTests(unittest.TestCase):
         self.assertEqual(len(self.starts("execution_start")), 1)
         self.assertEqual(self.starts("execution_start")[0]["expected_execution_digest"], digest)
         self.assertEqual(self.reports[-1]["state"], "completed")
+
+    def test_archived_project_holds_a_local_execution_approval_until_restored(self):
+        template = self.root / "projects" / "local" / "execution_templates.json"
+        write_json(template, {"check": {"argv": ["fixed-program", "arg"]}})
+        self.jobs = [self.job("exec", "execution", {"template": "check"})]
+        self.connector.cycle()
+        self.connector.approve("exec", True)
+        self.projects = [{"id": "p1", "archived_at": 100}]
+        self.connector.cycle()
+        self.assertFalse(self.starts("execution_start"))
+        with self.assertRaisesRegex(ValueError, "已归档"):
+            self.connector.approve("exec", True)
+        self.projects = [{"id": "p1", "archived_at": None}]
+        self.connector.cycle()
+        self.assertEqual(len(self.starts("execution_start")), 1)
 
     def test_delegated_execution_rejects_changed_templates_and_cancellation_wins(self):
         template = self.root / "projects" / "local" / "execution_templates.json"

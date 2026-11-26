@@ -69,7 +69,7 @@ class PublicReplyDecoder:
 class AppServer:
     """One private stdio app-server process owned by a local worker manager."""
 
-    def __init__(self, command, cwd, env, stderr):
+    def __init__(self, command, cwd, env, stderr, *, initialize_timeout=20):
         self.process = subprocess.Popen(
             command,
             cwd=cwd,
@@ -84,18 +84,22 @@ class AppServer:
         self.next_id = 1
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
-        self.call(
-            "initialize",
-            {
-                "clientInfo": {
-                    "name": "distributed_foolship",
-                    "title": "Distributed Foolship",
-                    "version": application_version(),
-                }
-            },
-            20,
-        )
-        self.send({"method": "initialized", "params": {}})
+        try:
+            self.call(
+                "initialize",
+                {
+                    "clientInfo": {
+                        "name": "distributed_foolship",
+                        "title": "Distributed Foolship",
+                        "version": application_version(),
+                    }
+                },
+                initialize_timeout,
+            )
+            self.send({"method": "initialized", "params": {}})
+        except BaseException:
+            self.close(timeout=1)
+            raise
 
     def _read(self):
         for line in self.process.stdout:
@@ -147,17 +151,18 @@ class AppServer:
         finally:
             self.pending = deferred + self.pending
 
-    def close(self):
+    def close(self, *, timeout=5):
         if self.process.poll() is None:
             try:
                 self.process.stdin.close()
             except OSError:
                 pass
             try:
-                self.process.wait(timeout=5)
+                self.process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 self.process.terminate()
                 try:
-                    self.process.wait(timeout=5)
+                    self.process.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     self.process.kill()
+                    self.process.wait(timeout=timeout)

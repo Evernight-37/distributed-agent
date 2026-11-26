@@ -79,6 +79,12 @@ reply_object = {
 if mode == "attachment":
     reply_object["attachments"] = [{"path": "report.txt"}]
 reply = json.dumps(reply_object, ensure_ascii=False)
+for step, usage in enumerate([
+    {"inputTokens": 5, "cacheReadTokens": 15, "cacheWriteTokens": 0, "outputTokens": 2, "totalTokens": 22},
+    {"inputTokens": 2, "cacheReadTokens": 30, "cacheWriteTokens": 2, "outputTokens": 3, "totalTokens": 37},
+], 1):
+    print(json.dumps({"type": "status", "phase": "step_start", "turn": 1, "step": step}))
+    print(json.dumps({"type": "status", "phase": "step_end", "turn": 1, "step": step, "usage": usage}))
 print(json.dumps({"type": "status", "phase": "turn_end", "turn": 1, "reason": {"kind": "completed"}}))
 print(json.dumps({"type": "final", "text": reply}))
 sys.exit(0)
@@ -338,6 +344,10 @@ class DshWorkerTurnTests(unittest.TestCase):
         self.assertEqual(state["exit_code"], 0)
         self.assertEqual(state["thread_id"], "session-11111111-2222-3333-4444-555555555555")
         self.assertEqual(state["requested_model"], "deepseek-flash")
+        self.assertIsNone(state["effective_reasoning_effort"])
+        self.assertEqual(
+            state["usage"], {"input_tokens": 54, "output_tokens": 5, "cached_input_tokens": 45, "cache_write_tokens": 2}
+        )
         self.assertFalse(state["model_verified"])
         self.assertIsNone(state["effective_model"])
         self.assertIn("done from dsh", (job / "report.txt").read_text(encoding="utf-8"))
@@ -426,6 +436,35 @@ class DshWorkerTurnTests(unittest.TestCase):
         worker.run("job1")
         self.assertEqual(read_json(self.record)["argv"][-3:], ["--session-id", first, "-"])
         self.assertEqual(read_json(job / "state.json")["status"], "needs_review")
+
+    def test_native_effort_default_resumes_only_its_own_session(self):
+        project = worker.project_dir("demo")
+        write_json(project / "project.json", {**self._project(), "effort": "default", "model_config_version": 2})
+        write_json(project / "session.json", {"thread_id": "legacy-session"})
+        write_json(project / "channels" / "group-dsh.json", {"thread_id": "explicit-session"})
+        with (
+            mock.patch.object(worker, "launch_supervisor", return_value=123),
+            mock.patch.object(worker, "process_stamp", return_value=1),
+        ):
+            worker.rpc({"action": "start", "project": "demo", "job": "default-first", "prompt": self._contract()})
+            first = read_json(worker.job_dir("default-first") / "request.json")
+            self.assertEqual(first["session_file"], "session-dsh-default.json")
+            self.assertIsNone(first["thread_id"])
+            write_json(project / "active.json", None)
+
+            write_json(project / "channels" / "group-dsh-default.json", {"thread_id": "default-session"})
+            worker.rpc(
+                {
+                    "action": "start",
+                    "project": "demo",
+                    "job": "default-next",
+                    "prompt": self._contract(),
+                    "session_channel": "group",
+                }
+            )
+            next_turn = read_json(worker.job_dir("default-next") / "request.json")
+            self.assertEqual(next_turn["session_file"], "channels/group-dsh-default.json")
+            self.assertEqual(next_turn["thread_id"], "default-session")
 
     def test_dsh_resume_applies_grant_and_revocation_to_the_same_session(self):
         thread_id = None

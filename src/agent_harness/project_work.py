@@ -246,7 +246,7 @@ class ProjectWork:
         action = payload.get("action")
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            project = self.store.require_member(db, project_id, user)
+            project = self.store.require_member(db, project_id, user, active=True)
             request_id, digest, prior = self._idempotent(
                 db, user, project_id, payload.get("client_request_id"), payload
             )
@@ -700,6 +700,8 @@ class ProjectWork:
             )
         ):
             raise PermissionError("只有当前管理员可从人类消息准备草稿")
+        if project_row["archived_at"] is not None:
+            raise ValueError("项目已归档，请先恢复项目")
         if not isinstance(proposal, dict):
             raise ValueError("工作建议必须是一个草稿")
         conversation = source_row["conversation_id"]
@@ -869,6 +871,9 @@ class ProjectWork:
         """Persist the human's exact addressed message as an idempotent follow-up."""
 
         project_id = project["id"] if isinstance(project, dict) else project
+        active = db.execute("SELECT 1 FROM projects WHERE id=? AND archived_at IS NULL", (project_id,)).fetchone()
+        if not active:
+            raise ValueError("项目已归档，请先恢复项目")
         source_row = source if hasattr(source, "keys") else self._message(db, project_id, source)
         candidates = {item["id"]: item for item in self.agent_work(db, project, admin, source_row)}
         selected = candidates.get(work_id)
@@ -940,14 +945,19 @@ class ProjectWork:
                     continue
             inputs.append(value)
         result["inputs"] = inputs
+        from agent_harness.run_history import run_details
+
         result["executions"] = [
-            dict(x)
+            {**dict(x), "run_details": run_details(x["receiver_result"])}
             for x in db.execute(
-                "SELECT e.*,t.state AS task_state FROM project_work_executions e JOIN tasks t ON t.id=e.task_id "
+                "SELECT e.*,t.state AS task_state,j.result AS receiver_result "
+                "FROM project_work_executions e JOIN tasks t ON t.id=e.task_id LEFT JOIN pull_jobs j ON j.id=t.job "
                 "WHERE e.work_id=? ORDER BY e.created_at",
                 (work_id,),
             )
         ]
+        for execution in result["executions"]:
+            execution.pop("receiver_result")
         if result["status"] == "running" and result["executions"]:
             execution = result["executions"][-1]
             if execution["task_state"] == "unknown":
@@ -974,7 +984,7 @@ class ProjectWork:
         return result
 
     def view(self, db, user, project):
-        self.store.require_member(db, project, user)
+        membership = self.store.require_member(db, project, user)
         drafts = []
         for row in db.execute(
             "SELECT * FROM project_work_drafts WHERE project_id=? ORDER BY updated_at DESC", (project,)
@@ -989,13 +999,27 @@ class ProjectWork:
                 items.append(self._work_record(db, user, row["id"]))
             except PermissionError:
                 pass
+        if membership["archived_at"] is not None:
+            for draft in drafts:
+                draft["can_edit"] = False
+            for item in items:
+                item["can_manage"] = False
         return {"drafts": drafts, "items": items}
 
     def schedule(self, db):
+        if not db.in_transaction:
+            if not db.execute(
+                "SELECT 1 FROM project_work_items w JOIN projects p ON p.id=w.project_id "
+                "WHERE w.status='queued' AND p.paused=0 AND p.archived_at IS NULL LIMIT 1"
+            ).fetchone():
+                return []
+            db.execute("BEGIN IMMEDIATE")
         scheduled = []
         rows = db.execute("SELECT * FROM project_work_items WHERE status='queued' ORDER BY created_at").fetchall()
         for work in rows:
             project = dict(db.execute("SELECT * FROM projects WHERE id=?", (work["project_id"],)).fetchone())
+            if project["paused"] or project["archived_at"] is not None:
+                continue
             agent = db.execute(
                 "SELECT * FROM agents WHERE id=? AND project_id=?", (work["agent_id"], work["project_id"])
             ).fetchone()

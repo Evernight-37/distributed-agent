@@ -309,6 +309,7 @@ class DesktopOwnerActions:
             "project-agent-create",
             "project-agent-configure",
             "project-agent-delete",
+            "project-agent-models",
             "workspace-configure",
             "attachment-save",
         }
@@ -321,6 +322,8 @@ class DesktopOwnerActions:
         settings = {key: data[key] for key in ("model", "effort", "enabled", "stages", "timeout")}
         settings["strict_worktree"] = data.get("strict_worktree", False)
         settings["attachment_policy"] = data.get("attachment_policy", "ask")
+        if "model_config_version" in data:
+            settings["model_config_version"] = data["model_config_version"]
         network = data.get("network") or {"mode": "machine"}
         if not isinstance(network, dict) or network.get("mode") not in {"machine", "direct", "custom"}:
             raise ValueError("无效的网络设置")
@@ -371,6 +374,12 @@ class DesktopOwnerActions:
                 {"id": data.get("id"), "name": data.get("name")},
                 server=server,
             )
+        if action == "project-agent-models":
+            project, node = data["project"], data["node"]
+            server = bridge.project_servers.get(project, bridge.profile["server"])
+            if data.get("command_id"):
+                return bridge._rpc("command-status", {"id": data["command_id"]}, server=server)
+            return bridge._owner("model-capabilities", node, {}, server)
         if action in {"project-agent-create", "project-agent-configure", "project-agent-delete"}:
             project = data["project"]
             server = bridge.project_servers.get(project, bridge.profile["server"])
@@ -658,6 +667,7 @@ class DesktopProjectActions:
             "new-project",
             "join-project",
             "project",
+            "project-lifecycle",
             "invite",
             "message",
             "project-work",
@@ -670,6 +680,7 @@ class DesktopProjectActions:
             "conversation-read",
             "memory-note-add",
             "memory-note-delete",
+            "memory-note-review",
             "attachment-upload",
             "attachment-get",
             "receiver-attach",
@@ -698,6 +709,9 @@ class DesktopProjectActions:
             result["pending_devices"] = list(bridge.inspected.values())
             result["pending_approvals"] = []
             result["attachment_approvals"] = []
+            archived_projects = {
+                project["id"] for project in result.get("projects", []) if project.get("archived_at") is not None
+            }
             for server in bridge._services():
                 try:
                     pending = bridge._rpc("attachment-approvals", server=server, timeout=10)
@@ -721,6 +735,8 @@ class DesktopProjectActions:
                         result["pending_approvals"].append(
                             {
                                 "job_id": job["id"],
+                                "project_archived": value.get("project_archived", False)
+                                or job.get("project_id") in archived_projects,
                                 "template": template_name,
                                 "expected_template": template,
                                 "argv": (template or {}).get("argv"),
@@ -826,6 +842,7 @@ class DesktopProjectActions:
             return runtime._control("action", {"action": "resolve-task", "job_id": job_id, "confirm_no_job": True})
         if action in {
             "project",
+            "project-lifecycle",
             "invite",
             "message",
             "project-work",
@@ -837,6 +854,7 @@ class DesktopProjectActions:
             "conversation-read",
             "memory-note-add",
             "memory-note-delete",
+            "memory-note-review",
             "attachment-upload",
             "attachment-get",
         }:

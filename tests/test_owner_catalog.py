@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -41,6 +42,8 @@ class FakeConnector:
             path = self.root / "projects" / r["project"] / "project.json"
             p = read_json(path)
             p.update({k: r[k] for k in ("model", "effort", "timeout", "strict_worktree")})
+            if "model_config_version" in r:
+                p["model_config_version"] = r["model_config_version"]
             write_json(path, p)
         return {}
 
@@ -143,6 +146,19 @@ class OwnerTests(unittest.TestCase):
             self.backend.report(db, device, envelope["body"]["id"], **response)
         return response
 
+    def test_model_capabilities_command_uses_same_device_and_reuses_recent_result(self):
+        with self.store.connect() as db:
+            db.execute("INSERT INTO pull_devices(node,token_hash,last_seen) VALUES('n1','token',?)", (time.time(),))
+        results = [{"name": "demo", "executor": "codex", "efforts": ["high"], "default_effort": "high"}]
+        with patch("agent_harness.model_capabilities.snapshot", return_value=results):
+            applied = self.apply_owner_command("model-capabilities", {})
+        self.assertEqual(applied["result"]["models"], results)
+        cached = self.backend.enqueue("u1", self.envelope("model-capabilities", {}))
+        self.assertEqual(cached["state"], "applied")
+        self.assertEqual(cached["result"], applied["result"])
+        with self.assertRaises(PermissionError):
+            self.backend.enqueue("u2", self.envelope("model-capabilities", {}, owner="u2"))
+
     def advertise_project_agents(self):
         with self.store.connect() as db:
             PullBackend(self.store)._advertise(db, {"node": "n1", "owner_id": "u1"}, self.connector.bindings())
@@ -184,6 +200,31 @@ class OwnerTests(unittest.TestCase):
         self.assertEqual(current["id"], target["agent_id"])
         self.assertFalse(current["enabled"])
         self.assertEqual(read_json(directory / "session.json"), {"thread_id": "original-session"})
+
+    def test_native_project_agent_effort_is_validated_on_the_receiver(self):
+        self.configure_workspace()
+        settings = {"model": "deepseek-flash", "effort": "xhigh", "enabled": True, "model_config_version": 2}
+        data = {"id": "native-agent", "project_id": "p1", "name": "Agent", "settings": settings}
+        with patch("agent_harness.model_capabilities.for_model", return_value={"efforts": ["off", "high", "max"]}):
+            rejected = self.apply_owner_command("project-agent-create", data)
+            self.assertEqual(rejected["state"], "failed")
+            self.assertEqual(self.connector.calls, [])
+            settings["effort"] = "max"
+            applied = self.apply_owner_command("project-agent-create", data)
+        self.assertEqual(applied["state"], "applied", applied)
+        self.assertEqual(applied["result"]["settings"]["effort"], "max")
+        backend_project = applied["result"]["backend_project"]
+        project_file = self.connector.root / "projects" / backend_project / "project.json"
+        self.assertEqual(read_json(project_file)["model_config_version"], 2)
+
+        project = self.advertise_project_agents()["p1"]
+        target = {"agent_id": project["id"], "project_id": "p1", "backend_project": backend_project}
+        settings["effort"] = "default"
+        with patch("agent_harness.model_capabilities.for_model") as capability:
+            changed = self.apply_owner_command("project-agent-configure", dict(target, name="Agent", settings=settings))
+            capability.assert_not_called()
+        self.assertEqual(changed["state"], "applied", changed)
+        self.assertEqual(read_json(project_file)["effort"], "default")
 
     def test_editing_a_legacy_assignment_detaches_it_from_global_configure(self):
         self.assertEqual(self.apply_owner_command("create", {"id": "e1", "name": "Employee"})["state"], "applied")

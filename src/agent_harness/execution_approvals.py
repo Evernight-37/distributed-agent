@@ -27,7 +27,7 @@ def valid_execution_digest(value):
 _OWNED_EXECUTIONS = """
 SELECT j.id,j.node,j.agent_id,j.state AS job_state,j.result,j.cancel_requested,j.created_at,
        e.project_id,e.template,e.state AS execution_state,e.cancel_requested AS execution_cancelled,
-       a.name AS agent_name,p.name AS project_name,a.enabled,a.configuring,p.paused,
+       a.name AS agent_name,p.name AS project_name,a.enabled,a.configuring,p.paused,p.archived_at,
        b.templates,d.job_id AS decided,d.digest AS decided_digest,d.approved AS decision
 FROM pull_jobs j
 JOIN executions e ON e.id=j.id AND e.agent_id=j.agent_id
@@ -94,6 +94,8 @@ def decide_execution(db, user, project, request_id, approve, expected_digest):
         if row["decided_digest"] != expected_digest or bool(row["decision"]) != approve:
             raise PermissionError("这项登记命令申请已经处理")
     else:
+        if approve and row["archived_at"] is not None:
+            raise PermissionError("项目已归档，恢复项目前不能启动登记命令")
         if not _waiting(row) or _reported_digest(row) != expected_digest:
             raise PermissionError("登记命令尚未确认、已结束或快照已变化")
         db.execute(
@@ -115,5 +117,7 @@ def execution_decisions(db, node, owner):
     return [
         {"job_id": row["id"], "digest": row["decided_digest"], "approved": bool(row["decision"])}
         for row in rows
-        if _waiting(row) and row["decided_digest"] == _reported_digest(row)
+        if _waiting(row)
+        and (row["archived_at"] is None or not row["decision"])
+        and row["decided_digest"] == _reported_digest(row)
     ]

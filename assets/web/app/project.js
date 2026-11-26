@@ -747,6 +747,23 @@ function openProjectWorkDetail(view, work) {
       );
       if (execution.error)
         row.append(el("div", "error small", execution.error));
+      row.append(
+        button(
+          t("运行详情", "Run details"),
+          () => {
+            const cached = (view.tasks || []).find(
+              (item) => item.id === execution.task_id,
+            );
+            if (cached) openProjectTaskTrace(view, cached);
+            else
+              modal(t("运行详情", "Run details"), (runBody, footer) => {
+                appendRunDetails(runBody, execution.run_details);
+                footer.append(button(t("关闭", "Close"), closeModal));
+              });
+          },
+          "link small",
+        ),
+      );
       body.append(row);
     });
     const textAction = (label, title, action) =>
@@ -905,6 +922,12 @@ function openProjectTaskTrace(view, task) {
   modal(task.title || t("任务追溯", "Task history"), (body, actions) => {
     const id = field(body, t("任务编号", "Task ID"), task.id);
     id.readOnly = true;
+    if (task.error) body.append(el("p", "error small", task.error));
+    const metrics = el("details", "panel side-section");
+    metrics.open = true;
+    metrics.append(el("summary", "", t("运行与用量", "Run and usage")));
+    appendRunDetails(metrics, task.run_details);
+    body.append(metrics);
     if (name)
       body.append(
         el("div", "setting-row", t("负责人 · ", "Assignee · ") + name),
@@ -1172,7 +1195,8 @@ function renderProject() {
     p = v.project,
     c = $("content"),
     me = S.dash.user.id,
-    owner = p.owner_id === me;
+    owner = p.owner_id === me,
+    archived = !!p.archived_at;
   if (
     !Array.isArray(v.capabilities) ||
     !v.capabilities.includes("conversation_privacy_v2")
@@ -1221,7 +1245,7 @@ function renderProject() {
   const selectedId = selected.id,
     kind = conversationKind(selected),
     isGroup = kind === "group",
-    readOnly = kind === "agent_agent";
+    readOnly = archived || kind === "agent_agent";
   const privateWorkAgent =
     kind === "human_agent"
       ? selected.recipient_id ||
@@ -1252,10 +1276,6 @@ function renderProject() {
     internalOpen = oldInternal?.open || false;
   const oldWork = c.querySelector("#projectWork"),
     workOpen = oldWork?.open ?? true;
-  const oldTasks = c.querySelector("#projectTasks"),
-    tasksOpen = oldTasks?.open || false;
-  const oldMemory = c.querySelector("#projectMemory"),
-    memoryOpen = oldMemory?.open || false;
   const oldMembers = c.querySelector("#projectMembers"),
     membersOpen = oldMembers?.open || false;
   const panelScroll = {
@@ -1263,37 +1283,50 @@ function renderProject() {
     roomList: c.querySelector(".project-room-list")?.scrollLeft || 0,
     side: c.querySelector(".project-side")?.scrollTop || 0,
     work: oldWork?.scrollTop || 0,
-    tasks: oldTasks?.scrollTop || 0,
-    memory: oldMemory?.scrollTop || 0,
     members: oldMembers?.scrollTop || 0,
   };
   c.dataset.projectId = S.project;
   c.dataset.conversationId = selectedId;
   const hasProjectWork = (v.capabilities || []).includes("project_work_v1"),
-    header = head(p.name, serviceName(v.server || p.server));
+    header = head(
+      p.name,
+      [
+        serviceName(v.server || p.server),
+        archived ? t("已归档", "Archived") : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    );
   header.classList.add("project-workspace-header");
-  if (hasProjectWork)
-    header.append(
+  const projectActions = el("div", "project-inspector-actions");
+  if (owner && v.capabilities.includes("project_lifecycle_v1"))
+    projectActions.append(
+      button(t("项目设置", "Project settings"), () => openProjectSettings(v)),
+    );
+  if (hasProjectWork && !archived)
+    projectActions.append(
       button(
         t("＋ 新建任务", "＋ New task"),
         () => openProjectWorkForm(v, createWorkOptions),
         "primary",
       ),
     );
+  if (projectActions.childElementCount) header.append(projectActions);
   c.replaceChildren(header);
   const layout = el("div", "conversation-layout project-workspace");
   const rooms = el("aside", "panel conversation-rail");
   rooms.setAttribute("aria-label", t("项目会话", "Project conversations"));
   const roomHead = el("div", "project-room-heading"),
     roomList = el("div", "project-room-list");
-  roomHead.append(
-    el("h2", "", t("会话", "Chats")),
-    button(
-      t("＋ 私聊", "＋ DM"),
-      startDirectConversation,
-      "project-room-create",
-    ),
-  );
+  roomHead.append(el("h2", "", t("会话", "Chats")));
+  if (!archived)
+    roomHead.append(
+      button(
+        t("＋ 私聊", "＋ DM"),
+        startDirectConversation,
+        "project-room-create",
+      ),
+    );
   rooms.append(roomHead, roomList);
   function roomButton(conversation) {
     const b = button(
@@ -1565,7 +1598,15 @@ function renderProject() {
   });
   chat.append(msgs);
   if (readOnly) {
-    chat.append(el("div", "composer-readonly", t("仅供查看", "Read-only")));
+    chat.append(
+      el(
+        "div",
+        "composer-readonly",
+        archived
+          ? t("项目已归档", "Project archived")
+          : t("仅供查看", "Read-only"),
+      ),
+    );
   } else {
     const composer = el("form", "composer"),
       draftKey = S.project + ":" + selectedId;
@@ -1588,7 +1629,6 @@ function renderProject() {
       text = el("textarea"),
       toolbar = el("div", "project-composer-toolbar"),
       tools = el("div", "project-composer-tools"),
-      submit = el("div", "project-composer-submit"),
       send = button(t("发送", "Send"), null, "primary project-send");
     let sending = false,
       composing = false;
@@ -1607,10 +1647,18 @@ function renderProject() {
     }
     text.value = draft.body;
     text.rows = 2;
-    text.placeholder = isGroup
+    const inputLabel = isGroup
       ? t("发消息给项目大群", "Message the project")
       : t("发私聊消息", "Write a direct message");
-    text.setAttribute("aria-label", text.placeholder);
+    text.placeholder =
+      inputLabel +
+      "\n" +
+      t(
+        "Enter 发送 · Shift+Enter 换行",
+        "Enter to send · Shift+Enter for a new line",
+      );
+    text.setAttribute("aria-label", inputLabel);
+    text.setAttribute("aria-keyshortcuts", "Enter Shift+Enter");
     send.type = "submit";
     const syncSend = () => {
       const current = S.drafts.get(draftKey);
@@ -1764,11 +1812,7 @@ function renderProject() {
         ),
       );
     }
-    submit.append(
-      el("span", "project-composer-shortcut", t("Enter 发送", "Enter to send")),
-      send,
-    );
-    toolbar.append(tools, submit);
+    toolbar.append(tools, send);
     composer.append(toolbar);
     syncSend();
     text.addEventListener("compositionstart", () => {
@@ -1887,163 +1931,37 @@ function renderProject() {
     );
     side.append(projectWork);
   }
-  const tasks = el("details", "panel side-section");
-  tasks.id = "projectTasks";
-  tasks.open = tasksOpen;
-  tasks.append(
-    sideHeading(
-      t("运行记录", "Run history"),
-      (v.tasks?.length || 0) + (v.executions?.length || 0),
-    ),
+  const runs = el("section", "panel side-section");
+  runs.append(
+    button(t("运行记录", "Run history"), () => openProjectRuns(v), "link"),
   );
-  if (!v.tasks?.length && !v.executions?.length)
-    tasks.append(
-      el("p", "project-inspector-empty", t("暂无运行记录", "No runs yet")),
-    );
-  (v.tasks || []).forEach((entry) => {
-    const who =
-      v.members.find((a) => a.id === entry.agent_id)?.name ||
-      entry.agent_id ||
-      "Agent";
-    const issue = String(entry.error || "").includes(
-      "No working Codex executable",
-    )
-      ? t(" · 目标机器未找到 Codex CLI", " · Codex CLI not found on the device")
-      : ["queued", "starting", "running"].includes(entry.state) &&
-          v.members.some((a) => a.id === entry.agent_id && !a.online)
-        ? t(" · 等待机器上线", " · Waiting for the device to come online")
-        : "";
-    const active = ["queued", "starting", "running", "unknown"].includes(
-      entry.state,
-    );
-    const status =
-      entry.cancel_requested && active
-        ? t("等待接收端取消", "Waiting for the receiver to cancel")
-        : projectExecutionDisplayStatus(entry);
-    const task = el("div", "task project-inspector-row"),
-      taskActions = el("div", "project-inspector-actions");
-    task.append(
-      el("strong", "", entry.title || entry.body || entry.id),
-      el("span", "muted small", who + (status ? " · " + status : "") + issue),
-    );
-    taskActions.append(
-      button(
-        t("任务追溯", "Task history"),
-        () => openProjectTaskTrace(v, entry),
-        "link small",
-      ),
-    );
-    if (entry.can_cancel && !entry.cancel_requested) {
-      taskActions.append(
-        button(
-          t("取消任务", "Cancel task"),
-          () => confirmTaskCancellation(p.id, entry),
-          "link small",
-        ),
-      );
-    }
-    if (
-      entry.state === "unknown" &&
-      entry.local_recovery &&
-      (S.dash.devices || []).some(
-        (d) => d.local && (d.node || d.id) === entry.local_recovery.node,
-      )
-    ) {
-      taskActions.append(
-        button(
-          t("核对本机任务", "Review local task"),
-          () => confirmLocalTaskStopped(p.id, entry),
-          "link small",
-        ),
-      );
-    }
-    task.append(taskActions);
-    tasks.append(task);
-  });
-  (v.executions || []).forEach((e) =>
-    tasks.append(
-      el(
-        "div",
-        "task",
-        (e.job_id || e.id) +
-          " · " +
-          projectExecutionStatus(e.state || e.status),
-      ),
-    ),
-  );
-  side.append(tasks);
-  const memory = el("details", "panel side-section");
-  memory.id = "projectMemory";
-  memory.open = memoryOpen;
+  const attention = new Set([
+    "queued",
+    "starting",
+    "running",
+    "unknown",
+    "failed",
+    "timed_out",
+    "awaiting_owner",
+  ]);
+  for (const entry of [...(v.tasks || []), ...(v.executions || [])]
+    .filter((entry) => attention.has(entry.state || entry.status))
+    .slice(0, 5))
+    runs.append(projectRunEntry(v, entry, true));
+  side.append(runs);
+  const memory = el("section", "panel side-section");
   memory.append(
-    sideHeading(
-      t("项目记忆", "Project memory"),
-      v.project_memory?.notes?.length || 0,
-    ),
+    button(t("项目记忆", "Project memory"), () => openProjectMemory(v), "link"),
   );
-  note(
-    memory,
-    t(
-      "项目成员可见。私聊不会自动写入。",
-      "Visible to project members. Direct messages aren't added automatically.",
-    ),
-  );
-  (v.project_memory?.notes || []).forEach((item) => {
-    const row = el("div", "memory-note"),
-      author =
-        v.users.find((u) => u.id === item.author_id)?.username ||
-        item.author_id ||
-        t("成员", "Member");
-    row.append(
-      el("div", "small muted", author + " · " + date(item.created_at)),
-      (() => {
-        const report = el("div", "message-text");
-        FoolshipRender.render(report, item.body);
-        return report;
-      })(),
+  const pendingMemory = v.project_memory?.candidates?.length || 0;
+  if (pendingMemory)
+    memory.append(
+      button(
+        t(`${pendingMemory} 条待确认`, `${pendingMemory} pending`),
+        () => openProjectMemory(v, "candidates"),
+        "small",
+      ),
     );
-    if (owner || item.author_id === me)
-      row.append(
-        button(
-          t("删除", "Delete"),
-          async () => {
-            await api("memory-note-delete", {
-              project: S.project,
-              id: item.id,
-            });
-            await refresh(true);
-          },
-          "link small",
-        ),
-      );
-    memory.append(row);
-  });
-  const memoryForm = el("form", "memory-form"),
-    memoryText = el("textarea");
-  memoryText.rows = 2;
-  memoryText.placeholder = t(
-    "记下已确认的目标、决策或重要结果…",
-    "Record an agreed goal, decision, or result…",
-  );
-  memoryText.setAttribute(
-    "aria-label",
-    t("项目记忆内容", "Project memory note"),
-  );
-  const addMemory = button(t("加入项目记忆", "Add note"), null, "primary");
-  addMemory.type = "submit";
-  memoryForm.append(memoryText, addMemory);
-  memoryForm.onsubmit = (e) => {
-    e.preventDefault();
-    run(async () => {
-      if (!memoryText.value.trim()) return;
-      await api("memory-note-add", {
-        project: S.project,
-        body: memoryText.value.trim(),
-      });
-      await refresh(true);
-    }, addMemory);
-  };
-  memory.append(memoryForm);
   side.append(memory);
   const members = el("details", "panel side-section");
   members.id = "projectMembers";
@@ -2095,7 +2013,7 @@ function renderProject() {
           (a.online ? "" : t(" · 机器离线", " · Device offline")),
       ),
     );
-    if (a.can_manage_project_agent) {
+    if (!archived && a.can_manage_project_agent) {
       const command = agentCommands.find(
         (item) => item.backend_project === a.backend_project,
       );
@@ -2139,23 +2057,33 @@ function renderProject() {
     "div",
     "project-inspector-actions project-member-actions",
   );
-  memberActions.append(
-    button(t("新增 Agent", "Add agent"), () => openProjectAgentForm(), "small"),
-  );
-  if (Array.isArray(v.mcp_approval_kinds))
+  if (!archived)
     memberActions.append(
       button(
-        t("MCP 审批权限", "MCP approval permissions"),
-        () => editMcpApprovalPolicy(p.id, v.mcp_approval_kinds),
+        t("新增 Agent", "Add agent"),
+        () => openProjectAgentForm(),
         "small",
       ),
     );
-  if (owner)
+  if (!archived && Array.isArray(v.mcp_approval_kinds))
+    memberActions.append(
+      button(
+        t("MCP 审批权限", "MCP approval permissions"),
+        () =>
+          editMcpApprovalPolicy(
+            p.id,
+            v.mcp_approval_kinds,
+            v.capabilities.includes("project_memory_review_v1"),
+          ),
+        "small",
+      ),
+    );
+  if (owner && !archived)
     memberActions.append(
       button(t("邀请成员", "Invite member"), invite, "small"),
     );
   members.append(memberActions);
-  if (owner) {
+  if (owner && !archived) {
     const admin = field(
       members,
       t("管理员 Agent", "Admin agent"),
@@ -2206,18 +2134,16 @@ function renderProject() {
     side.scrollTop = panelScroll.side;
     const workSection = side.querySelector("#projectWork");
     if (workSection) workSection.scrollTop = panelScroll.work;
-    tasks.scrollTop = panelScroll.tasks;
-    memory.scrollTop = panelScroll.memory;
     members.scrollTop = panelScroll.members;
   });
 }
-function editMcpApprovalPolicy(project, current) {
+function editMcpApprovalPolicy(project, current, memoryReview = false) {
   modal(t("MCP 审批权限", "MCP approval permissions"), (body, actions) => {
     note(
       body,
       t(
-        "代言者可以查看待审批。勾选后，它也可以代你批准或拒绝本项目中你自己设备的对应申请。",
-        "Your MCP delegate can see pending requests. Select the types it may approve or deny on your behalf for your own devices in this project.",
+        "勾选允许代言者在本项目中代你处理的事项。设备审批只适用于你自己的设备。",
+        "Select what your MCP delegate may handle in this project. Device approvals apply to your own devices.",
       ),
     );
     const choices = [
@@ -2230,6 +2156,17 @@ function editMcpApprovalPolicy(project, current) {
       ],
       ["attachment", t("发送附件", "Send attachments")],
       ["execution", t("执行已登记的命令", "Run registered commands")],
+      ...(memoryReview
+        ? [
+            [
+              "memory",
+              t(
+                "确认、合并或归档项目记忆",
+                "Review, merge, or archive project memory",
+              ),
+            ],
+          ]
+        : []),
     ].map(([kind, label]) => {
       const row = el("label", "setting-row", label);
       const check = el("input", "check");
@@ -2343,6 +2280,9 @@ async function openProjectAgentForm(agent = null) {
   if (S.project !== project) return;
   const models = localConfig?.executor?.models || [];
   const current = agent?.project_agent_settings || {};
+  const managedModels = (view.capabilities || []).includes(
+    "project_model_capabilities_v1",
+  );
 
   modal(
     agent
@@ -2393,12 +2333,18 @@ async function openProjectAgentForm(agent = null) {
       const effort = field(
         body,
         t("思考强度", "Reasoning effort"),
-        current.effort || "medium",
-        ["low", "medium", "high", "xhigh", "max", "ultra"].map((value) => [
+        managedModels ? "default" : current.effort || "medium",
+        (managedModels
+          ? ["default"]
+          : ["low", "medium", "high", "xhigh", "max", "ultra"]
+        ).map((value) => [
           value,
-          value,
+          value === "default" ? t("执行器默认", "Executor default") : value,
         ]),
       );
+      const modelStatus = el("div", "small muted");
+      modelStatus.setAttribute("aria-live", "polite");
+      body.append(modelStatus);
       const enabled = field(
         body,
         t("接收项目任务", "Receive project tasks"),
@@ -2472,8 +2418,10 @@ async function openProjectAgentForm(agent = null) {
           ["custom", t("自定义端口", "Custom port")],
         ],
       );
+      const proxyPort = el("div", "project-agent-proxy-port");
+      body.append(proxyPort);
       const port = field(
-        body,
+        proxyPort,
         t("代理端口", "Proxy port"),
         current.network?.port || "",
         null,
@@ -2481,8 +2429,24 @@ async function openProjectAgentForm(agent = null) {
       );
       port.min = "1";
       port.max = "65535";
+      const proxyDevice = el("div", "small muted");
+      proxyPort.append(proxyDevice);
+      let customPort = port.value;
       const syncPort = () => {
+        if (!port.disabled) customPort = port.value;
         port.disabled = network.value !== "custom";
+        port.value = port.disabled ? "" : customPort;
+        port.placeholder =
+          network.value === "machine"
+            ? t("沿用执行机器的默认设置", "Uses the device default")
+            : network.value === "direct"
+              ? t("直连无需填写端口", "Direct connection needs no port")
+              : t("例如 7897", "e.g. 7897");
+        const node = selectedNode();
+        proxyDevice.hidden = network.value !== "machine" || !node;
+        proxyDevice.textContent = node
+          ? t("默认端口来自 ", "Default port from ") + deviceName(node, server)
+          : "";
       };
       network.onchange = syncPort;
       syncPort();
@@ -2499,6 +2463,7 @@ async function openProjectAgentForm(agent = null) {
             name: name.value.trim(),
             model: model?.value.trim(),
             effort: effort.value,
+            ...(managedModels && { model_config_version: 2 }),
             enabled: enabled.value === "true",
             stages: stages
               .filter(([, check]) => check.checked)
@@ -2573,7 +2538,8 @@ async function openProjectAgentForm(agent = null) {
         workspace.replaceChildren();
         const node = selectedNode();
         if (agent || !node) {
-          submit.disabled = !node;
+          submit.disabled =
+            !node || capabilities.get(node)?.state === "loading";
           return;
         }
         if (!workspaceStates.has(node))
@@ -2640,17 +2606,120 @@ async function openProjectAgentForm(agent = null) {
         workspace.append(row);
       }
 
-      function renderMachine() {
-        renderWorkspace();
+      const capabilities = new Map();
+      let effortSelected = false;
+      effort.onchange = () => {
+        effortSelected = true;
+      };
+
+      function renderEfforts() {
+        if (!managedModels) return;
+        const data = capabilities.get(selectedNode());
+        const id = model?.value.trim() || "";
+        const record = data?.models?.find(
+          (item) => item.name.toLowerCase() === id.toLowerCase(),
+        );
+        const choices = [
+          "default",
+          ...(record?.efforts || []).filter((level) => level !== "default"),
+        ];
+        const savedModel = current.model || agent?.model;
+        const isSaved = !!agent && id === savedModel;
+        const legacy = isSaved && current.model_config_version !== 2;
+        const savedEffort = current.effort || agent?.effort;
+        const knownDsh =
+          legacy && (record?.executor || data?.default_executor) === "dsh";
+        const legacyDsh = {
+          low: "low",
+          medium: "default",
+          high: "high",
+          xhigh: "high",
+          max: "high",
+          ultra: "high",
+        };
+        const previous = knownDsh ? legacyDsh[savedEffort] : savedEffort;
+        const selected = effortSelected
+          ? effort.value
+          : isSaved
+            ? previous
+            : "default";
+        effort.replaceChildren(
+          ...choices.map((value) => {
+            const label =
+              value === "default"
+                ? t("执行器默认", "Executor default") +
+                  (record?.default_effort ? ` (${record.default_effort})` : "")
+                : value;
+            const option = el("option", "", label);
+            option.value = value;
+            return option;
+          }),
+        );
+        effort.value = choices.includes(selected) ? selected : "default";
+        const info = [];
+        if (data?.state === "loading")
+          info.push(
+            t(
+              "正在读取执行机器的模型能力…",
+              "Reading model capabilities from the device…",
+            ),
+          );
+        else if (id && !Array.isArray(record?.efforts))
+          info.push(
+            t(
+              "这台机器未报告该模型的档位。",
+              "This device did not report effort levels for this model.",
+            ),
+          );
+        if (knownDsh && savedEffort && previous !== savedEffort)
+          info.push(
+            previous === "default"
+              ? t(
+                  `旧配置 ${savedEffort} 由原会话或执行器选择档位。`,
+                  `Saved legacy effort ${savedEffort} uses the previous session or executor setting.`,
+                )
+              : t(
+                  `旧配置 ${savedEffort} 当前按 ${previous} 运行。`,
+                  `Saved legacy effort ${savedEffort} currently runs as ${previous}.`,
+                ),
+          );
+        else if (
+          isSaved &&
+          savedEffort &&
+          !choices.includes(savedEffort) &&
+          data?.state !== "loading"
+        )
+          info.push(
+            t(
+              `已保存的档位 ${savedEffort} 需要重新选择。`,
+              `Review the saved effort ${savedEffort} before applying changes.`,
+            ),
+          );
+        const override =
+          record?.legacy_model_override || data?.legacy_model_override;
+        if (knownDsh && override && override !== savedModel)
+          info.push(
+            t(
+              `旧设备配置当前使用 ${override}。保存后将使用 ${savedModel}。`,
+              `The device's old configuration currently runs ${override}. Saving uses ${savedModel}.`,
+            ),
+          );
+        modelStatus.textContent = info.join(" ");
+      }
+
+      function renderModel(saved = current.model || agent?.model || "") {
         modelFields.replaceChildren();
         const node = selectedNode();
         if (!node) {
           model = null;
+          renderEfforts();
           return;
         }
-        const saved = current.model || agent?.model || "";
-        if (selectedDevice()?.local && (models.length || saved)) {
-          const choices = models.map(({ name, executor }) => [
+        const available =
+          capabilities.get(node)?.models ||
+          (selectedDevice()?.local ? models : []);
+        if (available.length || (selectedDevice()?.local && saved)) {
+          const choices = available.map(({ name, executor }) => [
             name,
             name +
               " · " +
@@ -2680,6 +2749,57 @@ async function openProjectAgentForm(agent = null) {
                 ),
           );
         }
+        if (managedModels) {
+          model.oninput = () => {
+            effortSelected = false;
+            renderEfforts();
+          };
+          model.onchange = model.oninput;
+          renderEfforts();
+        }
+      }
+
+      async function fetchModels(node) {
+        capabilities.set(node, { state: "loading" });
+        renderEfforts();
+        if (agent) renderWorkspace();
+        try {
+          let reply = await api("project-agent-models", { project, node });
+          for (
+            let tries = 0;
+            reply.id &&
+            ["queued", "claimed"].includes(reply.state) &&
+            tries < 30;
+            tries++
+          ) {
+            await new Promise((resolve) => setTimeout(resolve, 1200));
+            if (!modelFields.isConnected) return;
+            reply = await api("project-agent-models", {
+              project,
+              node,
+              command_id: reply.id,
+            });
+          }
+          capabilities.set(node, {
+            ...reply.result,
+            state: reply.state,
+          });
+        } catch {
+          capabilities.set(node, { state: "unavailable" });
+        }
+        if (modelFields.isConnected && selectedNode() === node) {
+          renderModel(model?.value.trim());
+          if (agent) renderWorkspace();
+        }
+      }
+
+      function renderMachine() {
+        renderWorkspace();
+        syncPort();
+        effortSelected = false;
+        renderModel();
+        const node = selectedNode();
+        if (managedModels && node && !capabilities.has(node)) fetchModels(node);
       }
 
       if (machine) machine.onchange = renderMachine;

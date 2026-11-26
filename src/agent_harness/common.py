@@ -8,6 +8,10 @@ import tempfile
 import time
 from pathlib import Path
 
+PROXY_ENV_KEYS = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "WS_PROXY", "WSS_PROXY"})
+LEGACY_REASONING_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})
+REASONING_LEVELS = LEGACY_REASONING_LEVELS | {"default", "off", "none", "minimal"}
+
 
 def identifier(value):
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", value or ""):
@@ -96,19 +100,9 @@ def validate_local_proxy(value):
 
 
 def apply_local_proxy(env, setting):
-    """Apply an explicit app setting to one Codex child process environment."""
+    """Apply an explicit proxy setting to one executor child process environment."""
     setting = validate_local_proxy(setting)
-    result = dict(env)
-    for key in (
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "WS_PROXY",
-        "WSS_PROXY",
-    ):
-        result.pop(key, None)
-        result.pop(key.lower(), None)
+    result = {key: value for key, value in env.items() if key.upper() not in PROXY_ENV_KEYS}
     if setting["enabled"]:
         address = f"http://127.0.0.1:{setting['port']}"
         result.update(HTTP_PROXY=address, HTTPS_PROXY=address, NO_PROXY="localhost,127.0.0.1,::1")
@@ -194,8 +188,10 @@ def validate_project(data):
     identifier(data["name"])
     if not isinstance(data.get("model"), str) or not re.fullmatch(r"[a-zA-Z0-9_.-]+", data["model"]):
         raise ValueError("An explicit model is required")
-    if data.get("effort") not in {"low", "medium", "high", "xhigh", "max", "ultra"}:
+    if not isinstance(data.get("effort"), str) or data["effort"] not in REASONING_LEVELS:
         raise ValueError("Invalid reasoning effort")
+    if "model_config_version" in data and data["model_config_version"] != 2:
+        raise ValueError("Unsupported model configuration version")
     path = Path(data["remote_path"])
     if not path.is_absolute() or path == Path(path.anchor):
         raise ValueError("Remote project must be an absolute directory, not a drive root")

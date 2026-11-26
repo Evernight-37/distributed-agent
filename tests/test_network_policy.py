@@ -1,8 +1,10 @@
 """The machine owns the proxy endpoint; the agent owns whether to use it."""
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent_harness import executors
 from agent_harness.common import write_json
@@ -24,10 +26,14 @@ class NetworkPolicyTests(unittest.TestCase):
         self.assertIn("7897", env.get("HTTPS_PROXY", ""))
 
     def test_an_agent_can_stay_direct_on_a_machine_that_has_a_proxy(self):
-        env = self.environment({"mode": "direct"})
-        self.assertNotIn("HTTP_PROXY", env)
-        self.assertNotIn("HTTPS_PROXY", env)
-        self.assertNotIn("ALL_PROXY", env)
+        write_json(
+            self.root / "executor.json",
+            {"proxy": {"enabled": True, "port": 7897}, "network_env": {"WSS_PROXY": "http://receiver.invalid:7898"}},
+        )
+        with patch.dict(os.environ, {"Http_Proxy": "http://ambient.invalid:9988", "FOOLSHIP_TEST_NETWORK": "keep"}):
+            env = self.environment({"mode": "direct"})
+        self.assertTrue({key.upper() for key in env}.isdisjoint(executors.PROXY_ENV_KEYS))
+        self.assertEqual(env["FOOLSHIP_TEST_NETWORK"], "keep")
 
     def test_an_agent_can_point_at_its_own_port(self):
         env = self.environment({"mode": "custom", "port": 1080})
@@ -36,11 +42,11 @@ class NetworkPolicyTests(unittest.TestCase):
     def test_no_policy_means_the_machine_setting(self):
         self.assertIn("7897", self.environment(None).get("HTTPS_PROXY", ""))
 
-    def test_a_disabled_machine_proxy_injects_nothing(self):
+    def test_a_disabled_machine_proxy_preserves_the_environment_proxy(self):
         write_json(self.root / "executor.json", {"proxy": {"enabled": False, "port": None}})
-        env = self.environment({"mode": "machine"})
-        self.assertNotIn("HTTP_PROXY", env)
-        self.assertNotIn("HTTPS_PROXY", env)
+        with patch.dict(os.environ, {"HTTP_PROXY": "http://ambient.invalid:9988"}):
+            env = self.environment({"mode": "machine"})
+        self.assertEqual(env["HTTP_PROXY"], "http://ambient.invalid:9988")
 
     def test_invalid_policies_are_refused(self):
         for value in (

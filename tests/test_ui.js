@@ -91,6 +91,10 @@ const project = fs.readFileSync(
   path.join(__dirname, "../assets/web/app/project.js"),
   "utf8",
 );
+const projectPanels = fs.readFileSync(
+  path.join(__dirname, "../assets/web/app/project-panels.js"),
+  "utf8",
+);
 const dashboard = fs.readFileSync(
   path.join(__dirname, "../assets/web/app/dashboard.js"),
   "utf8",
@@ -193,6 +197,7 @@ async function checkProjectAgentForms() {
       return {};
     },
   });
+  vm.runInContext(projectPanels, context);
   vm.runInContext(project, context);
   function findIn(node, label) {
     if (node.label === label) return node;
@@ -213,6 +218,24 @@ async function checkProjectAgentForms() {
   machine.onchange();
   fields.get("Agent 名称").value = "项目审阅员";
   fields.get("模型 ID").value = "deepseek-flash";
+  const proxyMode = fields.get("模型请求代理");
+  const proxyPort = fields.get("代理端口");
+  assert.equal(proxyPort.disabled, true);
+  assert.match(proxyPort.placeholder, /默认设置/);
+  proxyMode.value = "custom";
+  proxyMode.onchange();
+  assert.equal(proxyPort.disabled, false);
+  proxyPort.value = "7897";
+  proxyMode.value = "direct";
+  proxyMode.onchange();
+  assert.equal(proxyPort.disabled, true);
+  assert.equal(proxyPort.value, "");
+  assert.match(proxyPort.placeholder, /直连/);
+  proxyMode.value = "custom";
+  proxyMode.onchange();
+  assert.equal(proxyPort.value, "7897");
+  proxyMode.value = "machine";
+  proxyMode.onchange();
   const create = findButton("创建 Agent");
   assert.equal(create.disabled, true);
   await assert.rejects(create.click(), /工作目录/);

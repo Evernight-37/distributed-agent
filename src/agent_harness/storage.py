@@ -14,7 +14,7 @@ from pathlib import Path
 from agent_harness.common import lock
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 BACKUP_RETENTION = 5
 
 
@@ -351,6 +351,82 @@ CREATE TABLE IF NOT EXISTS project_tool_results(
 """
 
 
+MEMORY_FIELDS = {
+    "state": "TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','pending','archived','restricted'))",
+    "kind": "TEXT CHECK(kind IN ('rule','decision','fact'))",
+    "source_message_id": "INTEGER REFERENCES messages(id) ON DELETE SET NULL",
+    "reviewed_by": "TEXT",
+    "reviewed_at": "REAL",
+    "merged_into": "INTEGER REFERENCES project_memory_notes(id) ON DELETE SET NULL",
+}
+
+
+def _columns(connection, table):
+    return {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+
+
+def _v14_layout_current(connection):
+    policy = connection.execute("SELECT sql FROM sqlite_master WHERE name='mcp_approval_policies'").fetchone()
+    return (
+        "archived_at" in _columns(connection, "projects")
+        and MEMORY_FIELDS.keys() <= _columns(connection, "project_memory_notes")
+        and policy is not None
+        and "'memory'" in policy[0]
+    )
+
+
+def _migrate_v14(connection):
+    if "archived_at" not in _columns(connection, "projects"):
+        connection.execute("ALTER TABLE projects ADD COLUMN archived_at REAL")
+    columns = _columns(connection, "project_memory_notes")
+    for column, definition in MEMORY_FIELDS.items():
+        if column not in columns:
+            connection.execute(f"ALTER TABLE project_memory_notes ADD COLUMN {column} {definition}")
+    if "state" not in columns:
+        # Historical writes have a source task. Quarantine known private sources,
+        # which may occur in older turns with an explicit reply recipient.
+        connection.execute(
+            """UPDATE project_memory_notes AS n SET state=CASE
+            WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.id=n.source_task_id AND t.project_id=n.project_id
+                AND CASE WHEN json_valid(t.contract) THEN
+                    COALESCE(json_extract(t.contract,'$.private_turn'),0) NOT IN (0,'')
+                    OR json_extract(t.contract,'$.reply_to') IS NOT NULL
+                ELSE 1 END)
+            OR EXISTS (SELECT 1 FROM task_trace tr JOIN messages m
+                ON m.id IN (tr.source_message_id,tr.wake_source_id)
+                WHERE tr.task_id=n.source_task_id AND m.project_id=n.project_id
+                  AND (m.recipient_id IS NOT NULL OR m.conversation_id <> 'group:' || n.project_id))
+            THEN 'restricted' ELSE 'pending' END WHERE source_task_id IS NOT NULL"""
+        )
+        connection.execute(
+            """UPDATE project_memory_notes AS n SET source_message_id=(
+                SELECT m.id FROM task_trace tr JOIN messages m ON m.id IN (tr.source_message_id,tr.wake_source_id)
+                WHERE tr.task_id=n.source_task_id AND m.project_id=n.project_id AND m.recipient_id IS NULL
+                  AND (m.conversation_id IS NULL OR m.conversation_id='group:' || n.project_id)
+                  AND (m.causal_task IS NULL OR m.causal_task NOT LIKE 'draft:%')
+                ORDER BY m.id DESC LIMIT 1)
+            WHERE n.state='pending'"""
+        )
+    connection.execute("CREATE INDEX IF NOT EXISTS project_memory_state ON project_memory_notes(project_id,state,id)")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS project_memory_merge ON project_memory_notes(project_id,merged_into)"
+    )
+    policy = connection.execute("SELECT sql FROM sqlite_master WHERE name='mcp_approval_policies'").fetchone()
+    if "'memory'" not in policy[0]:
+        connection.execute("ALTER TABLE mcp_approval_policies RENAME TO mcp_approval_policies_v9")
+        connection.execute(
+            """CREATE TABLE mcp_approval_policies(
+                project_id TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('permission','attachment','execution','memory')),
+                PRIMARY KEY(project_id,owner_id,kind),
+                FOREIGN KEY(project_id,owner_id) REFERENCES project_users(project_id,user_id) ON DELETE CASCADE
+            )"""
+        )
+        connection.execute("INSERT INTO mcp_approval_policies SELECT * FROM mcp_approval_policies_v9")
+        connection.execute("DROP TABLE mcp_approval_policies_v9")
+
+
 def _v4_layout_current(connection):
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     return "project_workspaces" in tables and "project_artifacts" not in tables
@@ -395,6 +471,10 @@ def _integrity(connection):
     row = connection.execute("PRAGMA quick_check").fetchone()
     if not row or row[0] != "ok":
         raise RuntimeError("协作数据库完整性检查失败")
+    if connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION and not _v14_layout_current(
+        connection
+    ):
+        raise RuntimeError("协作数据库缺少项目记忆或归档字段")
 
 
 def inspect_database(database):
@@ -538,6 +618,7 @@ def migrate_database(database, backup_root=None):
                 and connection.execute("SELECT 1 FROM sqlite_master WHERE name='project_work_items'").fetchone()
                 and connection.execute("SELECT 1 FROM sqlite_master WHERE name='project_work_cards'").fetchone()
                 and connection.execute("SELECT 1 FROM sqlite_master WHERE name='project_tool_results'").fetchone()
+                and _v14_layout_current(connection)
             ):
                 _integrity(connection)
                 _private(database)
@@ -733,6 +814,13 @@ def migrate_database(database, backup_root=None):
                         (13, time.time()),
                     )
                     connection.execute("PRAGMA user_version=13")
+                if current < 14 or not _v14_layout_current(connection):
+                    _migrate_v14(connection)
+                    connection.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+                        (14, time.time()),
+                    )
+                    connection.execute("PRAGMA user_version=14")
                 connection.commit()
                 _integrity(connection)
                 connection.execute("PRAGMA journal_mode=WAL")

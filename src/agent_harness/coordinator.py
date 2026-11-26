@@ -286,6 +286,16 @@ class Coordinator:
                     "Delegation is admin-only; a task carries audience delegator (private report back to you), "
                     "group (published to the project) or owner (to the executor's owner). Model capabilities are yours to use."
                     + (
+                        " In this public administrator turn, memory_notes proposes concise long-term rules, "
+                        "confirmed decisions, or reusable facts from the public group. Leave out drafts, "
+                        "progress, and information from private sources. A human reviews each candidate before "
+                        "it becomes project memory."
+                        if project["admin_agent_id"] == agent["id"]
+                        and not contract.get("private_turn")
+                        and contract.get("reply_to") is None
+                        else " Leave memory_notes empty for this turn."
+                    )
+                    + (
                         " Use the offered project action for a formal proposal, revision or follow-up. "
                         "For a new assignment use create_draft so a human can confirm it. "
                         "When following up, quote only the actual requirement as a verbatim instruction excerpt, if needed. "
@@ -321,7 +331,8 @@ class Coordinator:
             db.execute("BEGIN IMMEDIATE")
             pending = []
             for r in db.execute(
-                "SELECT a.* FROM agents a JOIN projects p ON a.project_id=p.id WHERE a.enabled=1 AND a.configuring=0 AND p.paused=0"
+                "SELECT a.* FROM agents a JOIN projects p ON a.project_id=p.id "
+                "WHERE a.enabled=1 AND a.configuring=0 AND p.paused=0 AND p.archived_at IS NULL"
             ).fetchall():
                 if db.execute(
                     "SELECT 1 FROM tasks WHERE agent_id=? AND state IN ('queued','starting','running','unknown')",
@@ -370,7 +381,7 @@ class Coordinator:
                 pending.append((source["id"], dict(r), partner))
             for source_id, r, partner in sorted(pending, key=lambda item: item[0]):
                 project = dict(db.execute("SELECT * FROM projects WHERE id=?", (r["project_id"],)).fetchone())
-                if project["paused"]:
+                if project["paused"] or project["archived_at"] is not None:
                     continue
                 private = bool(partner)
                 human_source = db.execute("SELECT sender_type FROM messages WHERE id=?", (source_id,)).fetchone()
@@ -410,7 +421,8 @@ class Coordinator:
             tasks = [
                 dict(x)
                 for x in db.execute(
-                    "SELECT t.* FROM tasks t JOIN projects p ON t.project_id=p.id JOIN agents a ON t.agent_id=a.id WHERE t.state='queued' AND p.paused=0 AND a.enabled=1 AND a.configuring=0"
+                    "SELECT t.* FROM tasks t JOIN projects p ON t.project_id=p.id JOIN agents a ON t.agent_id=a.id "
+                    "WHERE t.state='queued' AND p.paused=0 AND p.archived_at IS NULL AND a.enabled=1 AND a.configuring=0"
                 )
             ]
         for task in tasks:
@@ -418,15 +430,16 @@ class Coordinator:
                 continue
             job = uid("job")
             with self.store.connect() as db:
-                agent = dict(db.execute("SELECT * FROM agents WHERE id=?", (task["agent_id"],)).fetchone())
                 if (
                     db.execute(
-                        "UPDATE tasks SET state='starting',job=? WHERE id=? AND state='queued'",
+                        "UPDATE tasks SET state='starting',job=? WHERE id=? AND state='queued' AND EXISTS "
+                        "(SELECT 1 FROM projects p WHERE p.id=tasks.project_id AND p.archived_at IS NULL AND p.paused=0)",
                         (job, task["id"]),
                     ).rowcount
                     != 1
                 ):
                     continue
+                agent = dict(db.execute("SELECT * FROM agents WHERE id=?", (task["agent_id"],)).fetchone())
                 self.store.emit_task_event(db, task)
             contract = json.loads(task["contract"])
             try:
@@ -763,6 +776,8 @@ class Coordinator:
         db.execute("SAVEPOINT project_tool")
         try:
             action = resolve_tool_action(raw_action, snapshot, file_delivery=True)
+            if project["archived_at"] is not None and action["kind"] != "deliver":
+                raise PermissionError("项目已归档，本轮可以提交已有任务的交付")
             result = self._apply_project_tool(
                 db, task, agent, project, live_policy, source, execution, original, action
             )
@@ -1050,7 +1065,9 @@ class Coordinator:
                 return
             if not private and answer.get("memory_notes"):
                 try:
-                    self.memory.add_agent_notes(db, agent["id"], project["id"], task_id, answer["memory_notes"])
+                    self.memory.add_agent_notes(
+                        db, agent["id"], project["id"], task, answer["memory_notes"], reply_message_id=message_id
+                    )
                 except ValueError:
                     self.store.log(db, "scheduler", "rejected_memory_notes", {"task": task_id})
             for message in answer.get("messages", []):
@@ -1081,6 +1098,8 @@ class Coordinator:
                         group_posts += 1
                 except (ValueError, KeyError, TypeError):
                     self.store.log(db, "scheduler", "rejected_message", {"task": task_id})
+            if project["archived_at"] is not None:
+                return
             if project["admin_agent_id"] == agent["id"]:
                 for assignment in answer.get("tasks", []):
                     db.execute("SAVEPOINT delegation")
@@ -1189,7 +1208,8 @@ class Coordinator:
                 dict(x)
                 for x in db.execute(
                     "SELECT e.*,a.node,a.backend_project FROM executions e JOIN agents a ON e.agent_id=a.id "
-                    "WHERE e.state IN ('approved','starting','running','unknown') OR (e.state='awaiting_owner' AND ?)",
+                    "JOIN projects p ON p.id=e.project_id WHERE e.state IN ('starting','running','unknown') "
+                    "OR (p.archived_at IS NULL AND (e.state='approved' OR (e.state='awaiting_owner' AND ?)))",
                     (isinstance(self.backend, PullBackend),),
                 )
             ]
@@ -1205,7 +1225,8 @@ class Coordinator:
                     with self.store.connect() as db:
                         if (
                             db.execute(
-                                "UPDATE executions SET state='starting' WHERE id=? AND state='approved'",
+                                "UPDATE executions SET state='starting' WHERE id=? AND state='approved' AND EXISTS "
+                                "(SELECT 1 FROM projects p WHERE p.id=executions.project_id AND p.archived_at IS NULL)",
                                 (row["id"],),
                             ).rowcount
                             != 1

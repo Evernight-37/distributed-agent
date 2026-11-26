@@ -49,6 +49,14 @@ function renderApprovals(parent) {
             el("pre", "approval-command", JSON.stringify(j, null, 2)),
           );
           b.append(details);
+          if (j.project_archived)
+            note(
+              b,
+              t(
+                "恢复项目后可以批准执行。",
+                "Restore the project to approve this run.",
+              ),
+            );
           a.append(
             button(t("拒绝", "Decline"), async () => {
               await api("approve-execution", {
@@ -58,20 +66,23 @@ function renderApprovals(parent) {
               closeModal();
               await refresh(true);
             }),
-            button(
-              t("批准", "Approve"),
-              async () => {
-                await api("approve-execution", {
-                  job_id: j.job_id,
-                  approved: true,
-                  expected_template: j.expected_template,
-                });
-                closeModal();
-                await refresh(true);
-              },
-              "primary",
-            ),
           );
+          if (!j.project_archived)
+            a.append(
+              button(
+                t("批准", "Approve"),
+                async () => {
+                  await api("approve-execution", {
+                    job_id: j.job_id,
+                    approved: true,
+                    expected_template: j.expected_template,
+                  });
+                  closeModal();
+                  await refresh(true);
+                },
+                "primary",
+              ),
+            );
         }),
       ),
     );
@@ -515,7 +526,7 @@ function proxySettingsCard(current) {
   card.append(el("h3", "", t("本机代理", "Local proxy")));
   const port = field(
     card,
-    t("代理端口（留空时关闭）", "Proxy port (blank to disable)"),
+    t("默认代理端口", "Default proxy port"),
     current?.port ?? "",
     null,
     "number",
@@ -523,6 +534,13 @@ function proxySettingsCard(current) {
   port.min = "1";
   port.max = "65535";
   port.placeholder = t("例如 7897", "e.g. 7897");
+  note(
+    card,
+    t(
+      "供在本机运行、选择跟随执行机器设置的 Agent 使用。留空时清除 Foolship 设置的端口。",
+      "Used by agents running on this device that follow its settings. Leave blank to clear the port set in Foolship.",
+    ),
+  );
   let saved = current?.port ?? "";
   const apply = async () => {
     const raw = port.value.trim();
@@ -543,7 +561,7 @@ function proxySettingsCard(current) {
     saved = value ?? "";
     notify(
       value === null
-        ? t("已清除本机代理端口", "Local proxy disabled")
+        ? t("已清除本机代理端口", "Local proxy port cleared")
         : t(`已保存端口 ${value}`, `Proxy port ${value} saved`),
     );
     await refresh();

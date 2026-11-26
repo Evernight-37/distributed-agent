@@ -129,8 +129,9 @@ class NodeProjectActions:
             if action == "configure":
                 for key in ("model", "effort", "timeout"):
                     project[key] = request[key]
-                if "strict_worktree" in request:
-                    project["strict_worktree"] = request["strict_worktree"]
+                for key in ("strict_worktree", "model_config_version"):
+                    if key in request:
+                        project[key] = request[key]
                 validate_project(project)
                 write_json(directory / "project.json", project)
                 return {

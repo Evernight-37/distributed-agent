@@ -627,7 +627,25 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                 "timeout": 30,
                 "local_control": True,
             }
+
+            def token_event(turn, seen, added):
+                return {
+                    "method": "thread/tokenUsage/updated",
+                    "params": {
+                        "threadId": "thread",
+                        "turnId": turn,
+                        "tokenUsage": {
+                            "total": dict(zip(("inputTokens", "outputTokens", "cachedInputTokens"), seen)),
+                            "last": dict(zip(("inputTokens", "outputTokens", "cachedInputTokens"), added)),
+                        },
+                    },
+                }
+
             events = [
+                token_event("earlier-turn", (5, 3, 0), (5, 3, 0)),
+                token_event("turn", (110, 55, 64), (10, 5, 4)),
+                token_event("turn", (130, 60, 84), (20, 5, 20)),
+                token_event("turn", (130, 60, 84), (20, 5, 20)),
                 {"method": "item/completed", "params": {"item": {"type": "agentMessage", "text": '{"reply":"ok"}'}}},
                 {"method": "turn/completed", "params": {"turn": {"id": "turn", "status": "completed"}}},
             ]
@@ -658,7 +676,7 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                         write_json(
                             path / "request.json",
                             {
-                                "project": project,
+                                "project": {**project, "effort": "default"} if job == "revoked" else project,
                                 "prompt": json.dumps({"stage": stage, "objective": json.dumps({"grants": grants})}),
                                 "managed_turn": True,
                                 "thread_id": thread,
@@ -671,6 +689,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                         method, params, _ = server.call.call_args.args
                         self.assertEqual(method, "turn/start")
                         self.assertEqual(params["sandboxPolicy"], sandbox)
+                        if job == "revoked":
+                            self.assertNotIn("effort", params)
+                        else:
+                            self.assertEqual(params["effort"], "low")
                         self.assertEqual(params["approvalPolicy"], "never")
                         self.assertEqual(params["outputSchema"], worker.reply_schema())
                         fields = params["outputSchema"]["properties"]
@@ -679,6 +701,9 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                         self.assertIn("work_delivery", fields)
                         self.assertIn("request", fields)
                         state = read_json(path / "state.json")
+                        self.assertEqual(
+                            state["usage"], {"input_tokens": 30, "output_tokens": 10, "cached_input_tokens": 24}
+                        )
                         thread = state["thread_id"]
                         self.assertEqual(thread, "thread")
                         self.assertEqual(state["status"], "failed" if job == "strict" else "needs_review")

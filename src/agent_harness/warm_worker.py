@@ -12,6 +12,8 @@ import time
 import traceback
 from pathlib import Path
 
+from agent_harness.usage import CodexThreadUsage
+
 DEFAULT_IDLE_SECONDS = 300
 DEFAULT_INTERRUPT_GRACE_SECONDS = 5
 ROOT = None
@@ -57,13 +59,13 @@ def response_schema(policy=None, *, project_tools=False):
     return reply_schema(policy, project_tools=True) if project_tools else reply_schema(policy)
 
 
-def local_env():
-    return executor_environment(ROOT)
+def local_env(network=None):
+    return executor_environment(ROOT, network=network, kind=worker.executors.CODEX)
 
 
 def server_command(stage):
     command = [
-        cli_path(ROOT),
+        cli_path(ROOT, worker.executors.CODEX),
         "app-server",
         "--stdio",
         "--disable",
@@ -101,6 +103,7 @@ class WarmManager:
         self.directory = project_dir(project)
         self.server = self.stage = self.stderr = None
         self.project_server = None
+        self.proxy_environment = None
         # A thread stays attached to one app-server for that process lifetime.
         # Calling thread/resume again on the same server asks Codex to create a
         # second writer for a thread it already owns and is rejected.
@@ -157,11 +160,16 @@ class WarmManager:
         )
         raise RuntimeError(reason)
 
-    def ensure_server(self, stage, cwd, project_server=None):
+    def ensure_server(self, stage, cwd, project_server=None, *, network=None):
+        from agent_harness.common import PROXY_ENV_KEYS
+
+        env = local_env(network)
+        proxy_environment = {key: value for key, value in env.items() if key.upper() in PROXY_ENV_KEYS}
         if (
             self.server
             and self.stage == stage
             and self.project_server == project_server
+            and self.proxy_environment == proxy_environment
             and self.server.process.poll() is None
         ):
             return self.server
@@ -172,7 +180,7 @@ class WarmManager:
         rotate_log(stderr_path)
         self.stderr = stderr_path.open("ab")
         command = server_command(stage)
-        probe = AppServer(command, cwd, local_env(), self.stderr)
+        probe = AppServer(command, cwd, env, self.stderr)
         try:
             names = mcp_names(probe)
         finally:
@@ -184,7 +192,7 @@ class WarmManager:
                 command += ["-c", "mcp_servers." + name + '={command="",enabled=false}']
         if project_server:
             command += ["-c", server_override(project_server)]
-        self.server = AppServer(command, cwd, local_env(), self.stderr)
+        self.server = AppServer(command, cwd, env, self.stderr)
         configured = (self.server.call("config/read", {"includeLayers": False}, 20).get("config") or {}).get(
             "mcp_servers"
         ) or {}
@@ -198,6 +206,7 @@ class WarmManager:
             raise RuntimeError("Could not disable inherited MCP servers for the group worker")
         self.stage = stage
         self.project_server = project_server
+        self.proxy_environment = proxy_environment
         return self.server
 
     def close_server(self):
@@ -208,6 +217,7 @@ class WarmManager:
             self.stderr.close()
             self.stderr = None
         self.project_server = None
+        self.proxy_environment = None
         self.attached_thread_ids.clear()
 
     def attach_thread(self, server, settings, existing):
@@ -255,7 +265,9 @@ class WarmManager:
         turn = worker.contract_spec(config)
         full_access = "full_access" in (turn.get("grants") or [])
         cwd = project["remote_path"]
-        login = codex_login_status(cli_path(ROOT), ROOT)
+        kind = worker.executors.CODEX
+        network = project.get("network")
+        login = codex_login_status(cli_path(ROOT, kind), ROOT, kind, network=network)
         if not login["logged_in"]:
             raise RuntimeError(login["login_error"])
         policy = worker.project_action_policy(config)
@@ -266,12 +278,11 @@ class WarmManager:
             from agent_harness.project_tool_mcp import server_settings
 
             project_tools = bool(tool_specs(policy, file_delivery=file_delivery))
-        server = (
-            self.ensure_server(stage, cwd, server_settings(path)) if project_tools else self.ensure_server(stage, cwd)
-        )
+        server = self.ensure_server(stage, cwd, server_settings(path) if project_tools else None, network=network)
+        requested_model, actual_effort = worker.executors.effective_request(ROOT, project, kind=kind)
         existing = config.get("thread_id")
         settings = {
-            "model": project["model"],
+            "model": requested_model,
             "modelProvider": "openai",
             "cwd": cwd,
             "approvalPolicy": "never",
@@ -308,8 +319,9 @@ class WarmManager:
             status="running",
             started_at=started,
             thread_id=thread_id,
-            requested_model=project["model"],
+            requested_model=requested_model,
             reasoning_effort=project["effort"],
+            effective_reasoning_effort=actual_effort,
             app_server_pid=server.process.pid,
             session_replaced_from=replaced_thread,
             session_replaced_reason=("active_writer_conflict" if replaced_thread else None),
@@ -320,8 +332,8 @@ class WarmManager:
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": prompt}],
                 "cwd": cwd,
-                "model": project["model"],
-                "effort": project["effort"],
+                "model": requested_model,
+                **({"effort": actual_effort} if actual_effort is not None else {}),
                 "approvalPolicy": "never",
                 "sandboxPolicy": sandbox,
                 "outputSchema": response_schema(policy, project_tools=project_tools),
@@ -330,6 +342,7 @@ class WarmManager:
         )["turn"]["id"]
         deadline = time.monotonic() + execution_timeout(config)
         decoder = PublicReplyDecoder()
+        usage = CodexThreadUsage()
         report = None
         cancelled = timed_out = interrupted = False
         interrupt_deadline = None
@@ -359,6 +372,7 @@ class WarmManager:
                     status="cancelled" if cancelled else "timed_out",
                     finished_at=now(),
                     error=None,
+                    **({"usage": totals} if (totals := usage.result()) else {}),
                 )
                 self.close_server()
                 return
@@ -374,6 +388,7 @@ class WarmManager:
                     status="cancelled" if cancelled else "timed_out",
                     finished_at=now(),
                     error=None,
+                    **({"usage": totals} if (totals := usage.result()) else {}),
                 )
                 self.close_server()
                 return
@@ -382,7 +397,10 @@ class WarmManager:
             method, params = event.get("method"), event.get("params") or {}
             if params.get("turnId") not in {None, turn_id}:
                 continue
-            if method == "item/agentMessage/delta":
+            if method == "thread/tokenUsage/updated":
+                if params.get("threadId") == thread_id and params.get("turnId") == turn_id:
+                    usage.observe(params.get("tokenUsage"))
+            elif method == "item/agentMessage/delta":
                 draft = decoder.feed(params.get("delta", ""))
                 previous = read_json(path / "state.json", {}).get("reply_draft")
                 if draft and draft != previous:
@@ -409,10 +427,10 @@ class WarmManager:
                     if turn.get("status") == "completed" and report
                     else "failed"
                 )
-                effective = effective_model(thread_id, started)
+                effective = effective_model(thread_id, started, kind=kind)
                 error = (turn.get("error") or {}).get("message") if status == "failed" else None
                 if status == "needs_review":
-                    if effective and effective != project["model"]:
+                    if effective and effective != requested_model:
                         error = "Effective model differs from requested model"
                     else:
                         error = worker._check_strict_guard(config.get("strict_guard"))
@@ -427,6 +445,7 @@ class WarmManager:
                     error=error,
                     effective_model=effective,
                     model_verified=bool(effective),
+                    **({"usage": totals} if (totals := usage.result()) else {}),
                 )
                 if interrupted or project_tools:
                     self.close_server()

@@ -106,6 +106,7 @@ def main():
         "harness_approvals_list",
         "harness_approval_decide",
         "harness_project_work",
+        "harness_project_memory_review",
     }
     if len(tools) != len(expected_tools) or {tool["name"] for tool in tools} != expected_tools:
         raise RuntimeError("fresh MCP tool catalog differs from the release contract")
