@@ -13,8 +13,8 @@ import threading
 
 _LOG = logging.getLogger(__name__)
 _NOTIFICATIONS = {
-    "message": "有新的项目消息。打开 Foolship 查看。",
-    "approval": "有新的审批请求。打开 Foolship 查看。",
+    "message": ("有新的项目消息。打开 Foolship 查看。", "New project message. Open Foolship to view it."),
+    "approval": ("有新的审批请求。打开 Foolship 查看。", "New approval request. Open Foolship to review it."),
 }
 
 
@@ -39,17 +39,18 @@ def _image():
 class Tray:
     """A Windows tray icon with a status tooltip and private notifications."""
 
-    def __init__(self, title, show, quit_app):
+    def __init__(self, title, show, quit_app, language=lambda: "zh-CN"):
         import pystray
 
         self._title = title
+        self._language = language
         self._icon = pystray.Icon(
             "foolship",
             _image(),
             title,
             menu=pystray.Menu(
-                pystray.MenuItem("显示窗口", lambda *_: show(), default=True),
-                pystray.MenuItem("完全退出", lambda *_: quit_app()),
+                pystray.MenuItem(lambda _: self._text("显示窗口", "Show window"), lambda *_: show(), default=True),
+                pystray.MenuItem(lambda _: self._text("完全退出", "Quit Foolship"), lambda *_: quit_app()),
             ),
         )
         self._lock = threading.Lock()
@@ -62,6 +63,16 @@ class Tray:
     def ready(self):
         with self._lock:
             return self._ready
+
+    def _text(self, zh, en):
+        return zh if self._language() == "zh-CN" else en
+
+    def refresh_menu(self):
+        if self.ready:
+            try:
+                self._icon.update_menu()
+            except Exception:
+                _LOG.exception("Foolship tray menu could not be updated")
 
     def start(self, timeout=2):
         """Wait briefly for the native icon before relying on it to restore a window."""
@@ -113,7 +124,7 @@ class Tray:
 
     def notify(self, kind="message"):
         """Request a generic Windows notification without any account or message details."""
-        message = _NOTIFICATIONS[kind]
+        message = self._text(*_NOTIFICATIONS[kind])
         with self._lock:
             if not self._ready or not self._icon.HAS_NOTIFICATION:
                 return False

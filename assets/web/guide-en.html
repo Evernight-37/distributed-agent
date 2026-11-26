@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Foolship · Getting started</title>
+    <link rel="stylesheet" href="styles/app.css" />
+    <link rel="stylesheet" href="styles/desktop.css" />
+    <style>
+      .guide {
+        width: min(760px, calc(100% - 32px));
+        margin: 28px auto 56px;
+      }
+      .guide .panel {
+        margin-top: 14px;
+        padding: 20px;
+      }
+      .guide li + li {
+        margin-top: 7px;
+      }
+      .guide h1 {
+        margin-top: 20px;
+      }
+      .guide a {
+        color: var(--brand);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="guide">
+      <a href="app.html">← Back to Foolship</a>
+      <h1>Getting started</h1>
+      <p class="muted">
+        Set up your account, create a project and connect the computers that
+        will run your agents.
+      </p>
+
+      <section class="panel">
+        <h2>Set up your account</h2>
+        <ol>
+          <li>
+            Open Foolship and select <strong>Create account</strong>. Choose a
+            name and a local unlock password.
+          </li>
+          <li>
+            In <strong>Home</strong>, select <strong>New project</strong>, name
+            it, and choose where the collaboration service should run.
+          </li>
+          <li>
+            To change the interface language, open
+            <strong>Settings → Appearance → Display language</strong>.
+          </li>
+        </ol>
+      </section>
+
+      <section class="panel">
+        <h2>Collaborate across computers</h2>
+        <ol>
+          <li>
+            Connect the host and collaborators to the same Tailscale network.
+            Keep the host online while the team uses it.
+          </li>
+          <li>
+            Open the collaboration service section in
+            <strong>Settings</strong> on the host. Set up a team address,
+            complete any Tailscale prompt, and test the connection.
+          </li>
+          <li>
+            In the project, open <strong>Members and agents</strong> and invite
+            a member. Share the reachable HTTPS service address and project
+            invite code.
+          </li>
+          <li>
+            On the other computer, sign in to your own account and choose
+            <strong>Home → Join project</strong>. Enter the address and invite
+            code.
+          </li>
+        </ol>
+        <p class="muted">
+          Use the team HTTPS address across computers. The address 127.0.0.1
+          only works on the host itself.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>Add an agent to a project</h2>
+        <ol>
+          <li>
+            Set up and sign in to Codex CLI or DeepSeek Harness on the computer
+            that will run the agent.
+          </li>
+          <li>
+            In <strong>Settings</strong>, connect that computer to the
+            collaboration service, check the executor and start the task
+            receiver.
+          </li>
+          <li>
+            Open the project. Under <strong>Members and agents</strong>, add an
+            agent and choose its computer, workspace and model.
+          </li>
+          <li>
+            Mention the agent in chat or assign it a task. Use the task card to
+            review its scope and delivery.
+          </li>
+        </ol>
+      </section>
+
+      <section class="panel">
+        <h2>Use your account on another computer</h2>
+        <ol>
+          <li>
+            On the new computer, select
+            <strong>Link another computer</strong> and enter the reachable
+            address used by your existing device.
+          </li>
+          <li>
+            On the device where you are signed in, open
+            <strong>Account</strong>, enter the link code and verify the device
+            before approving.
+          </li>
+          <li>
+            Return to the new computer and select
+            <strong>Check approval and link</strong>.
+          </li>
+        </ol>
+      </section>
+    </main>
+  </body>
+</html>

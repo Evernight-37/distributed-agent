@@ -26,8 +26,66 @@ assert.match(account, /在另一台电脑上安装/);
 assert.match(account, /ai-setup-prompt/);
 assert.match(account, /复制给那台机器的 AI/);
 for (const platform of ["linux", "windows", "macos"])
-  assert.match(account, new RegExp(`\\["${platform}",`));
+  assert.match(account, new RegExp(`\\[\\s*"${platform}"\\s*,`));
 assert.match(account, /startsWith\("https:\/\/"\)/);
+
+async function checkInterfaceLanguage() {
+  const navLabel = {
+    textContent: "设置",
+    dataset: { en: "Settings", enTitle: "Settings", enLabel: "Settings" },
+    attributes: { title: "设置", "aria-label": "设置" },
+    getAttribute(name) {
+      return this.attributes[name];
+    },
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+    },
+  };
+  const document = {
+    documentElement: {},
+    querySelectorAll: () => [navLabel],
+  };
+  const navigator = { language: "zh-HK" };
+  const context = vm.createContext({
+    document,
+    navigator,
+    api: async (action, { preference }) => {
+      assert.equal(action, "set-interface-language");
+      return { preference, system_language: "zh-HK" };
+    },
+  });
+  for (const script of ["i18n", "desktop-messages"]) {
+    vm.runInContext(
+      fs.readFileSync(
+        path.join(__dirname, `../assets/web/app/${script}.js`),
+        "utf8",
+      ),
+      context,
+    );
+  }
+  context.applyInterfaceLanguage({
+    preference: "system",
+    system_language: "en-GB",
+  });
+  assert.equal(document.documentElement.lang, "en");
+  assert.equal(navLabel.textContent, "Settings");
+  assert.equal(navLabel.attributes["aria-label"], "Settings");
+  assert.equal(context.t("首页", "Home"), "Home");
+  assert.equal(context.localizeDesktopText("请先登录"), "Sign in first.");
+  assert.equal(context.localizeDesktopText("原始日志"), "原始日志");
+  await context.setInterfaceLanguage("zh-CN");
+  assert.equal(context.interfaceLanguagePreference(), "zh-CN");
+  assert.equal(document.documentElement.lang, "zh-CN");
+  assert.equal(navLabel.textContent, "设置");
+  assert.equal(navLabel.attributes.title, "设置");
+  await context.setInterfaceLanguage("en");
+  assert.equal(context.interfaceLocale(), "en");
+  await context.setInterfaceLanguage("system");
+  assert.equal(context.interfaceLocale(), "zh-CN");
+  navigator.language = "en";
+  context.applyInterfaceLanguage({ preference: "system" });
+  assert.equal(context.interfaceLocale(), "en");
+}
 
 const project = fs.readFileSync(
   path.join(__dirname, "../assets/web/app/project.js"),
@@ -93,6 +151,8 @@ async function checkProjectAgentForms() {
   const jumped = [];
   const context = vm.createContext({
     S: state,
+    t: (chinese) => chinese,
+    interfaceLocale: () => "zh-CN",
     FoolshipDesktop: { render: {}, components: {}, events: {} },
     el: element,
     button: (label, click) => ({ label, click }),
@@ -446,8 +506,11 @@ async function checkProjectAgentForms() {
   assert.equal("conversation_id" in calls.at(-1)[1], false);
 }
 
-checkProjectAgentForms().then(
-  () => console.log("UI retirement and project Agent checks passed"),
+Promise.all([checkInterfaceLanguage(), checkProjectAgentForms()]).then(
+  () =>
+    console.log(
+      "UI retirement, interface language and project Agent checks passed",
+    ),
   (error) => {
     console.error(error);
     process.exitCode = 1;

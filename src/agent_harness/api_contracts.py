@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
+from agent_harness.desktop_locale import LANGUAGE_PREFERENCES
+
 
 API_CONTRACT_VERSION = 1
 
@@ -170,6 +172,7 @@ _REQUIRED_AGENT_FIELDS = {"name", "model", "effort", "enabled", "stages", "timeo
 
 
 DESKTOP_FIELDS = {
+    "set-interface-language": {"preference": {"type": "string", "enum": list(LANGUAGE_PREFERENCES)}},
     "task-cancel": {"project": _ID, "task_id": _ID},
     "project-work": {
         "project": _ID,
@@ -317,6 +320,7 @@ DESKTOP_CONTROL = BoundaryContract(
             "executor-save",
             "host-local-enable",
             "health-status",
+            "interface-language",
             "invite",
             "join-project",
             "local-status",
@@ -340,6 +344,7 @@ DESKTOP_CONTROL = BoundaryContract(
             "receiver-stop",
             "register",
             "set-admin",
+            "set-interface-language",
             "task-cancel",
             "task-resolve-local",
             "settings-get",
@@ -408,6 +413,7 @@ DESKTOP_CONTROL = BoundaryContract(
         "recovery-import": frozenset({"server", "recovery_password", "password"}),
         "register": frozenset({"username"}),
         "set-admin": frozenset({"project", "agent"}),
+        "set-interface-language": frozenset({"preference"}),
         "team-service-restore-apply": frozenset({"token"}),
         "update-schedule-save": frozenset({"schedule"}),
         "warm-idle-save": frozenset({"seconds"}),

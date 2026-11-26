@@ -78,20 +78,20 @@ const FoolshipRender = (() => {
       const language = /language-([\w+-]+)/.exec(block.className || "");
       const label = document.createElement("span");
       label.className = "code-label";
-      label.textContent = language ? language[1] : "代码";
+      label.textContent = language ? language[1] : t("代码", "Code");
       const copy = document.createElement("button");
       copy.type = "button";
       copy.className = "code-copy";
-      copy.textContent = "复制";
+      copy.textContent = t("复制", "Copy");
       copy.addEventListener("click", async () => {
         try {
           await navigator.clipboard.writeText(block.textContent || "");
-          copy.textContent = "已复制";
+          copy.textContent = t("已复制", "Copied");
           setTimeout(() => {
-            copy.textContent = "复制";
+            copy.textContent = t("复制", "Copy");
           }, 1200);
         } catch {
-          copy.textContent = "复制失败";
+          copy.textContent = t("复制失败", "Copy failed");
         }
       });
       panel.append(label, copy);

@@ -30,6 +30,7 @@ const S = (FoolshipDesktop.state = {
 let toastTimer,
   polling = false,
   quitDialog = null,
+  modalInvoker = null,
   streamTimer = null;
 function el(tag, cls = "", text = "") {
   const n = document.createElement(tag);
@@ -57,9 +58,22 @@ async function run(fn, b) {
 async function api(action, data = {}) {
   const bridge = window.pywebview?.api;
   if (!bridge?.invoke)
-    throw Error("应用连接尚未就绪，请在桌面应用中打开此页面。");
+    throw Error(
+      t(
+        "应用连接尚未就绪，请在桌面应用中打开此页面。",
+        "The app connection is not ready. Open this page in the desktop app.",
+      ),
+    );
   const reply = await bridge.invoke(action, data);
-  if (!reply?.ok) throw Error(reply?.error || "操作失败");
+  if (!reply?.ok) {
+    const originalMessage = reply?.error;
+    const error = new Error(
+      localizeDesktopText(originalMessage) ||
+        t("操作失败", "The operation failed."),
+    );
+    error.originalMessage = originalMessage;
+    throw error;
+  }
   return reply.result;
 }
 FoolshipDesktop.api.invoke = api;
@@ -71,9 +85,11 @@ function notify(text, error = false) {
   toastTimer = setTimeout(() => $("toast").classList.add("hidden"), 6500);
 }
 function date(value) {
-  if (!value) return "尚未进入";
+  if (!value) return t("尚未进入", "Never opened");
   const d = new Date(typeof value === "number" ? value * 1000 : value);
-  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString("zh-CN");
+  return Number.isNaN(d.getTime())
+    ? String(value)
+    : d.toLocaleString(interfaceLocale());
 }
 function fileSize(bytes) {
   if (bytes < 1024) return bytes + " B";
@@ -127,14 +143,14 @@ function attachmentData(project, id) {
 
 function attachmentImage(src, file) {
   const image = el("img", "attachment-thumb");
-  image.alt = file.name || "附件";
-  image.title = "点击查看大图";
+  image.alt = file.name || t("附件", "Attachment");
+  image.title = t("点击查看大图", "View full image");
   image.loading = "lazy";
   image.src = src;
   image.addEventListener("click", () => {
-    modal(file.name || "附件", (body) => {
+    modal(file.name || t("附件", "Attachment"), (body) => {
       const large = el("img", "attachment-preview-image");
-      large.alt = file.name || "附件";
+      large.alt = file.name || t("附件", "Attachment");
       large.src = src;
       body.append(large);
     });
@@ -155,7 +171,7 @@ function attachmentCard(file, project) {
   const head = el("div", "attachment-head");
   head.append(
     el("span", "attachment-icon", icons[kind]),
-    el("span", "attachment-name", file.name || "附件"),
+    el("span", "attachment-name", file.name || t("附件", "Attachment")),
     el("span", "muted small", fileSize(file.size || 0)),
   );
   card.append(head);
@@ -163,7 +179,7 @@ function attachmentCard(file, project) {
   const load = () => api("attachment-get", { project, id: file.id });
   const preview = async (build) => {
     const result = await load();
-    modal(file.name || "附件", (body) => build(body, result));
+    modal(file.name || t("附件", "Attachment"), (body) => build(body, result));
   };
 
   if (kind === "image") {
@@ -177,7 +193,14 @@ function attachmentCard(file, project) {
       .catch(() => {
         if (slot.isConnected)
           slot.replaceChildren(
-            el("span", "muted small", "预览不可用，可下载后查看"),
+            el(
+              "span",
+              "muted small",
+              t(
+                "预览不可用，可下载后查看",
+                "Preview unavailable. Download the file to view it.",
+              ),
+            ),
           );
       });
   }
@@ -185,7 +208,7 @@ function attachmentCard(file, project) {
   const actions = el("div", "attachment-actions");
   if (kind === "text") {
     actions.append(
-      button("预览", async () => {
+      button(t("预览", "Preview"), async () => {
         try {
           await preview((body, result) => {
             const text = el("pre", "attachment-preview");
@@ -193,15 +216,19 @@ function attachmentCard(file, project) {
             body.append(text);
           });
         } catch (error) {
-          notify(error.message || "无法打开附件");
+          notify(
+            error.message ||
+              t("无法打开附件", "Could not open the attachment."),
+          );
         }
       }),
     );
   }
   actions.append(
-    button("下载", async () => {
+    button(t("下载", "Download"), async () => {
       const result = await api("attachment-save", { project, id: file.id });
-      if (result.saved) notify("已保存：" + result.name);
+      if (result.saved)
+        notify(t(`已保存：${result.name}`, `Saved: ${result.name}`));
     }),
   );
   card.append(actions);
@@ -211,7 +238,9 @@ function field(parent, label, value = "", options = null, type = "text") {
   const id = "f" + Math.random().toString(36).slice(2),
     l = el("label", "label", label);
   l.htmlFor = id;
-  const input = el(options ? "select" : "input");
+  const input = el(
+    options ? "select" : type === "textarea" ? "textarea" : "input",
+  );
   input.id = id;
   if (options)
     options.forEach(([v, t]) => {
@@ -219,6 +248,7 @@ function field(parent, label, value = "", options = null, type = "text") {
       o.value = v;
       input.append(o);
     });
+  else if (type === "textarea") input.rows = 2;
   else input.type = type;
   if (!options || options.some(([v]) => String(v) === String(value ?? "")))
     input.value = value ?? "";
@@ -235,21 +265,62 @@ async function copyText(value, control) {
   else document.execCommand("copy");
 }
 function closeModal() {
-  if (quitDialog?.busy) return;
+  if (quitDialog?.busy || $("modalWrap").classList.contains("hidden")) return;
   const wasQuit = !!quitDialog;
   quitDialog = null;
   $("modalWrap").classList.add("hidden");
   $("modalBody").replaceChildren();
   $("modalActions").replaceChildren();
+  if (modalInvoker?.isConnected) modalInvoker.focus();
+  modalInvoker = null;
   if (wasQuit && S.page === "settings")
     run(() => $("teamServiceCard")?.refresh?.());
 }
 function modal(title, build) {
+  const wrapper = $("modalWrap");
+  if (wrapper.classList.contains("hidden"))
+    modalInvoker = document.activeElement;
   $("modalTitle").textContent = title;
   $("modalBody").replaceChildren();
   $("modalActions").replaceChildren();
-  $("modalWrap").classList.remove("hidden");
+  wrapper.classList.remove("hidden");
   build($("modalBody"), $("modalActions"));
+  if (!wrapper.contains(document.activeElement)) {
+    const firstField = Array.from(
+      $("modalBody").querySelectorAll(
+        'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled])',
+      ),
+    ).find((node) => node.getClientRects().length > 0);
+    (firstField || $("closeModal")).focus();
+  }
+}
+
+function handleModalKeyboard(event) {
+  const wrapper = $("modalWrap");
+  if (wrapper.classList.contains("hidden")) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeModal();
+  } else if (event.key === "Tab") {
+    const focusable = Array.from(
+      wrapper.querySelectorAll(
+        'button, a[href], input:not([type="hidden"]), select, textarea, summary, [tabindex]',
+      ),
+    ).filter(
+      (node) =>
+        !node.disabled && node.tabIndex >= 0 && node.getClientRects().length,
+    );
+    if (!focusable.length) return;
+    const index = focusable.indexOf(document.activeElement);
+    if (
+      index < 0 ||
+      (event.shiftKey && index === 0) ||
+      (!event.shiftKey && index === focusable.length - 1)
+    ) {
+      event.preventDefault();
+      (event.shiftKey ? focusable.at(-1) : focusable[0]).focus();
+    }
+  }
 }
 async function requestAppClose() {
   if (quitDialog) return;
@@ -262,26 +333,41 @@ async function requestAppClose() {
   } catch {
     canBackground = false;
   }
-  modal("退出协作工作台", (body, actions) => {
+  modal(t("退出协作工作台", "Quit Foolship"), (body, actions) => {
     body.append(
       el(
         "p",
         "",
-        "完全退出会停止这台电脑上的任务接收服务，以及应用启动的本机协作服务。",
+        t(
+          "完全退出会停止这台电脑上的任务接收服务，以及应用启动的本机协作服务。",
+          "Quitting stops this computer's task receiver and any collaboration service started by the app.",
+        ),
       ),
     );
     note(
       body,
       canBackground
-        ? "如果本机正在提供协作服务，其他成员会暂时无法连接。账户、项目和文件会保留；已启动的独立作业不会被取消。选择后台运行时窗口会收起到系统托盘或程序坞，任务接收服务继续运行。"
-        : "如果本机正在提供协作服务，其他成员会暂时无法连接。账户、项目和文件会保留；已启动的独立作业不会被取消。这个平台没有托盘图标，关闭窗口即完全退出。",
+        ? t(
+            "如果本机正在提供协作服务，其他成员会暂时无法连接。账户、项目和文件会保留；已启动的独立作业不会被取消。选择后台运行时窗口会收起到系统托盘或程序坞，任务接收服务继续运行。",
+            "Team members will temporarily lose access if this computer hosts the service. Your account, projects, files and independent jobs are preserved. Keep running in background to hide the window and continue receiving tasks.",
+          )
+        : t(
+            "如果本机正在提供协作服务，其他成员会暂时无法连接。账户、项目和文件会保留；已启动的独立作业不会被取消。这个平台没有托盘图标，关闭窗口即完全退出。",
+            "Team members will temporarily lose access if this computer hosts the service. Your account, projects, files and independent jobs are preserved. Closing the window quits the app on this platform.",
+          ),
     );
-    const detail = el("p", "muted small", "正在检查本机服务…"),
+    const detail = el(
+        "p",
+        "muted small",
+        t("正在检查本机服务…", "Checking local services…"),
+      ),
       progress = el("p", "muted small");
     body.append(detail, progress);
-    const cancel = button("取消", closeModal),
-      background = canBackground ? button("继续后台运行") : null,
-      exit = button("完全退出", null, "primary");
+    const cancel = button(t("取消", "Cancel"), closeModal),
+      background = canBackground
+        ? button(t("继续后台运行", "Keep running in background"))
+        : null,
+      exit = button(t("完全退出", "Quit"), null, "primary");
     if (background) background.onclick = () => finish("app-background");
     exit.onclick = () => finish("app-exit");
     actions.append(cancel, ...(background ? [background] : []), exit);
@@ -296,8 +382,11 @@ async function requestAppClose() {
       progress.className = "muted small";
       progress.textContent =
         action === "app-exit"
-          ? "正在停止本机服务，请稍候…"
-          : "正在关闭窗口，后台服务继续运行…";
+          ? t("正在停止本机服务，请稍候…", "Stopping local services…")
+          : t(
+              "正在关闭窗口，后台服务继续运行…",
+              "Hiding the window. Services will keep running…",
+            );
       try {
         await api(action);
         if (action === "app-background") {
@@ -310,8 +399,10 @@ async function requestAppClose() {
         state.busy = false;
         stopButtons.forEach((b) => (b.disabled = false));
         progress.className = "error";
-        progress.textContent =
-          "未能完成退出：" + e.message + "。窗口已保留，请重试。";
+        progress.textContent = t(
+          `未能完成退出：${e.message}。窗口已保留，请重试。`,
+          `Could not quit: ${e.message} The window is still open. Try again.`,
+        );
       }
     }
     api("app-services")
@@ -321,28 +412,38 @@ async function requestAppClose() {
           (r) => r.running || r.stopping,
         ).length;
         detail.textContent =
-          "本机接收服务：" +
-          count +
-          " 个运行中。" +
+          t(
+            `本机接收服务：${count} 个运行中。`,
+            `Local task receivers running: ${count}. `,
+          ) +
           (status.host?.running
-            ? "本机协作服务也将停止。"
-            : "本机协作服务未运行。");
+            ? t(
+                "本机协作服务也将停止。",
+                "The local collaboration service will also stop.",
+              )
+            : t(
+                "本机协作服务未运行。",
+                "The local collaboration service is stopped.",
+              ));
         if (status.active_jobs)
           body.append(
             el(
               "p",
               "pending small",
-              "当前有作业运行。完全退出后，这些作业仍独立运行。",
+              t(
+                "当前有作业运行。完全退出后，这些作业仍独立运行。",
+                "Some jobs are running. They will continue independently after you quit.",
+              ),
             ),
           );
       })
       .catch((e) => {
         if (quitDialog === state) {
           detail.className = "error";
-          detail.textContent =
-            "暂时无法读取服务状态：" +
-            e.message +
-            "。完全退出时仍会检查是否已安全停止。";
+          detail.textContent = t(
+            `暂时无法读取服务状态：${e.message}。完全退出时仍会检查是否已安全停止。`,
+            `Could not check service status: ${e.message} Foolship will check that services stop safely when you quit.`,
+          );
         }
       });
   });
@@ -351,11 +452,8 @@ window.requestAppClose = requestAppClose;
 function head(title, subtitle) {
   const h = el("div", "top"),
     t = el("div");
-  t.append(el("h1", "", title), el("p", "muted", subtitle));
-  if (title === "控制台" && S.dash?.unavailable_services?.length)
-    t.append(
-      el("p", "error", "部分协作服务暂时无法连接；其项目会在恢复连接后显示。"),
-    );
+  t.append(el("h1", "", title));
+  if (subtitle) t.append(el("p", "muted", subtitle));
   h.append(t);
   return h;
 }
@@ -364,15 +462,16 @@ function empty(parent, text) {
 }
 function nav(page) {
   S.page = page;
-  ["dashboard", "transfers", "settings", "account"].forEach((p) =>
-    $(p + "Nav").classList.toggle(
-      "active",
-      p === page || (page === "project" && p === "dashboard"),
-    ),
-  );
+  ["dashboard", "transfers", "settings", "account"].forEach((p) => {
+    const target = $(p + "Nav");
+    const active = p === page || (page === "project" && p === "dashboard");
+    target.classList.toggle("active", active);
+    if (active) target.setAttribute("aria-current", "page");
+    else target.removeAttribute("aria-current");
+  });
 }
 function serviceName(server) {
-  if (!server) return "本机服务";
+  if (!server) return t("本机服务", "Local service");
   try {
     return new URL(server).host;
   } catch {
@@ -385,24 +484,29 @@ function deviceName(node, server) {
       (d.node || d.id) === node &&
       (!server || d.server === server || (!d.server && server === S.server)),
   );
-  return (
-    d?.name ||
-    "设备 " +
-      String(node || "")
-        .replace(/^device-/, "")
-        .slice(0, 8)
-  );
+  const suffix = String(node || "")
+    .replace(/^device-/, "")
+    .slice(0, 8);
+  return d?.name || t(`设备 ${suffix}`, `Device ${suffix}`);
 }
 function authHeader(title, subtitle) {
   const root = $("login");
   root.replaceChildren();
-  root.append(
-    el("div", "logo", "◎ 协作工作台"),
-    el("h1", "", title),
-    el("p", "muted", subtitle),
-  );
+  const brand = el("div", "logo auth-card-title");
+  const mark = el("span", "logo-icon", "◎");
+  mark.setAttribute("aria-hidden", "true");
+  brand.append(mark, el("span", "", "Foolship"));
+  root.append(brand, el("h1", "", title));
+  if (subtitle) root.append(el("p", "muted", subtitle));
   if (S.autologinFailed && ["home", "login"].includes(S.authMode)) {
-    const notice = el("p", "error", "自动登录未成功，请手动解锁本机账户。");
+    const notice = el(
+      "p",
+      "error",
+      t(
+        "自动登录未成功，请手动解锁本机账户。",
+        "Automatic sign-in failed. Unlock your local account to continue.",
+      ),
+    );
     notice.setAttribute("role", "status");
     root.append(notice);
   }
@@ -411,41 +515,91 @@ function authHeader(title, subtitle) {
 function renderAuth(mode = "home") {
   S.authMode = mode;
   if (mode === "home") {
-    const root = authHeader(
-      "欢迎使用",
-      "先解锁自己的身份，再凭邀请加入不同团队的项目。",
-    );
+    const root = authHeader(t("欢迎使用", "Welcome"));
     const choices = el("div", "auth-choices");
     [
-      ["login", "登录", "解锁这台电脑上已有的账户"],
-      ["register", "创建账户", "第一次使用，从这里开始"],
-      ["device", "关联我的另一台电脑", "在新电脑上使用同一个身份"],
-      ["recovery", "从恢复包恢复", "原设备不可用时恢复到这台电脑"],
+      [
+        "login",
+        t("登录", "Sign in"),
+        t("解锁这台电脑上已有的账户", "Unlock an account on this computer"),
+      ],
+      [
+        "register",
+        t("创建账户", "Create account"),
+        t("第一次使用，从这里开始", "Set up your first account"),
+      ],
+      [
+        "device",
+        t("关联我的另一台电脑", "Link another computer"),
+        t("在新电脑上使用同一个身份", "Use the same account on a new computer"),
+      ],
+      [
+        "recovery",
+        t("从恢复包恢复", "Restore from a recovery file"),
+        t(
+          "原设备不可用时恢复到这台电脑",
+          "Recover your account if the original device is unavailable",
+        ),
+      ],
     ].forEach(([m, title, desc]) => {
       const b = button("", () => renderAuth(m), "auth-choice");
       const text = el("span");
       text.append(el("strong", "", title), el("span", "muted small", desc));
-      b.append(text, el("span", "auth-arrow", "→"));
+      const arrow = el("span", "auth-arrow", "→");
+      arrow.setAttribute("aria-hidden", "true");
+      b.append(text, arrow);
       choices.append(b);
     });
-    const guide = el("a", "auth-guide", "第一次使用？打开新手教程 →");
-    guide.href = "guide.html";
-    root.append(choices, guide);
+    const guide = el(
+      "a",
+      "auth-guide",
+      t("第一次使用？打开新手教程 →", "Getting started guide →"),
+    );
+    guide.href = t("guide.html", "guide-en.html");
+    const foot = el("div", "auth-foot");
+    const select = el("select", "auth-language");
+    select.id = "authLanguage";
+    select.setAttribute("aria-label", t("界面语言", "Display language"));
+    for (const [value, label] of languagePreferenceOptions()) {
+      const option = el("option", "", label);
+      option.value = value;
+      select.append(option);
+    }
+    select.value = interfaceLanguagePreference();
+    select.onchange = () =>
+      run(async () => {
+        try {
+          await setInterfaceLanguage(select.value);
+          renderAuth("home");
+          $("authLanguage").focus();
+        } catch (error) {
+          select.value = interfaceLanguagePreference();
+          throw error;
+        }
+      }, select);
+    foot.append(guide, select);
+    root.append(choices, foot);
     return;
   }
   const root = authHeader(
     mode === "register"
-      ? "创建我的身份"
+      ? t("创建我的身份", "Create your account")
       : mode === "device"
-        ? "关联这台新电脑"
+        ? t("关联这台新电脑", "Link this computer")
         : mode === "recovery"
-          ? "从恢复包恢复"
-          : "解锁我的身份",
+          ? t("从恢复包恢复", "Restore from a recovery file")
+          : t("解锁我的身份", "Unlock your account"),
     mode === "device"
-      ? "提交申请后，这台电脑会显示一个关联码。"
+      ? t(
+          "提交申请后，这台电脑会显示一个关联码。",
+          "A link code will appear on this computer after you submit the request.",
+        )
       : mode === "recovery"
-        ? "选择离线恢复包，为这台电脑生成新的设备身份。"
-        : "身份密钥保存在你的电脑上；加入团队项目不用重新注册。",
+        ? t(
+            "选择离线恢复包，为这台电脑生成新的设备身份。",
+            "Choose a recovery file to set up this computer as a new device.",
+          )
+        : "",
   );
   const form = el("form");
   root.append(form);
@@ -453,48 +607,56 @@ function renderAuth(mode = "home") {
   if (mode === "login") {
     profile = field(
       form,
-      "本机账户",
+      t("本机账户", "Local account"),
       "",
       S.profiles.map((p) => [p.id, p.username]),
     );
     if (!S.profiles.length)
       note(
         form,
-        "这台电脑还没有账户。返回后选择“创建账户”，或“关联我的另一台电脑”。",
+        t(
+          "这台电脑还没有账户。返回后选择“创建账户”，或“关联我的另一台电脑”。",
+          "This computer has no account yet. Go back to create an account or link another computer.",
+        ),
       );
   } else if (mode === "register") {
-    user = field(form, "账户名称");
-    name = field(form, "这台机器的名称（留空用系统主机名）");
-  } else if (mode === "device") name = field(form, "这台机器的名称");
-  else recoveryPassword = field(form, "恢复包密码", "", null, "password");
+    user = field(form, t("账户名称", "Account name"));
+    name = field(
+      form,
+      t("这台机器的名称（留空用系统主机名）", "Computer name (optional)"),
+    );
+  } else if (mode === "device")
+    name = field(form, t("这台机器的名称", "Computer name"));
+  else
+    recoveryPassword = field(
+      form,
+      t("恢复包密码", "Recovery file password"),
+      "",
+      null,
+      "password",
+    );
   password = field(
     form,
-    mode === "login" ? "解锁密码" : "这台电脑的本地解锁密码",
+    mode === "login"
+      ? t("解锁密码", "Unlock password")
+      : t("这台电脑的本地解锁密码", "Unlock password for this computer"),
     "",
     null,
     "password",
   );
   password.autocomplete =
     mode === "login" ? "current-password" : "new-password";
-  // Remembering is per account: the box follows the remembered profile and is
-  // re-evaluated whenever another account is selected. Every layout property is
-  // stated inline because this form's container ignores stylesheet intent.
+  // Remembering is per account and follows the selected profile.
   let remember = null;
   if (mode === "login") {
     const box = el("input");
     box.type = "checkbox";
     box.checked = !!(profile.value && S.autologin === profile.value);
-    // The stylesheet makes every input 100% wide, so the checkbox itself has to
-    // opt out: otherwise it is a 251px box with the glyph centred inside.
-    box.style.cssText =
-      "margin:0 6px 0 0;width:auto;min-width:0;flex:0 0 auto;vertical-align:-2px";
-    const inline = el("div", "remember-line");
-    inline.style.cssText =
-      "display:flex;flex-direction:row;align-items:center;justify-content:flex-start;align-self:stretch;" +
-      "width:100%;max-width:100%;box-sizing:border-box;text-align:left;float:none;clear:both;" +
-      "margin:8px 0 0;padding:0;font-weight:400;font-size:12px;letter-spacing:0;text-transform:none;" +
-      "color:var(--muted);white-space:nowrap;cursor:pointer";
-    inline.append(box, el("span", "", "下次自动登录"));
+    const inline = el("label", "remember-line");
+    inline.append(
+      box,
+      el("span", "", t("下次自动登录", "Sign in automatically")),
+    );
     form.append(inline);
     profile.onchange = () => {
       box.checked = !!(profile.value && S.autologin === profile.value);
@@ -504,33 +666,44 @@ function renderAuth(mode = "home") {
   if (mode !== "login") {
     const connection = el(mode === "device" ? "div" : "details");
     if (mode === "register")
-      connection.append(el("summary", "label", "连接设置"));
+      connection.append(
+        el("summary", "label", t("连接设置", "Connection settings")),
+      );
     server = field(
       connection,
-      "协作服务地址",
+      t("协作服务地址", "Collaboration service address"),
       mode === "device" ? "" : S.server,
     );
     if (mode === "device") {
-      server.placeholder = "https://电脑名.xxxx.ts.net";
+      server.placeholder = t(
+        "https://电脑名.xxxx.ts.net",
+        "https://computer.example.ts.net",
+      );
       server.autocapitalize = "off";
       server.spellcheck = false;
     }
     note(
       connection,
       mode === "device"
-        ? "填写已有电脑使用的同一服务的可达地址。127.0.0.1 只代表当前电脑，不能照抄另一台的本机地址。"
-        : "这里选择首个协作服务。以后加入其他团队时直接填写项目邀请，无需另建身份。",
+        ? t(
+            "填写已有电脑使用的同一服务的可达地址。127.0.0.1 只代表当前电脑，不能照抄另一台的本机地址。",
+            "Enter a reachable address for the same service your other computer uses. The address 127.0.0.1 points to this computer.",
+          )
+        : t(
+            "这里选择首个协作服务。以后加入其他团队时直接填写项目邀请，无需另建身份。",
+            "Choose your first collaboration service. You can join other teams later using project invites and the same account.",
+          ),
     );
     form.append(connection);
   }
   const submit = button(
     mode === "register"
-      ? "创建并进入"
+      ? t("创建并进入", "Create and open")
       : mode === "device"
-        ? "获取新电脑关联码"
+        ? t("获取新电脑关联码", "Get link code")
         : mode === "recovery"
-          ? "选择恢复包并恢复"
-          : "登录",
+          ? t("选择恢复包并恢复", "Choose recovery file")
+          : t("登录", "Sign in"),
     null,
     "primary",
   );
@@ -544,7 +717,10 @@ function renderAuth(mode = "home") {
         const address = server.value.trim();
         if (!address)
           throw new Error(
-            "请填写已有电脑的团队地址，例如 https://电脑名.xxxx.ts.net",
+            t(
+              "请填写已有电脑的团队地址，例如 https://电脑名.xxxx.ts.net",
+              "Enter a reachable address for the other computer, such as https://computer.example.ts.net.",
+            ),
           );
         if (
           /^(https?:\/\/)?(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/i.test(
@@ -552,7 +728,10 @@ function renderAuth(mode = "home") {
           )
         )
           throw new Error(
-            "127.0.0.1 指的是当前这台电脑自己，另一台电脑找不到它；请填写已有电脑的团队地址（https://…）",
+            t(
+              "127.0.0.1 指的是当前这台电脑自己，另一台电脑找不到它；请填写已有电脑的团队地址（https://…）",
+              "The address 127.0.0.1 points to this computer. Enter the other computer’s reachable service address.",
+            ),
           );
         const r = await api("device-request", {
           server: address,
@@ -573,7 +752,7 @@ function renderAuth(mode = "home") {
         recoveryPassword.value = "";
         password.value = "";
         if (!recovered.imported) {
-          notify("已取消选择恢复包");
+          notify(t("已取消选择恢复包", "Recovery file selection canceled."));
           return;
         }
         await enter();
@@ -598,35 +777,61 @@ function renderAuth(mode = "home") {
   };
   const foot = el("div", "auth-foot");
   foot.append(
-    button("← 返回", () => renderAuth("home"), "auth-back"),
-    button("完全退出", requestAppClose, "link"),
+    button(t("← 返回", "← Back"), () => renderAuth("home"), "auth-back"),
+    button(t("完全退出", "Quit"), requestAppClose, "link"),
   );
   root.append(foot);
 }
 function renderPendingDevice(r) {
-  const root = authHeader("新电脑关联码", "请在已登录的电脑上完成批准。");
+  const root = authHeader(
+    t("新电脑关联码", "Device link code"),
+    t(
+      "请在已登录的电脑上完成批准。",
+      "Approve this request on a computer where you’re signed in.",
+    ),
+  );
   const code = el("div", "association-code", r.code || r.request_id);
-  root.append(el("label", "label", "这台电脑的关联码"), code);
+  root.append(
+    el("label", "label", t("这台电脑的关联码", "This computer’s link code")),
+    code,
+  );
   const steps = el("ol", "association-steps");
   [
-    "回到已登录的电脑，点击左下角的账户图标。",
-    "点击“输入新电脑的关联码”，输入上面的码，核对名称和设备指纹后批准。",
-    "回到这台新电脑，点击下面的“检查批准并完成关联”。",
+    t(
+      "回到已登录的电脑，点击左下角的账户图标。",
+      "Open Account on the computer where you’re signed in.",
+    ),
+    t(
+      "点击“输入新电脑的关联码”，输入上面的码，核对名称和设备指纹后批准。",
+      "Choose Enter link code. Enter the code above, verify the name and device fingerprint, then approve.",
+    ),
+    t(
+      "回到这台新电脑，点击下面的“检查批准并完成关联”。",
+      "Return to this computer and choose Check approval and link.",
+    ),
   ].forEach((text) => steps.append(el("li", "", text)));
   root.append(steps);
   note(
     root,
-    "关联码约 10 分钟有效，仅用于这次关联申请。不要把它当作账户密码。",
+    t(
+      "关联码约 10 分钟有效，仅用于这次关联申请。不要把它当作账户密码。",
+      "The code expires in about 10 minutes and is only valid for this request.",
+    ),
   );
   root.append(
     button(
-      "检查批准并完成关联",
+      t("检查批准并完成关联", "Check approval and link"),
       async () => {
         const claim = await api("device-claim", {
           request_id: r.request_id,
         });
         if (claim.status !== "approved") {
-          notify("还未获批准，请在已有设备输入关联码并确认。");
+          notify(
+            t(
+              "还未获批准，请在已有设备输入关联码并确认。",
+              "Approval is pending. Enter the code on your existing device and approve the request.",
+            ),
+          );
           return;
         }
         S.request = null;
@@ -634,7 +839,7 @@ function renderPendingDevice(r) {
       },
       "primary",
     ),
-    button("← 返回", () => renderAuth("device"), "auth-back"),
+    button(t("← 返回", "← Back"), () => renderAuth("device"), "auth-back"),
   );
 }
 async function enter() {
@@ -653,7 +858,10 @@ async function enter() {
     .then((state) => {
       if (state?.status === "update")
         notify(
-          "有新版本 " + state.latest + "；可在 设置 → 应用更新 中打开下载页。",
+          t(
+            `有新版本 ${state.latest}；可在 设置 → 应用更新 中打开下载页。`,
+            `Version ${state.latest} is available. Open Settings → App updates to download it.`,
+          ),
         );
     })
     .catch(() => {});
@@ -662,12 +870,17 @@ function updateProfile() {
   const d = S.dash;
   $("profileName").textContent = d.user.username;
   $("avatar").textContent = d.user.username.slice(0, 1);
-  $("deviceCount").textContent =
-    "同一身份 · " +
-    new Set(d.devices.map((x) => x.node || x.id)).size +
-    " 台设备";
-  $("localName").textContent =
-    "当前设备：" + (d.devices.find((x) => x.local)?.name || "本机");
+  const count = new Set(d.devices.map((x) => x.node || x.id)).size;
+  $("deviceCount").textContent = t(
+    `同一身份 · ${count} 台设备`,
+    `Same account · ${count} ${count === 1 ? "device" : "devices"}`,
+  );
+  const localDevice =
+    d.devices.find((x) => x.local)?.name || t("本机", "This computer");
+  $("localName").textContent = t(
+    `当前设备：${localDevice}`,
+    `Current device: ${localDevice}`,
+  );
 }
 
 Object.assign(FoolshipDesktop.components, {

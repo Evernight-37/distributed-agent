@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 
+from agent_harness import desktop_locale
 from agent_harness.api_contracts import DESKTOP_CONTROL
 from agent_harness.common import read_json, validate_local_proxy, write_json
 from agent_harness.desktop_runtime import DesktopRuntime
@@ -47,8 +48,10 @@ class DesktopSessionActions:
             "app-background",
             "diagnostics-get",
             "health-status",
+            "interface-language",
             "local-status",
             "logout",
+            "set-interface-language",
         }
     )
 
@@ -62,6 +65,10 @@ class DesktopSessionActions:
         return autologin.status(self.bridge.root)
 
     def invoke(self, action, payload):
+        if action == "interface-language":
+            return desktop_locale.settings(self.bridge.root)
+        if action == "set-interface-language":
+            return desktop_locale.save(self.bridge.root, payload["preference"])
         if action == "app-capabilities":
             # Background mode is only offered where the window can be brought
             # back: a tray icon on Windows, the Dock on macOS.

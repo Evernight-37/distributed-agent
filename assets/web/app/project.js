@@ -56,6 +56,14 @@ function streamMessageText(message, node, box) {
 function conversationKind(conversation) {
   return conversation.kind || conversation.type || "group";
 }
+function projectConversationTitle(conversation) {
+  if (
+    conversationKind(conversation) === "group" &&
+    (!conversation.title || conversation.title === "项目大群")
+  )
+    return t("项目大群", "Project chat");
+  return conversation.title || t("未命名会话", "Untitled conversation");
+}
 function conversationParticipants(conversation) {
   return (conversation.participants || []).map((p) =>
     typeof p === "object" ? p.id || p.agent_id || p.user_id : p,
@@ -100,28 +108,71 @@ async function refreshProjectWork(project = S.project) {
   renderProject();
 }
 function projectWorkFields(body, view, task = {}) {
+  const fields = el("div", "project-task-fields");
+  body.append(fields);
+  const place = (label, value, size, options = null, type = "text") => {
+    const cell = el("div", "project-task-field " + size);
+    fields.append(cell);
+    return field(cell, label, value, options, type);
+  };
   return {
-    title: field(body, "标题", task.title || ""),
-    instructions: field(body, "工作说明", task.instructions || task.body || ""),
-    deliverable: field(body, "交付物", task.deliverable || ""),
-    acceptance: field(body, "验收标准", task.acceptance || ""),
-    validation: field(body, "验证命令", task.validation || ""),
-    allowed_files: field(body, "允许修改的文件", task.allowed_files || ""),
-    agent: field(body, "负责人", task.agent || task.agent_id || "", [
-      ["", "选择 Agent"],
-      ...(view.members || []).map((agent) => [
-        agent.id,
-        agent.name || agent.id,
-      ]),
+    title: place(t("标题", "Title"), task.title || "", "full"),
+    instructions: place(
+      t("工作说明", "Instructions"),
+      task.instructions || task.body || "",
+      "full",
+      null,
+      "textarea",
+    ),
+    deliverable: place(
+      t("交付物", "Deliverable"),
+      task.deliverable || "",
+      "half",
+      null,
+      "textarea",
+    ),
+    acceptance: place(
+      t("验收标准", "Acceptance criteria"),
+      task.acceptance || "",
+      "half",
+      null,
+      "textarea",
+    ),
+    validation: place(
+      t("验证命令", "Verification command"),
+      task.validation || "",
+      "half",
+    ),
+    allowed_files: place(
+      t("允许修改的文件", "Files allowed to change"),
+      task.allowed_files || "",
+      "half",
+    ),
+    agent: place(
+      t("负责人", "Assignee"),
+      task.agent || task.agent_id || "",
+      "third",
+      [
+        ["", t("选择 Agent", "Select an agent")],
+        ...(view.members || []).map((agent) => [
+          agent.id,
+          agent.name || agent.id,
+        ]),
+      ],
+    ),
+    stage: place(t("阶段", "Stage"), task.stage || "implement", "third", [
+      ["discuss", t("讨论", "Discuss")],
+      ["implement", t("实现", "Implement")],
     ]),
-    stage: field(body, "阶段", task.stage || "implement", [
-      ["discuss", "讨论"],
-      ["implement", "实现"],
-    ]),
-    visibility: field(body, "可见范围", task.visibility || "group", [
-      ["group", "项目成员"],
-      ["private", "仅相关成员"],
-    ]),
+    visibility: place(
+      t("可见范围", "Visibility"),
+      task.visibility || "group",
+      "third",
+      [
+        ["group", t("项目成员", "Project members")],
+        ["private", t("仅相关成员", "Participants only")],
+      ],
+    ),
   };
 }
 function projectWorkValues(controls) {
@@ -133,19 +184,75 @@ function projectWorkValues(controls) {
   );
 }
 function projectWorkStatus(status, draft = false) {
-  if (draft) return status === "confirmed" ? "已确认" : "草稿";
+  if (draft)
+    return status === "confirmed"
+      ? t("已确认", "Confirmed")
+      : t("草稿", "Draft");
   return (
     {
-      queued: "排队中",
-      running: "执行中",
-      waiting: "等待中",
-      delivered: "已交付",
-      accepted: "已验收",
-      blocked: "受阻",
+      queued: t("排队中", "Queued"),
+      running: t("执行中", "Running"),
+      waiting: t("等待中", "Waiting"),
+      delivered: t("已交付", "Delivered"),
+      accepted: t("已验收", "Accepted"),
+      blocked: t("受阻", "Blocked"),
     }[status] ||
     status ||
-    "未知"
+    t("未知", "Unknown")
   );
+}
+function projectExecutionStatus(status) {
+  return (
+    {
+      queued: t("排队中", "Queued"),
+      starting: t("正在启动", "Starting"),
+      running: t("执行中", "Running"),
+      waiting: t("等待中", "Waiting"),
+      needs_review: t("待核对", "Needs review"),
+      unknown: t("待核对", "Needs review"),
+      delivered: t("已交付", "Delivered"),
+      completed: t("已完成", "Completed"),
+      cancelled: t("已取消", "Cancelled"),
+      failed: t("失败", "Failed"),
+      timed_out: t("已超时", "Timed out"),
+      blocked: t("受阻", "Blocked"),
+    }[status] ||
+    status ||
+    ""
+  );
+}
+function projectExecutionDisplayStatus(entry) {
+  const status = entry.display_status;
+  if (status === "已处理 · 未发言")
+    return t("已处理 · 未发言", "Processed · No reply");
+  if (status === "已回复") return t("已回复", "Replied");
+  if (status === "待核对") return t("待核对", "Needs review");
+  return status || projectExecutionStatus(entry.state || entry.status);
+}
+function projectWorkStatusReason(reason) {
+  if (reason === "原设备的执行状态待确认。确认前此任务不会重复派工。")
+    return t(
+      reason,
+      "The original device's status needs review. This task will not be assigned again until it is confirmed.",
+    );
+  if (reason === "执行 Agent 已不存在或其所有者已离开项目")
+    return t(
+      reason,
+      "The assigned agent is gone or its owner has left the project.",
+    );
+  if (reason === "执行 Agent 当前未启用")
+    return t(reason, "The assigned agent is paused.");
+  if (reason === "工作范围版本缺失，请重新创建工作")
+    return t(reason, "The scope version is missing. Create the task again.");
+  if (
+    reason ===
+    "上一项任务的工作区仍有未提交修改。请先保存其变更，再重新运行此任务。"
+  )
+    return t(
+      reason,
+      "The previous task left uncommitted workspace changes. Save them before rerunning this task.",
+    );
+  return reason;
 }
 function projectWorkCard(view, kind, record, options = {}) {
   const draft = kind === "draft",
@@ -159,16 +266,16 @@ function projectWorkCard(view, kind, record, options = {}) {
           ? null
           : deliveries.at(-1),
     event = {
-      created: "已创建",
-      draft_saved: "已保存",
-      draft_revised: "已修订",
-      confirmed: "已确认",
-      follow_up: "有新要求",
-      waiting: "待答复",
-      delivered: "已交付",
-      accepted: "已验收",
-      reopened: "已重新打开",
-      scope_updated: "范围已更新",
+      created: t("已创建", "Created"),
+      draft_saved: t("已保存", "Saved"),
+      draft_revised: t("已修订", "Revised"),
+      confirmed: t("已确认", "Confirmed"),
+      follow_up: t("有新要求", "Follow-up added"),
+      waiting: t("待答复", "Awaiting reply"),
+      delivered: t("已交付", "Delivered"),
+      accepted: t("已验收", "Accepted"),
+      reopened: t("已重新打开", "Reopened"),
+      scope_updated: t("范围已更新", "Scope updated"),
     }[options.event],
     card = el("section", "project-work-card " + kind);
   card.setAttribute("data-work-id", String(record.id));
@@ -176,45 +283,80 @@ function projectWorkCard(view, kind, record, options = {}) {
     el(
       "div",
       "project-work-card-kicker",
-      (draft ? "工作草稿" : "项目工作") + (event ? " · " + event : ""),
+      (draft ? t("工作草稿", "Task draft") : t("项目工作", "Task")) +
+        (event ? " · " + event : ""),
     ),
-    el("strong", "project-work-card-title", record.title || "未命名工作"),
+    el(
+      "strong",
+      "project-work-card-title",
+      record.title || t("未命名工作", "Untitled task"),
+    ),
   );
   const facts = el("div", "project-work-card-facts");
+  if (options.compact) card.className += " project-work-card-compact";
   [
-    ["状态", projectWorkStatus(record.status, draft)],
-    ["版本", record.revision == null ? "—" : "v" + record.revision],
-    ["负责人", assignee?.name || assigneeId || "未指派"],
-  ].forEach(([label, value]) =>
-    facts.append(el("span", "", label + " · " + value)),
-  );
-  card.append(facts);
-  [
-    ["任务目标", record.instructions || record.body],
-    ["验收标准", record.acceptance],
-    ["预期交付", record.deliverable],
+    [t("状态", "Status"), projectWorkStatus(record.status, draft), true],
+    ...(!options.compact
+      ? [
+          [
+            t("版本", "Version"),
+            record.revision == null ? "—" : "v" + record.revision,
+          ],
+        ]
+      : []),
     [
-      options.event === "delivered" ? "本次交付" : "最新结果",
-      delivery?.summary || delivery?.body || record.status_reason,
+      t("负责人", "Assignee"),
+      assignee?.name || assigneeId || t("未指派", "Unassigned"),
     ],
-    ["等待答复", options.event === "waiting" && options.message?.body],
-  ].forEach(([label, value]) => {
-    if (!value) return;
-    const row = el("div", "project-work-card-field");
-    row.append(
-      el("span", "project-work-card-label", label),
-      el("p", "", value),
-    );
-    card.append(row);
+  ].forEach(([label, value, isStatus]) => {
+    const fact = el("span", "", label + " · " + value);
+    if (isStatus) {
+      fact.className = "project-work-status";
+      fact.setAttribute("data-status", record.status || "");
+    }
+    facts.append(fact);
   });
+  card.append(facts);
+  if (!options.compact)
+    [
+      [t("任务目标", "Goal"), record.instructions || record.body],
+      [t("验收标准", "Acceptance criteria"), record.acceptance],
+      [t("预期交付", "Expected deliverable"), record.deliverable],
+      [
+        options.event === "delivered"
+          ? t("本次交付", "Delivery")
+          : t("最新结果", "Latest result"),
+        delivery?.summary ||
+          delivery?.body ||
+          projectWorkStatusReason(record.status_reason),
+        true,
+      ],
+      [
+        t("等待答复", "Awaiting reply"),
+        options.event === "waiting" && options.message?.body,
+        true,
+      ],
+    ].forEach(([label, value, isResult]) => {
+      if (!value) return;
+      const row = el(
+        "div",
+        "project-work-card-field" +
+          (isResult ? " project-work-card-result" : ""),
+      );
+      row.append(
+        el("span", "project-work-card-label", label),
+        el("p", "", value),
+      );
+      card.append(row);
+    });
   if (options.controls !== false)
     card.append(
       button(
         draft
           ? record.status === "draft" && record.can_edit !== false
-            ? "审阅并确认"
-            : "查看草稿"
-          : "查看详情",
+            ? t("审阅并确认", "Review and confirm")
+            : t("查看草稿", "View draft")
+          : t("查看详情", "View details"),
         () =>
           draft
             ? openProjectWorkForm(view, { draft: record })
@@ -227,127 +369,165 @@ function projectWorkCard(view, kind, record, options = {}) {
 function openProjectWorkForm(view, options = {}) {
   const source = options.draft || options.task || {},
     project = view.project.id;
-  modal(options.draft ? "审阅工作草稿" : "创建项目工作", (body, actions) => {
-    const controls = projectWorkFields(body, view, source);
-    if (options.draft || source.visibility === "private")
-      controls.visibility.disabled = true;
-    if (!options.draft && source.visibility === "private" && source.agent)
-      controls.agent.disabled = true;
-    const initial = JSON.stringify(projectWorkValues(controls));
-    const changed = () =>
-      JSON.stringify(projectWorkValues(controls)) !== initial;
-    appendProjectMessageReferences(
-      body,
-      view,
-      options.draft?.reference_message_ids || [],
-      "草稿依据",
-    );
-    actions.append(button("取消", closeModal));
-    if (options.draft) {
-      note(
+  modal(
+    options.draft
+      ? t("审阅任务草稿", "Review task draft")
+      : t("创建任务", "Create task"),
+    (body, actions) => {
+      if (options.draft)
+        note(
+          body,
+          t(
+            `草稿 v${options.draft.revision}`,
+            `Draft v${options.draft.revision}`,
+          ) +
+            " · " +
+            (options.draft.can_edit === false
+              ? t("仅供查看。", "Read-only.")
+              : t(
+                  "修改后请先保存，再确认新版本。",
+                  "Save changes before confirming the new version.",
+                )),
+        );
+      const controls = projectWorkFields(body, view, source);
+      if (options.draft || source.visibility === "private")
+        controls.visibility.disabled = true;
+      if (!options.draft && source.visibility === "private" && source.agent)
+        controls.agent.disabled = true;
+      const initial = JSON.stringify(projectWorkValues(controls));
+      const changed = () =>
+        JSON.stringify(projectWorkValues(controls)) !== initial;
+      appendProjectMessageReferences(
         body,
-        "草稿版本 " +
-          options.draft.revision +
-          "。修改后须先保存新版本，不能直接确认。",
+        view,
+        options.draft?.reference_message_ids || [],
+        t("草稿依据", "Draft references"),
       );
-      if (options.draft.can_edit === false) {
-        Object.values(controls).forEach((control) => (control.disabled = true));
-        note(body, "你可以查看此草稿，但不能修改或确认。");
-        return;
-      }
-      actions.append(
-        button("继续讨论", () =>
-          openProjectWorkTextAction("继续讨论草稿", "draft-discuss", {
-            project,
-            draft_id: options.draft.id,
-            revision: options.draft.revision,
-          }),
-        ),
-        button(
-          "保存新版本",
-          projectWorkHandler(
-            "revise",
-            () => {
-              if (!changed()) throw Error("任务内容没有变化");
-              return {
+      actions.append(button(t("取消", "Cancel"), closeModal));
+      if (options.draft) {
+        if (options.draft.can_edit === false) {
+          Object.values(controls).forEach(
+            (control) => (control.disabled = true),
+          );
+          return;
+        }
+        actions.append(
+          button(t("继续讨论", "Discuss draft"), () =>
+            openProjectWorkTextAction(
+              t("继续讨论草稿", "Discuss the draft"),
+              "draft-discuss",
+              {
                 project,
                 draft_id: options.draft.id,
                 revision: options.draft.revision,
-                ...projectWorkValues(controls),
-              };
-            },
-            async () => {
-              closeModal();
-              await refreshProjectWork(project);
-              notify("新版本已保存，请重新核对后确认。");
-            },
+              },
+            ),
           ),
-        ),
-        button(
-          "确认此版本",
-          projectWorkHandler(
-            "confirm",
-            () => {
-              if (changed())
-                throw Error("内容已修改，请先保存新版本并重新核对");
-              return {
-                project,
-                draft_id: options.draft.id,
-                revision: options.draft.revision,
-              };
-            },
-            async () => {
-              closeModal();
-              await refreshProjectWork(project);
-            },
+          button(
+            t("保存新版本", "Save new version"),
+            projectWorkHandler(
+              "revise",
+              () => {
+                if (!changed())
+                  throw Error(
+                    t("任务内容没有变化", "There are no changes to save."),
+                  );
+                return {
+                  project,
+                  draft_id: options.draft.id,
+                  revision: options.draft.revision,
+                  ...projectWorkValues(controls),
+                };
+              },
+              async () => {
+                closeModal();
+                await refreshProjectWork(project);
+                notify(
+                  t(
+                    "新版本已保存，请重新核对后确认。",
+                    "New version saved. Review it before confirming.",
+                  ),
+                );
+              },
+            ),
           ),
-          "primary",
-        ),
-      );
-    } else
-      actions.append(
-        button(
-          "创建",
-          projectWorkHandler(
-            "create",
-            () => {
-              const values = projectWorkValues(controls);
-              if (!values.title || !values.instructions || !values.agent)
-                throw Error("请填写标题、工作说明并选择负责人");
-              return {
-                project,
-                ...values,
-                ...(options.conversation_id &&
-                (values.visibility === "group" ||
-                  source.visibility === "private")
-                  ? { conversation_id: options.conversation_id }
-                  : {}),
-                ...(options.source_message_id
-                  ? { source_message_id: options.source_message_id }
-                  : {}),
-              };
-            },
-            async () => {
-              closeModal();
-              await refreshProjectWork(project);
-            },
+          button(
+            t("确认此版本", "Confirm this version"),
+            projectWorkHandler(
+              "confirm",
+              () => {
+                if (changed())
+                  throw Error(
+                    t(
+                      "内容已修改，请先保存新版本并重新核对",
+                      "Save and review the new version before confirming.",
+                    ),
+                  );
+                return {
+                  project,
+                  draft_id: options.draft.id,
+                  revision: options.draft.revision,
+                };
+              },
+              async () => {
+                closeModal();
+                await refreshProjectWork(project);
+              },
+            ),
+            "primary",
           ),
-          "primary",
-        ),
-      );
-  });
+        );
+      } else
+        actions.append(
+          button(
+            t("创建", "Create"),
+            projectWorkHandler(
+              "create",
+              () => {
+                const values = projectWorkValues(controls);
+                if (!values.title || !values.instructions || !values.agent)
+                  throw Error(
+                    t(
+                      "请填写标题、工作说明并选择负责人",
+                      "Enter a title and instructions, and select an assignee.",
+                    ),
+                  );
+                return {
+                  project,
+                  ...values,
+                  ...(options.conversation_id &&
+                  (values.visibility === "group" ||
+                    source.visibility === "private")
+                    ? { conversation_id: options.conversation_id }
+                    : {}),
+                  ...(options.source_message_id
+                    ? { source_message_id: options.source_message_id }
+                    : {}),
+                };
+              },
+              async () => {
+                closeModal();
+                await refreshProjectWork(project);
+              },
+            ),
+            "primary",
+          ),
+        );
+    },
+  );
 }
 function openProjectWorkTextAction(title, action, target) {
   modal(title, (body, actions) => {
-    const input = field(body, "内容", "");
+    const input = field(body, t("内容", "Message"), "");
     actions.append(
-      button("取消", closeModal),
+      button(t("取消", "Cancel"), closeModal),
       button(
-        "提交",
+        t("提交", "Submit"),
         projectWorkHandler(
           action,
           () => {
-            if (!input.value.trim()) throw Error("请填写内容");
+            if (!input.value.trim())
+              throw Error(t("请填写内容", "Enter a message."));
             return {
               ...target,
               body: input.value.trim(),
@@ -365,17 +545,18 @@ function openProjectWorkTextAction(title, action, target) {
 }
 
 function openProjectWorkReference(project, work) {
-  modal("引用项目消息", (body, actions) => {
-    const input = field(body, "消息编号", "", null, "number");
+  modal(t("引用项目消息", "Reference a project message"), (body, actions) => {
+    const input = field(body, t("消息编号", "Message ID"), "", null, "number");
     actions.append(
-      button("取消", closeModal),
+      button(t("取消", "Cancel"), closeModal),
       button(
-        "引用",
+        t("引用", "Add reference"),
         projectWorkHandler(
           "reference",
           () => {
             const messageId = Number(input.value);
-            if (!Number.isInteger(messageId)) throw Error("请输入消息编号");
+            if (!Number.isInteger(messageId))
+              throw Error(t("请输入消息编号", "Enter a message ID."));
             return {
               project,
               work_id: work.id,
@@ -394,30 +575,55 @@ function openProjectWorkReference(project, work) {
 }
 
 function openProjectWorkScope(project, work) {
-  modal("修改工作范围", (body, actions) => {
+  modal(t("修改工作范围", "Edit task scope"), (body, actions) => {
     const controls = {
-      title: field(body, "标题", work.title || ""),
-      instructions: field(body, "工作说明", work.instructions || ""),
-      deliverable: field(body, "交付物", work.deliverable || ""),
-      acceptance: field(body, "验收标准", work.acceptance || ""),
-      validation: field(body, "验证命令", work.validation || ""),
-      allowed_files: field(body, "允许修改的文件", work.allowed_files || ""),
+      title: field(body, t("标题", "Title"), work.title || ""),
+      instructions: field(
+        body,
+        t("工作说明", "Instructions"),
+        work.instructions || "",
+      ),
+      deliverable: field(
+        body,
+        t("交付物", "Deliverable"),
+        work.deliverable || "",
+      ),
+      acceptance: field(
+        body,
+        t("验收标准", "Acceptance criteria"),
+        work.acceptance || "",
+      ),
+      validation: field(
+        body,
+        t("验证命令", "Verification command"),
+        work.validation || "",
+      ),
+      allowed_files: field(
+        body,
+        t("允许修改的文件", "Files allowed to change"),
+        work.allowed_files || "",
+      ),
     };
     const revision = work.revision;
     note(
       body,
-      "当前版本 · " + revision + "。保存时会核对版本，避免覆盖其他修改。",
+      t(
+        `当前版本 · ${revision}。保存时会核对版本，避免覆盖其他修改。`,
+        `Current version · ${revision}. Saving checks for newer changes before updating the scope.`,
+      ),
     );
     actions.append(
-      button("取消", closeModal),
+      button(t("取消", "Cancel"), closeModal),
       button(
-        "保存范围",
+        t("保存范围", "Save scope"),
         projectWorkHandler(
           "update-scope",
           () => {
             const values = projectWorkValues(controls);
             if (!values.title || !values.instructions)
-              throw Error("请填写标题和工作说明");
+              throw Error(
+                t("请填写标题和工作说明", "Enter a title and instructions."),
+              );
             return { project, work_id: work.id, revision, ...values };
           },
           async () => {
@@ -433,31 +639,51 @@ function openProjectWorkScope(project, work) {
 
 function openProjectWorkDetail(view, work) {
   const project = view.project.id;
-  modal(work.title || "项目工作", (body, actions) => {
+  modal(work.title || t("项目工作", "Task"), (body, actions) => {
     const agent = (view.members || []).find(
       (item) => item.id === (work.agent || work.agent_id),
     );
     const status = projectWorkStatus(work.status);
     const revision = work.revision;
     body.append(
-      el("div", "setting-row", "状态 · " + status),
-      el("div", "setting-row", "版本 · " + (revision ?? "—")),
+      el("div", "setting-row", t("状态 · ", "Status · ") + status),
+      el("div", "setting-row", t("版本 · ", "Version · ") + (revision ?? "—")),
       el(
         "div",
         "setting-row",
-        "负责人 · " + (agent?.name || work.agent || work.agent_id || ""),
+        t("负责人 · ", "Assignee · ") +
+          (agent?.name || work.agent || work.agent_id || ""),
       ),
       el("p", "", work.instructions || ""),
-      el("div", "setting-row", "交付物 · " + (work.deliverable || "未填写")),
-      el("div", "setting-row", "验收标准 · " + (work.acceptance || "未填写")),
-      el("div", "setting-row", "验证 · " + (work.validation || "未填写")),
+      el(
+        "div",
+        "setting-row",
+        t("交付物 · ", "Deliverable · ") +
+          (work.deliverable || t("未填写", "Not specified")),
+      ),
+      el(
+        "div",
+        "setting-row",
+        t("验收标准 · ", "Acceptance criteria · ") +
+          (work.acceptance || t("未填写", "Not specified")),
+      ),
+      el(
+        "div",
+        "setting-row",
+        t("验证 · ", "Verification · ") +
+          (work.validation || t("未填写", "Not specified")),
+      ),
     );
-    if (work.status_reason) body.append(el("p", "muted", work.status_reason));
+    if (work.status_reason)
+      body.append(
+        el("p", "muted", projectWorkStatusReason(work.status_reason)),
+      );
     (work.deliveries || []).forEach((delivery) => {
       const card = el(
         "div",
         "task",
-        "交付 · " + (delivery.summary || delivery.body || delivery.id || ""),
+        t("交付 · ", "Delivery · ") +
+          (delivery.summary || delivery.body || delivery.id || ""),
       );
       (delivery.links || []).forEach((value) => {
         const raw = typeof value === "string" ? value : value?.url;
@@ -480,7 +706,7 @@ function openProjectWorkDetail(view, work) {
           card,
           view,
           [delivery.message_id],
-          "交付消息",
+          t("交付消息", "Delivery message"),
         );
       body.append(card);
     });
@@ -492,33 +718,43 @@ function openProjectWorkDetail(view, work) {
           el(
             "div",
             "task",
-            "补充信息 · " + (input.body || input.kind || input.id || ""),
+            t("补充信息 · ", "Additional context · ") +
+              (input.body || input.kind || input.id || ""),
           ),
         );
     });
-    appendProjectMessageReferences(body, view, referenceIds, "引用消息");
+    appendProjectMessageReferences(
+      body,
+      view,
+      referenceIds,
+      t("引用消息", "Reference message"),
+    );
     (work.executions || []).forEach((execution) => {
       const row = el(
         "div",
         "task",
-        "执行记录 · " +
-          (execution.state || execution.status || execution.id || ""),
+        t("执行记录 · ", "Run · ") +
+          (projectExecutionStatus(execution.state || execution.status) ||
+            execution.id ||
+            ""),
       );
       if (execution.error)
         row.append(el("div", "error small", execution.error));
       body.append(row);
     });
-    const textAction = (label, action) =>
+    const textAction = (label, title, action) =>
       button(label, () =>
-        openProjectWorkTextAction(label + "项目工作", action, {
+        openProjectWorkTextAction(title, action, {
           project,
           work_id: work.id,
         }),
       );
-    actions.append(button("关闭", closeModal));
+    actions.append(button(t("关闭", "Close"), closeModal));
     if (work.can_manage !== false && work.status !== "accepted")
       actions.append(
-        button("修改范围", () => openProjectWorkScope(project, work)),
+        button(t("修改范围", "Edit scope"), () =>
+          openProjectWorkScope(project, work),
+        ),
       );
     if (
       work.can_manage !== false &&
@@ -526,15 +762,23 @@ function openProjectWorkDetail(view, work) {
         work.status,
       )
     )
-      actions.append(textAction("继续", "follow-up"));
+      actions.append(
+        textAction(
+          t("继续", "Follow up"),
+          t("继续项目工作", "Follow up on task"),
+          "follow-up",
+        ),
+      );
     if (work.can_manage !== false)
       actions.append(
-        button("引用消息", () => openProjectWorkReference(project, work)),
+        button(t("引用消息", "Reference message"), () =>
+          openProjectWorkReference(project, work),
+        ),
       );
     if (work.can_manage !== false && work.status === "delivered")
       actions.append(
         button(
-          "验收",
+          t("验收", "Accept delivery"),
           projectWorkHandler(
             "accept",
             () => ({ project, work_id: work.id }),
@@ -550,7 +794,13 @@ function openProjectWorkDetail(view, work) {
       work.can_manage !== false &&
       ["accepted", "delivered", "blocked"].includes(work.status)
     )
-      actions.append(textAction("重新打开", "reopen"));
+      actions.append(
+        textAction(
+          t("重新打开", "Reopen"),
+          t("重新打开项目工作", "Reopen task"),
+          "reopen",
+        ),
+      );
   });
 }
 async function selectConversation(conversation) {
@@ -575,11 +825,17 @@ async function selectConversation(conversation) {
 function groupMentionOptions(view) {
   const addressedWake = view.capabilities.includes("addressed_wake_v1");
   return [
-    ["", addressedWake ? "普通聊天" : "默认由管理员回复"],
+    [
+      "",
+      addressedWake
+        ? t("普通聊天", "Chat")
+        : t("默认由管理员回复", "Admin replies by default"),
+    ],
     ...view.members.map((agent) => [
       agent.id,
-      (agent.id === view.project.admin_agent_id ? "交给管理员 · @" : "@") +
-        (agent.name || agent.id),
+      (agent.id === view.project.admin_agent_id
+        ? t("交给管理员 · @", "Send to admin · @")
+        : "@") + (agent.name || agent.id),
     ]),
   ];
 }
@@ -606,7 +862,7 @@ function appendProjectMessageReferences(container, view, ids, label) {
     const conversation = (view.conversations || []).find(
       (item) => message && item.id === message.conversation_id,
     );
-    const text = (label || "关联消息") + " · #" + id;
+    const text = (label || t("关联消息", "Related message")) + " · #" + id;
     if (message && conversation)
       container.append(
         button(
@@ -639,25 +895,32 @@ function openProjectTaskTrace(view, task) {
     ),
     assignee = view.members.find((member) => member.id === task.agent_id),
     name = trace.agent_name || assignee?.name || task.agent_id;
-  modal(task.title || "任务追溯", (body, actions) => {
-    const id = field(body, "任务编号", task.id);
+  modal(task.title || t("任务追溯", "Task history"), (body, actions) => {
+    const id = field(body, t("任务编号", "Task ID"), task.id);
     id.readOnly = true;
-    if (name) body.append(el("div", "setting-row", "负责人 · " + name));
+    if (name)
+      body.append(
+        el("div", "setting-row", t("负责人 · ", "Assignee · ") + name),
+      );
     if (trace.node)
       body.append(
         el(
           "div",
           "setting-row",
-          "执行设备 · " + (trace.node_name || trace.node),
+          t("执行设备 · ", "Device · ") + (trace.node_name || trace.node),
         ),
       );
     if (trace.source_message_id)
       body.append(
-        el("div", "setting-row", "来源消息 · #" + trace.source_message_id),
+        el(
+          "div",
+          "setting-row",
+          t("来源消息 · #", "Source message · #") + trace.source_message_id,
+        ),
         ...(sourceRoom
           ? [
               button(
-                "查看来源消息",
+                t("查看来源消息", "View source message"),
                 async () => {
                   closeModal();
                   await jumpToProjectMessage(
@@ -674,7 +937,7 @@ function openProjectTaskTrace(view, task) {
     if (parent)
       body.append(
         button(
-          "查看上游任务",
+          t("查看上游任务", "View parent task"),
           () => openProjectTaskTrace(view, parent),
           "link small",
         ),
@@ -682,7 +945,8 @@ function openProjectTaskTrace(view, task) {
     if (deliveryRoom)
       body.append(
         button(
-          "交付会话 · " + (deliveryRoom.title || "项目大群"),
+          t("交付会话 · ", "Delivery conversation · ") +
+            projectConversationTitle(deliveryRoom),
           async () => {
             closeModal();
             await selectConversation(deliveryRoom);
@@ -691,12 +955,12 @@ function openProjectTaskTrace(view, task) {
         ),
       );
     actions.append(
-      button("关闭", closeModal),
+      button(t("关闭", "Close"), closeModal),
       button(
-        "复制任务编号",
+        t("复制任务编号", "Copy task ID"),
         async () => {
           await copyText(task.id, id);
-          notify("已复制任务编号");
+          notify(t("已复制任务编号", "Task ID copied."));
         },
         "primary",
       ),
@@ -705,13 +969,19 @@ function openProjectTaskTrace(view, task) {
 }
 
 function confirmTaskCancellation(project, task) {
-  modal("取消任务", (body, actions) => {
+  modal(t("取消任务", "Cancel task"), (body, actions) => {
     body.append(el("p", "", task.title || task.id));
-    note(body, "已交给设备的任务会在接收端确认后标记为已取消。");
+    note(
+      body,
+      t(
+        "已交给设备的任务会在接收端确认后标记为已取消。",
+        "If the task has reached a device, it is marked cancelled after the receiver confirms.",
+      ),
+    );
     actions.append(
-      button("返回", closeModal),
+      button(t("返回", "Back"), closeModal),
       button(
-        "确认取消任务",
+        t("确认取消任务", "Confirm cancellation"),
         async () => {
           await api("task-cancel", { project, task_id: task.id });
           closeModal();
@@ -724,16 +994,19 @@ function confirmTaskCancellation(project, task) {
 }
 
 function confirmLocalTaskStopped(project, task) {
-  modal("核对本机任务", (body, actions) => {
+  modal(t("核对本机任务", "Review local task"), (body, actions) => {
     body.append(el("p", "", task.title || task.id));
     note(
       body,
-      "请先在原执行电脑上检查任务进程及其子进程。确认都已停止后再继续。任务状态会在接收端回报后更新。",
+      t(
+        "请先在原执行电脑上检查任务进程及其子进程。确认都已停止后再继续。任务状态会在接收端回报后更新。",
+        "On the device that ran the task, check that the task process and all child processes have stopped. The status updates after the receiver reports back.",
+      ),
     );
     actions.append(
-      button("返回", closeModal),
+      button(t("返回", "Back"), closeModal),
       button(
-        "确认原任务已停止",
+        t("确认原任务已停止", "Confirm the task has stopped"),
         async () => {
           await api("task-resolve-local", {
             project,
@@ -750,32 +1023,55 @@ function confirmLocalTaskStopped(project, task) {
 }
 
 function confirmPermissionRequest(project, agent, request, approve) {
-  modal(approve ? "批准本次提权" : "拒绝本次提权", (body, actions) => {
-    body.append(el("p", "", agent.name));
-    if (request.reason) body.append(el("p", "", request.reason));
-    note(
-      body,
-      approve
-        ? "只有这项任务的下一次续跑可以访问工作区外。续跑结束后恢复原有权限。"
-        : "这次申请会关闭，Agent 后续任务使用项目原有权限。",
-    );
-    actions.append(
-      button("返回", closeModal),
-      button(
-        approve ? "确认批准" : "确认拒绝",
-        async () => {
-          await api("permission-decide", {
-            project,
-            request_id: request.id,
-            approve,
-          });
-          closeModal();
-          if (S.project === project) await refresh(true);
-        },
-        approve ? "primary" : "danger",
-      ),
-    );
-  });
+  modal(
+    approve
+      ? t("批准本次提权", "Approve extra permissions")
+      : t("拒绝本次提权", "Deny extra permissions"),
+    (body, actions) => {
+      body.append(el("p", "", agent.name));
+      if (request.reason)
+        body.append(el("p", "", projectPermissionReason(request.reason)));
+      note(
+        body,
+        approve
+          ? t(
+              "只有这项任务的下一次续跑可以访问工作区外。续跑结束后恢复原有权限。",
+              "This task can access files outside its workspace for one resumed run. Its original permissions apply afterward.",
+            )
+          : t(
+              "这次申请会关闭，Agent 后续任务使用项目原有权限。",
+              "The request will close. Future runs use the project's existing permissions.",
+            ),
+      );
+      actions.append(
+        button(t("返回", "Back"), closeModal),
+        button(
+          approve
+            ? t("确认批准", "Confirm approval")
+            : t("确认拒绝", "Confirm denial"),
+          async () => {
+            await api("permission-decide", {
+              project,
+              request_id: request.id,
+              approve,
+            });
+            closeModal();
+            if (S.project === project) await refresh(true);
+          },
+          approve ? "primary" : "danger",
+        ),
+      );
+    },
+  );
+}
+
+function projectPermissionReason(reason) {
+  return reason === "一条私有任务申请在本机单次提权。"
+    ? t(
+        reason,
+        "A private task requests one-time extra permissions on this device.",
+      )
+    : reason;
 }
 
 function startDirectConversation() {
@@ -793,13 +1089,25 @@ function startDirectConversation() {
           kind: "human_human",
         })),
     ];
-  modal("开始私聊", (body, actions) => {
+  modal(t("开始私聊", "Start a direct message"), (body, actions) => {
     if (!options.length) {
-      empty(body, "当前没有可以私聊的成员或 Agent。");
-      actions.append(button("关闭", closeModal));
+      empty(
+        body,
+        t(
+          "当前没有可以私聊的成员或 Agent。",
+          "No members or agents are available to message.",
+        ),
+      );
+      actions.append(button(t("关闭", "Close"), closeModal));
       return;
     }
-    note(body, "你只能私聊自己的 Agent；人与人的私聊仅双方可见。");
+    note(
+      body,
+      t(
+        "你只能私聊自己的 Agent；人与人的私聊仅双方可见。",
+        "You can message your own agents. Direct messages between people are visible to both participants only.",
+      ),
+    );
     options.forEach((target) => {
       const existing = (v.conversations || []).find(
         (c) =>
@@ -807,7 +1115,9 @@ function startDirectConversation() {
           conversationParticipants(c).includes(target.id),
       );
       const label =
-        (target.kind === "human_agent" ? "Agent · " : "成员 · ") + target.name;
+        (target.kind === "human_agent"
+          ? "Agent · "
+          : t("成员 · ", "Member · ")) + target.name;
       body.append(
         button(
           label,
@@ -828,7 +1138,7 @@ function startDirectConversation() {
         ),
       );
     });
-    actions.append(button("取消", closeModal));
+    actions.append(button(t("取消", "Cancel"), closeModal));
   });
 }
 
@@ -861,11 +1171,14 @@ function renderProject() {
     !v.capabilities.includes("conversation_privacy_v2")
   ) {
     c.replaceChildren(
-      head(p.name, "项目对话"),
+      head(p.name, t("项目对话", "Project conversations")),
       el(
         "div",
         "panel error",
-        "协作服务版本过旧。请让服务所在电脑更新应用并重启团队服务，然后重新打开项目。为保护私聊，此版本不会显示旧服务返回的聊天内容。",
+        t(
+          "协作服务版本过旧。请让服务所在电脑更新应用并重启团队服务，然后重新打开项目。为保护私聊，此版本不会显示旧服务返回的聊天内容。",
+          "The team service is too old. Update Foolship on the host computer, restart the team service, then reopen the project. Messages from the older service are hidden to protect direct conversations.",
+        ),
       ),
     );
     return;
@@ -930,6 +1243,8 @@ function renderProject() {
     : null;
   const oldInternal = c.querySelector("#internalConversations"),
     internalOpen = oldInternal?.open || false;
+  const oldWork = c.querySelector("#projectWork"),
+    workOpen = oldWork?.open ?? true;
   const oldTasks = c.querySelector("#projectTasks"),
     tasksOpen = oldTasks?.open || false;
   const oldMemory = c.querySelector("#projectMemory"),
@@ -937,48 +1252,74 @@ function renderProject() {
   const oldMembers = c.querySelector("#projectMembers"),
     membersOpen = oldMembers?.open || false;
   const panelScroll = {
+    rail: c.querySelector(".conversation-rail")?.scrollTop || 0,
+    roomList: c.querySelector(".project-room-list")?.scrollLeft || 0,
+    side: c.querySelector(".project-side")?.scrollTop || 0,
+    work: oldWork?.scrollTop || 0,
     tasks: oldTasks?.scrollTop || 0,
     memory: oldMemory?.scrollTop || 0,
     members: oldMembers?.scrollTop || 0,
   };
   c.dataset.projectId = S.project;
   c.dataset.conversationId = selectedId;
-  c.replaceChildren(head(p.name, serviceName(v.server || p.server)));
-  const layout = el("div", "conversation-layout");
+  const hasProjectWork = (v.capabilities || []).includes("project_work_v1"),
+    header = head(p.name, serviceName(v.server || p.server));
+  header.classList.add("project-workspace-header");
+  if (hasProjectWork)
+    header.append(
+      button(
+        t("＋ 新建任务", "＋ New task"),
+        () => openProjectWorkForm(v, createWorkOptions),
+        "primary",
+      ),
+    );
+  c.replaceChildren(header);
+  const layout = el("div", "conversation-layout project-workspace");
   const rooms = el("aside", "panel conversation-rail");
-  const roomHead = el("div", "row");
+  rooms.setAttribute("aria-label", t("项目会话", "Project conversations"));
+  const roomHead = el("div", "project-room-heading"),
+    roomList = el("div", "project-room-list");
   roomHead.append(
-    el("h3", "", "会话"),
-    button("＋ 私聊", startDirectConversation, "link"),
+    el("h2", "", t("会话", "Chats")),
+    button(
+      t("＋ 私聊", "＋ DM"),
+      startDirectConversation,
+      "project-room-create",
+    ),
   );
-  rooms.append(roomHead);
+  rooms.append(roomHead, roomList);
   function roomButton(conversation) {
     const b = button(
       "",
       () => selectConversation(conversation),
       "conversation-item" + (conversation.id === selectedId ? " active" : ""),
     );
-    const title = el(
+    const label = projectConversationTitle(conversation);
+    const title = el("span", "conversation-title", label);
+    title.title = label;
+    if (conversation.id === selectedId) b.setAttribute("aria-current", "true");
+    const icon = el(
       "span",
-      "conversation-title",
-      conversation.title || "未命名会话",
+      "project-room-icon",
+      conversationKind(conversation) === "group" ? "#" : "",
     );
-    b.append(title);
+    icon.setAttribute("aria-hidden", "true");
+    b.append(icon, title);
     const count = Number(conversation.unread_count || 0);
     if (count > 0)
       b.append(el("span", "unread", String(count > 99 ? "99+" : count)));
     return b;
   }
-  rooms.append(roomButton(group));
+  roomList.append(roomButton(group));
   const myChats = conversations.filter((x) =>
     ["human_agent", "human_human"].includes(conversationKind(x)),
   );
-  rooms.append(el("div", "conversation-label", "我的私聊"));
-  if (myChats.length) myChats.forEach((x) => rooms.append(roomButton(x)));
-  else
-    rooms.append(
-      el("div", "muted small conversation-hint", "点“＋ 私聊”开始对话"),
+  if (myChats.length) {
+    roomList.append(
+      el("div", "conversation-label", t("我的私聊", "Direct messages")),
     );
+    myChats.forEach((x) => roomList.append(roomButton(x)));
+  }
   const internal = el("details", "internal-conversations");
   internal.id = "internalConversations";
   internal.open = internalOpen;
@@ -989,25 +1330,47 @@ function renderProject() {
     (sum, x) => sum + Number(x.unread_count || 0),
     0,
   );
-  const summary = el("summary", "", "Agent 内部会话");
+  const summary = el("summary", "", t("Agent 内部会话", "Agent conversations"));
   if (unread > 0)
     summary.append(el("span", "unread", String(unread > 99 ? "99+" : unread)));
   internal.append(summary);
   if (internals.length)
     internals.forEach((x) => internal.append(roomButton(x)));
   else
-    internal.append(el("div", "muted small conversation-hint", "暂无内部会话"));
+    internal.append(
+      el(
+        "div",
+        "muted small conversation-hint",
+        t("暂无内部会话", "No agent conversations yet"),
+      ),
+    );
   rooms.append(internal);
   const chat = el("section", "panel chat");
   const chatHead = el("div", "chat-head");
-  chatHead.append(el("strong", "", selected.title || "项目大群"));
+  const chatTitle = el("div", "project-chat-title");
+  chatTitle.append(el("h2", "", projectConversationTitle(selected)));
   const privacy = {
-    group: "所有项目成员可见",
-    human_agent: "仅你和该 Agent 可见",
-    human_human: "仅对话双方可见",
-    agent_agent: "项目成员可旁观，其他 Agent 不可见",
+    group: t("所有项目成员可见", "Visible to all project members"),
+    human_agent: t("仅你和该 Agent 可见", "Visible only to you and this agent"),
+    human_human: t("仅对话双方可见", "Visible only to the participants"),
+    agent_agent: t(
+      "项目成员可旁观，其他 Agent 不可见",
+      "Project members can read this. Other agents cannot.",
+    ),
   };
-  chatHead.append(el("span", "muted small", privacy[kind] || ""));
+  chatTitle.append(el("span", "muted small", privacy[kind] || ""));
+  chatHead.append(
+    chatTitle,
+    button(
+      t("任务与成员", "Tasks and members"),
+      () => {
+        const inspector = c.querySelector(".project-side");
+        inspector?.scrollIntoView({ block: "start" });
+        inspector?.focus({ preventScroll: true });
+      },
+      "project-inspector-jump",
+    ),
+  );
   chat.append(chatHead);
   const msgs = el("div", "messages");
   const visible = (v.messages || []).filter(
@@ -1019,7 +1382,12 @@ function renderProject() {
   for (const key of S.streamTexts.keys())
     if (!streamIds.has(key)) S.streamTexts.delete(key);
   if (!visible.length)
-    empty(msgs, isGroup ? "在项目大群开始讨论。" : "这段会话还没有消息。");
+    empty(
+      msgs,
+      isGroup
+        ? t("在项目大群开始讨论。", "Start a conversation with the project.")
+        : t("这段会话还没有消息。", "No messages yet."),
+    );
   const tasksById = new Map((v.tasks || []).map((task) => [task.id, task]));
   const firstClassWorkCards = (v.capabilities || []).includes(
     "project_work_cards_v1",
@@ -1049,16 +1417,28 @@ function renderProject() {
     }),
   );
   visible.forEach((m) => {
-    const baseSender = m.sender_name || m.sender_username || m.sender_id || "?",
+    const baseSender =
+        m.sender_type === "system"
+          ? t("系统", "System")
+          : m.sender_name || m.sender_username || m.sender_id || "?",
       clientLabel = { codex: "Codex", dsh: "DSH" }[m.sender_client],
-      sender = baseSender + (clientLabel ? " · " + clientLabel : ""),
       row = el("div", "message"),
       bubble = el("div", "bubble"),
-      name = el("div", "name", sender);
+      identity = el("div", "project-message-identity"),
+      name = el("strong", "name", baseSender),
+      metadata = el("div", "project-message-header");
     row.id = "project-message-" + m.id;
     row.tabIndex = -1;
+    row.setAttribute("data-sender-type", m.sender_type || "human");
+    identity.append(name);
+    if (clientLabel)
+      identity.append(el("span", "project-message-client", clientLabel));
     if (m.mention_agent_name)
-      name.append(el("span", "channel", "@" + m.mention_agent_name));
+      identity.append(el("span", "channel", "@" + m.mention_agent_name));
+    metadata.append(
+      identity,
+      el("time", "project-message-time", date(m.created_at)),
+    );
     const cardMetadata = firstClassWorkCards && m.project_work_card,
       cardKind = cardMetadata?.kind,
       cardRecord =
@@ -1069,10 +1449,22 @@ function renderProject() {
             : null,
       body = el("div", "message-text");
     if (!cardRecord) {
-      FoolshipRender.render(body, m.body);
+      const request = m.permission_request;
+      const requestAgent =
+        request && v.members.find((agent) => agent.id === request.agent_id);
+      const messageBody =
+        m.sender_type === "system" &&
+        request?.reason &&
+        requestAgent?.owner_id === me
+          ? t(
+              m.body,
+              `${requestAgent.name} requests extra permissions for a resumed run: ${projectPermissionReason(request.reason)}`,
+            )
+          : m.body;
+      FoolshipRender.render(body, messageBody);
       streamMessageText(m, body, msgs);
     }
-    bubble.append(name, body, el("div", "muted small", date(m.created_at)));
+    bubble.append(metadata, body);
     if (cardRecord) {
       bubble.classList.add("work-card-message");
       bubble.append(
@@ -1082,11 +1474,12 @@ function renderProject() {
         }),
       );
     }
-    const linkedTask = tasksById.get(m.task_id);
+    const actions = el("div", "project-message-actions"),
+      linkedTask = tasksById.get(m.task_id);
     if (linkedTask)
-      bubble.append(
+      actions.append(
         button(
-          "查看关联任务",
+          t("查看关联任务", "View related task"),
           () => openProjectTaskTrace(v, linkedTask),
           "link small",
         ),
@@ -1099,23 +1492,25 @@ function renderProject() {
       (isGroup || privateWorkAgent) &&
       (v.capabilities || []).includes("project_work_v1")
     )
-      bubble.append(
+      actions.append(
         button(
-          "创建工作",
+          t("从此消息建任务", "Create task from message"),
           () =>
             openProjectWorkForm(v, {
               ...createWorkOptions,
               source_message_id: m.id,
               task: { ...createWorkOptions.task, instructions: m.body },
             }),
-          "link small",
+          "link small project-message-create",
         ),
       );
     if (!firstClassWorkCards)
       (workByMessage.get(m.id) || []).forEach(({ kind, record }) =>
-        bubble.append(
+        actions.append(
           button(
-            kind === "draft" ? "查看工作草稿" : "查看项目工作",
+            kind === "draft"
+              ? t("查看工作草稿", "View task draft")
+              : t("查看项目工作", "View task"),
             () =>
               kind === "draft"
                 ? openProjectWorkForm(v, { draft: record })
@@ -1124,41 +1519,46 @@ function renderProject() {
           ),
         ),
       );
+    if (actions.childElementCount) bubble.append(actions);
     const request = m.permission_request;
     if (request?.id) {
       const agent = v.members.find((item) => item.id === request.agent_id);
       if (agent?.owner_id === me) {
         const state = {
-          pending: "等待机器主人批准",
-          approved: "已批准一次续跑",
-          consumed: "单次授权已使用",
-          denied: "申请已拒绝",
+          pending: t("等待机器主人批准", "Waiting for device owner approval"),
+          approved: t("已批准一次续跑", "Approved for one resumed run"),
+          consumed: t("单次授权已使用", "One-time approval used"),
+          denied: t("申请已拒绝", "Request denied"),
         }[request.state];
-        if (state) bubble.append(el("div", "muted small", state));
+        const permission = el("div", "project-message-permission");
+        if (state) permission.append(el("strong", "", state));
         if (request.state === "pending") {
-          bubble.append(
+          const decisions = el("div", "project-inspector-actions");
+          decisions.append(
             button(
-              "批准本次",
+              t("批准本次", "Approve once"),
               () => confirmPermissionRequest(p.id, agent, request, true),
-              "link small",
+              "small",
             ),
             button(
-              "拒绝",
+              t("拒绝", "Deny"),
               () => confirmPermissionRequest(p.id, agent, request, false),
-              "link small",
+              "small",
             ),
           );
+          permission.append(decisions);
         }
+        if (permission.childElementCount) bubble.append(permission);
       }
     }
-    row.append(el("span", "avatar", sender.slice(0, 1)), bubble);
+    const avatar = el("span", "avatar", baseSender.slice(0, 1));
+    avatar.setAttribute("aria-hidden", "true");
+    row.append(avatar, bubble);
     msgs.append(row);
   });
   chat.append(msgs);
   if (readOnly) {
-    chat.append(
-      el("div", "composer-readonly", "Agent 内部会话仅供项目成员旁观。"),
-    );
+    chat.append(el("div", "composer-readonly", t("仅供查看", "Read-only")));
   } else {
     const composer = el("form", "composer"),
       draftKey = S.project + ":" + selectedId;
@@ -1178,22 +1578,40 @@ function renderProject() {
     draft.attachments ||= [];
     const projectId = S.project;
     const mention = el("select", "mention-agent"),
-      text = el("textarea");
+      text = el("textarea"),
+      toolbar = el("div", "project-composer-toolbar"),
+      tools = el("div", "project-composer-tools"),
+      submit = el("div", "project-composer-submit"),
+      send = button(t("发送", "Send"), null, "primary project-send");
+    let sending = false,
+      composing = false;
     if (isGroup) {
-      mention.setAttribute("aria-label", "群消息发送方式");
+      mention.setAttribute(
+        "aria-label",
+        t("群消息发送方式", "Project chat delivery mode"),
+      );
       groupMentionOptions(v).forEach(([value, label]) => {
         const option = el("option", "", label);
         option.value = value;
         mention.append(option);
       });
       mention.value = draft.mention || "";
-      composer.append(mention);
+      tools.append(mention);
     }
     text.value = draft.body;
     text.rows = 2;
     text.placeholder = isGroup
-      ? "发送到项目大群，Enter 发送 · Shift+Enter 换行 · 可拖入或粘贴图片"
-      : "发送私聊消息，Enter 发送 · Shift+Enter 换行";
+      ? t("发消息给项目大群", "Message the project")
+      : t("发私聊消息", "Write a direct message");
+    text.setAttribute("aria-label", text.placeholder);
+    send.type = "submit";
+    const syncSend = () => {
+      const current = S.drafts.get(draftKey);
+      send.disabled =
+        sending ||
+        !!current?.uploading ||
+        (!text.value.trim() && !current?.attachments?.length);
+    };
     const save = () => {
       const mentionValue = isGroup ? mention.value : "";
       const previous = S.drafts.get(draftKey);
@@ -1214,14 +1632,10 @@ function renderProject() {
       // Grow with the text, up to six lines, then scroll.
       text.style.height = "auto";
       text.style.height = Math.min(text.scrollHeight, 168) + "px";
+      syncSend();
     };
     if (isGroup) mention.onchange = save;
-    // Enter sends and Shift+Enter breaks the line; a visible send button is noise.
-    const send = button("", null, "submit-hidden");
-    send.type = "submit";
-    send.tabIndex = -1;
-    send.setAttribute("aria-hidden", "true");
-    composer.append(text, send);
+    composer.append(text);
     if ((v.capabilities || []).includes("chat_attachments_v1")) {
       const picker = el("input"),
         files = el("div", "attachment-draft");
@@ -1237,7 +1651,7 @@ function renderProject() {
             "📎 " + file.name + " · " + fileSize(file.size),
           );
           row.append(
-            button("移除", () => {
+            button(t("移除", "Remove"), () => {
               const current = S.drafts.get(draftKey);
               current.attachments = current.attachments.filter(
                 (f) => f.id !== file.id,
@@ -1248,17 +1662,37 @@ function renderProject() {
           );
           files.append(row);
         });
+        syncSend();
       };
       const addFiles = async (incoming) => {
         const current = S.drafts.get(draftKey);
         if (!current || sending || current.uploading)
-          throw new Error("请等待当前文件处理完成");
+          throw new Error(
+            t(
+              "请等待当前文件处理完成",
+              "Wait for the current attachments to finish.",
+            ),
+          );
         if (current.attachments.length + incoming.length > 5)
-          throw new Error("每条消息最多 5 个附件");
+          throw new Error(
+            t(
+              "每条消息最多 5 个附件",
+              "You can attach up to 5 files per message.",
+            ),
+          );
         if (incoming.some((file) => file.size > 5 * 1024 * 1024))
-          throw new Error("每个附件最大 5 MB");
+          throw new Error(
+            t("每个附件最大 5 MB", "Each attachment can be up to 5 MB."),
+          );
         current.uploading = true;
-        files.append(el("span", "muted small", "正在上传附件…"));
+        syncSend();
+        files.append(
+          el(
+            "span",
+            "muted small",
+            t("正在上传附件…", "Uploading attachments…"),
+          ),
+        );
         try {
           for (const file of incoming) {
             const encoded = await new Promise((resolve, reject) => {
@@ -1266,12 +1700,12 @@ function renderProject() {
               reader.onload = () =>
                 resolve(String(reader.result).split(",")[1]);
               reader.onerror = () =>
-                reject(new Error("无法读取：" + file.name));
+                reject(new Error(t("无法读取：", "Cannot read: ") + file.name));
               reader.readAsDataURL(file);
             });
             const metadata = await api("attachment-upload", {
               project: projectId,
-              name: file.name || "截图.png",
+              name: file.name || t("截图.png", "screenshot.png"),
               base64: encoded,
             });
             (S.drafts.get(draftKey) || current).attachments.push(metadata);
@@ -1302,8 +1736,13 @@ function renderProject() {
         const incoming = Array.from(e.dataTransfer?.files || []);
         if (incoming.length) run(() => addFiles(incoming));
       };
-      // Attachments arrive by drag and drop or paste; no button competes with the
-      // text field.
+      tools.append(
+        button(
+          t("添加附件", "Attach files"),
+          () => picker.click(),
+          "project-attach",
+        ),
+      );
       composer.append(picker, files);
       redrawFiles();
     } else {
@@ -1311,12 +1750,20 @@ function renderProject() {
         el(
           "div",
           "muted small",
-          "请将协作服务升级到当前版本并重启后再发送文件和截图。",
+          t(
+            "协作服务更新后可发送附件。",
+            "Update the team service to send attachments.",
+          ),
         ),
       );
     }
-    let sending = false,
-      composing = false;
+    submit.append(
+      el("span", "project-composer-shortcut", t("Enter 发送", "Enter to send")),
+      send,
+    );
+    toolbar.append(tools, submit);
+    composer.append(toolbar);
+    syncSend();
     text.addEventListener("compositionstart", () => {
       composing = true;
     });
@@ -1326,18 +1773,25 @@ function renderProject() {
     text.onkeydown = (e) => {
       if (e.key !== "Enter" || e.shiftKey || e.isComposing || composing) return;
       e.preventDefault();
-      composer.requestSubmit(send);
+      if (!send.disabled) composer.requestSubmit(send);
     };
     composer.onsubmit = (e) => {
       e.preventDefault();
       run(async () => {
         if (sending) return;
         const submission = S.drafts.get(draftKey) || draft;
-        if (submission.uploading) throw new Error("附件仍在上传，请稍后发送");
+        if (submission.uploading)
+          throw new Error(
+            t(
+              "附件仍在上传，请稍后发送",
+              "Wait for attachments to finish uploading before sending.",
+            ),
+          );
         const attached = submission.attachments || [];
         const body = text.value.trim() || (attached.length ? "📎 附件" : "");
         if (!body) return;
         sending = true;
+        syncSend();
         const recipient =
           selected.recipient_id ||
           (!isGroup
@@ -1381,98 +1835,122 @@ function renderProject() {
           }
         } finally {
           sending = false;
+          syncSend();
         }
-      }, send);
+      });
     };
     chat.append(composer);
   }
   const side = el("aside", "project-side");
-  if ((v.capabilities || []).includes("project_work_v1")) {
+  side.tabIndex = -1;
+  side.setAttribute("aria-label", t("任务与成员", "Tasks and members"));
+  const sideHeading = (title, count) => {
+    const summary = el("summary", "project-inspector-summary");
+    summary.append(el("span", "", title));
+    if (count)
+      summary.append(el("span", "project-inspector-count", String(count)));
+    return summary;
+  };
+  const inConversation = (item) =>
+    !item.conversation_id || item.conversation_id === selectedId;
+  if (hasProjectWork) {
     const projectWork = el("details", "panel side-section"),
       drafts = (v.work?.drafts || []).filter(
-        (draft) => draft.status === "draft",
+        (draft) => draft.status === "draft" && inConversation(draft),
       ),
-      items = v.work?.items || [];
-    projectWork.open = true;
+      items = (v.work?.items || []).filter(inConversation);
+    projectWork.id = "projectWork";
+    projectWork.open = workOpen;
     projectWork.append(
-      el("summary", "", "项目工作 · " + (drafts.length + items.length)),
-      button(
-        "＋ 创建工作",
-        () => openProjectWorkForm(v, createWorkOptions),
-        "link small",
-      ),
+      sideHeading(t("任务卡", "Tasks"), drafts.length + items.length),
     );
-    drafts
-      .filter(
-        (draft) =>
-          !draft.conversation_id || draft.conversation_id === selectedId,
-      )
-      .forEach((draft) => {
-        projectWork.append(projectWorkCard(v, "draft", draft));
-      });
-    items
-      .filter(
-        (item) => !item.conversation_id || item.conversation_id === selectedId,
-      )
-      .forEach((item) => {
-        projectWork.append(projectWorkCard(v, "work", item));
-      });
+    if (!drafts.length && !items.length)
+      projectWork.append(
+        el(
+          "p",
+          "project-inspector-empty",
+          t("此会话暂无任务", "No tasks in this conversation"),
+        ),
+      );
+    drafts.forEach((draft) =>
+      projectWork.append(projectWorkCard(v, "draft", draft, { compact: true })),
+    );
+    items.forEach((item) =>
+      projectWork.append(projectWorkCard(v, "work", item, { compact: true })),
+    );
     side.append(projectWork);
   }
   const tasks = el("details", "panel side-section");
   tasks.id = "projectTasks";
   tasks.open = tasksOpen;
-  tasks.append(el("summary", "", "任务与执行 · " + (v.tasks?.length || 0)));
-  (v.tasks || []).forEach((t) => {
+  tasks.append(
+    sideHeading(
+      t("运行记录", "Run history"),
+      (v.tasks?.length || 0) + (v.executions?.length || 0),
+    ),
+  );
+  if (!v.tasks?.length && !v.executions?.length)
+    tasks.append(
+      el("p", "project-inspector-empty", t("暂无运行记录", "No runs yet")),
+    );
+  (v.tasks || []).forEach((entry) => {
     const who =
-      v.members.find((a) => a.id === t.agent_id)?.name || t.agent_id || "Agent";
-    const issue = String(t.error || "").includes("No working Codex executable")
-      ? " · 目标机器未找到 Codex CLI"
-      : ["queued", "starting", "running"].includes(t.state) &&
-          v.members.some((a) => a.id === t.agent_id && !a.online)
-        ? " · 等待机器上线"
+      v.members.find((a) => a.id === entry.agent_id)?.name ||
+      entry.agent_id ||
+      "Agent";
+    const issue = String(entry.error || "").includes(
+      "No working Codex executable",
+    )
+      ? t(" · 目标机器未找到 Codex CLI", " · Codex CLI not found on the device")
+      : ["queued", "starting", "running"].includes(entry.state) &&
+          v.members.some((a) => a.id === entry.agent_id && !a.online)
+        ? t(" · 等待机器上线", " · Waiting for the device to come online")
         : "";
     const active = ["queued", "starting", "running", "unknown"].includes(
-      t.state,
+      entry.state,
     );
     const status =
-      t.cancel_requested && active
-        ? "等待接收端取消"
-        : t.display_status ||
-          (t.state === "unknown" ? "待核对" : t.state || t.status || "");
-    const task = el("div", "task");
+      entry.cancel_requested && active
+        ? t("等待接收端取消", "Waiting for the receiver to cancel")
+        : projectExecutionDisplayStatus(entry);
+    const task = el("div", "task project-inspector-row"),
+      taskActions = el("div", "project-inspector-actions");
     task.append(
-      el(
-        "div",
-        "",
-        who + " · " + (t.title || t.body || t.id) + " · " + status + issue,
-      ),
-      button("任务追溯", () => openProjectTaskTrace(v, t), "link small"),
+      el("strong", "", entry.title || entry.body || entry.id),
+      el("span", "muted small", who + (status ? " · " + status : "") + issue),
     );
-    if (t.can_cancel && !t.cancel_requested) {
-      task.append(
+    taskActions.append(
+      button(
+        t("任务追溯", "Task history"),
+        () => openProjectTaskTrace(v, entry),
+        "link small",
+      ),
+    );
+    if (entry.can_cancel && !entry.cancel_requested) {
+      taskActions.append(
         button(
-          "取消任务",
-          () => confirmTaskCancellation(p.id, t),
+          t("取消任务", "Cancel task"),
+          () => confirmTaskCancellation(p.id, entry),
           "link small",
         ),
       );
     }
     if (
-      t.state === "unknown" &&
-      t.local_recovery &&
+      entry.state === "unknown" &&
+      entry.local_recovery &&
       (S.dash.devices || []).some(
-        (d) => d.local && (d.node || d.id) === t.local_recovery.node,
+        (d) => d.local && (d.node || d.id) === entry.local_recovery.node,
       )
     ) {
-      task.append(
+      taskActions.append(
         button(
-          "核对本机任务",
-          () => confirmLocalTaskStopped(p.id, t),
+          t("核对本机任务", "Review local task"),
+          () => confirmLocalTaskStopped(p.id, entry),
           "link small",
         ),
       );
     }
+    task.append(taskActions);
     tasks.append(task);
   });
   (v.executions || []).forEach((e) =>
@@ -1480,7 +1958,9 @@ function renderProject() {
       el(
         "div",
         "task",
-        (e.job_id || e.id) + " · " + (e.state || e.status || ""),
+        (e.job_id || e.id) +
+          " · " +
+          projectExecutionStatus(e.state || e.status),
       ),
     ),
   );
@@ -1489,18 +1969,24 @@ function renderProject() {
   memory.id = "projectMemory";
   memory.open = memoryOpen;
   memory.append(
-    el("summary", "", "项目记忆 · " + (v.project_memory?.notes?.length || 0)),
+    sideHeading(
+      t("项目记忆", "Project memory"),
+      v.project_memory?.notes?.length || 0,
+    ),
   );
   note(
     memory,
-    "这里记录整个项目共享的目标、决策与进展。私聊内容不会自动进入项目记忆。",
+    t(
+      "项目成员可见。私聊不会自动写入。",
+      "Visible to project members. Direct messages aren't added automatically.",
+    ),
   );
   (v.project_memory?.notes || []).forEach((item) => {
     const row = el("div", "memory-note"),
       author =
         v.users.find((u) => u.id === item.author_id)?.username ||
         item.author_id ||
-        "成员";
+        t("成员", "Member");
     row.append(
       el("div", "small muted", author + " · " + date(item.created_at)),
       (() => {
@@ -1512,7 +1998,7 @@ function renderProject() {
     if (owner || item.author_id === me)
       row.append(
         button(
-          "删除",
+          t("删除", "Delete"),
           async () => {
             await api("memory-note-delete", {
               project: S.project,
@@ -1528,8 +2014,15 @@ function renderProject() {
   const memoryForm = el("form", "memory-form"),
     memoryText = el("textarea");
   memoryText.rows = 2;
-  memoryText.placeholder = "记下已确认的目标、决策或重要结果…";
-  const addMemory = button("加入项目记忆", null, "primary");
+  memoryText.placeholder = t(
+    "记下已确认的目标、决策或重要结果…",
+    "Record an agreed goal, decision, or result…",
+  );
+  memoryText.setAttribute(
+    "aria-label",
+    t("项目记忆内容", "Project memory note"),
+  );
+  const addMemory = button(t("加入项目记忆", "Add note"), null, "primary");
   addMemory.type = "submit";
   memoryForm.append(memoryText, addMemory);
   memoryForm.onsubmit = (e) => {
@@ -1548,10 +2041,19 @@ function renderProject() {
   const members = el("details", "panel side-section");
   members.id = "projectMembers";
   members.open = membersOpen;
-  members.append(el("summary", "", "成员与项目 Agent"));
+  members.append(
+    sideHeading(
+      t("成员与 Agent", "Members and agents"),
+      v.users.length + v.members.length,
+    ),
+  );
   v.users.forEach((u) =>
     members.append(
-      el("div", "member", u.username + (u.id === p.owner_id ? " · 群主" : "")),
+      el(
+        "div",
+        "member",
+        u.username + (u.id === p.owner_id ? t(" · 群主", " · Owner") : ""),
+      ),
     ),
   );
   const agentCommands = v.project_agent_commands || [];
@@ -1564,10 +2066,13 @@ function renderProject() {
           (command.name || "Agent") +
             " · " +
             (command.state === "failed"
-              ? command.error || "创建失败"
+              ? command.error || t("创建失败", "Couldn't create agent")
               : command.state === "applied"
-                ? "已创建，等待设备同步"
-                : "等待目标设备创建"),
+                ? t("已创建，等待设备同步", "Created. Waiting for device sync")
+                : t(
+                    "等待目标设备创建",
+                    "Waiting for the device to create the agent",
+                  )),
         ),
       );
     }
@@ -1579,8 +2084,8 @@ function renderProject() {
         "span",
         "",
         a.name +
-          (a.id === p.admin_agent_id ? " · 管理员" : "") +
-          (a.online ? "" : " · 机器离线"),
+          (a.id === p.admin_agent_id ? t(" · 管理员", " · Admin") : "") +
+          (a.online ? "" : t(" · 机器离线", " · Device offline")),
       ),
     );
     if (a.can_manage_project_agent) {
@@ -1589,12 +2094,12 @@ function renderProject() {
       );
       const pending = command && ["queued", "claimed"].includes(command.state);
       const configure = button(
-        "设置",
+        t("设置", "Settings"),
         () => openProjectAgentForm(a),
         "link small",
       );
       const remove = button(
-        "移除",
+        t("移除", "Remove"),
         () => removeProjectAgent(p.id, a),
         "link small",
       );
@@ -1603,43 +2108,69 @@ function renderProject() {
         el(
           "span",
           "muted small",
-          pending ? "等待目标设备确认" : a.enabled ? "已启用" : "已暂停",
+          pending
+            ? t("等待目标设备确认", "Waiting for device confirmation")
+            : a.enabled
+              ? t("已启用", "Enabled")
+              : t("已暂停", "Paused"),
         ),
         configure,
         remove,
       );
       if (command?.state === "failed")
-        row.append(el("span", "muted small", command.error || "操作失败"));
+        row.append(
+          el(
+            "span",
+            "muted small",
+            command.error || t("操作失败", "Action failed"),
+          ),
+        );
     }
     members.append(row);
   });
-  members.append(button("新增项目 Agent", () => openProjectAgentForm()));
+  const memberActions = el(
+    "div",
+    "project-inspector-actions project-member-actions",
+  );
+  memberActions.append(
+    button(t("新增 Agent", "Add agent"), () => openProjectAgentForm(), "small"),
+  );
   if (Array.isArray(v.mcp_approval_kinds))
-    members.append(
-      button("MCP 审批权限", () =>
-        editMcpApprovalPolicy(p.id, v.mcp_approval_kinds),
+    memberActions.append(
+      button(
+        t("MCP 审批权限", "MCP approval permissions"),
+        () => editMcpApprovalPolicy(p.id, v.mcp_approval_kinds),
+        "small",
       ),
     );
+  if (owner)
+    memberActions.append(
+      button(t("邀请成员", "Invite member"), invite, "small"),
+    );
+  members.append(memberActions);
   if (owner) {
-    members.append(button("邀请成员", invite));
-    const admin = field(members, "管理员 Agent", p.admin_agent_id || "", [
-      ["", "未设置"],
-      ...v.members.map((a) => [a.id, a.name]),
-    ]);
+    const admin = field(
+      members,
+      t("管理员 Agent", "Admin agent"),
+      p.admin_agent_id || "",
+      [["", t("未设置", "Not set")], ...v.members.map((a) => [a.id, a.name])],
+    );
     members.append(
-      button("保存管理员", async () => {
-        await api("set-admin", {
-          project: S.project,
-          agent: admin.value,
-        });
-        await refresh(true);
-      }),
+      button(
+        t("保存管理员", "Save admin"),
+        async () => {
+          await api("set-admin", {
+            project: S.project,
+            agent: admin.value,
+          });
+          await refresh(true);
+        },
+        "small",
+      ),
     );
   }
   side.append(members);
-  const work = el("div", "chat-column");
-  work.append(chat, side);
-  layout.append(rooms, work);
+  layout.append(rooms, chat, side);
   c.append(layout);
   if (!oldScroll) msgs.scrollTop = msgs.scrollHeight;
   else
@@ -1663,21 +2194,35 @@ function renderProject() {
       c.dataset.conversationId !== selectedId
     )
       return;
+    rooms.scrollTop = panelScroll.rail;
+    roomList.scrollLeft = panelScroll.roomList;
+    side.scrollTop = panelScroll.side;
+    const workSection = side.querySelector("#projectWork");
+    if (workSection) workSection.scrollTop = panelScroll.work;
     tasks.scrollTop = panelScroll.tasks;
     memory.scrollTop = panelScroll.memory;
     members.scrollTop = panelScroll.members;
   });
 }
 function editMcpApprovalPolicy(project, current) {
-  modal("MCP 审批权限", (body, actions) => {
+  modal(t("MCP 审批权限", "MCP approval permissions"), (body, actions) => {
     note(
       body,
-      "代言者可以查看待审批。勾选后，它也可以代你批准或拒绝本项目中你自己设备的对应申请。",
+      t(
+        "代言者可以查看待审批。勾选后，它也可以代你批准或拒绝本项目中你自己设备的对应申请。",
+        "Your MCP delegate can see pending requests. Select the types it may approve or deny on your behalf for your own devices in this project.",
+      ),
     );
     const choices = [
-      ["permission", "额外执行权限（一次续跑）"],
-      ["attachment", "发送附件"],
-      ["execution", "执行已登记的命令"],
+      [
+        "permission",
+        t(
+          "额外执行权限（一次续跑）",
+          "Extra execution permissions (one resumed run)",
+        ),
+      ],
+      ["attachment", t("发送附件", "Send attachments")],
+      ["execution", t("执行已登记的命令", "Run registered commands")],
     ].map(([kind, label]) => {
       const row = el("label", "setting-row", label);
       const check = el("input", "check");
@@ -1688,9 +2233,9 @@ function editMcpApprovalPolicy(project, current) {
       return [kind, check];
     });
     actions.append(
-      button("返回", closeModal),
+      button(t("返回", "Back"), closeModal),
       button(
-        "保存审批权限",
+        t("保存审批权限", "Save permissions"),
         async () => {
           const kinds = choices
             .filter(([, check]) => check.checked)
@@ -1705,19 +2250,35 @@ function editMcpApprovalPolicy(project, current) {
   });
 }
 function invite() {
-  modal("邀请成员", (b, a) => {
-    note(b, "对方加入后可在项目内创建自己的 Agent。");
+  modal(t("邀请成员", "Invite member"), (b, a) => {
+    note(
+      b,
+      t(
+        "对方加入后可在项目内创建自己的 Agent。",
+        "Once they join, they can create their own agents in the project.",
+      ),
+    );
     a.append(
-      button("关闭", closeModal),
+      button(t("关闭", "Close"), closeModal),
       button(
-        "生成邀请",
+        t("生成邀请", "Generate invite"),
         async () => {
           const r = await api("invite", { project: S.project });
           b.replaceChildren();
-          const code = field(b, "项目邀请代码", r.invite);
+          const code = field(
+            b,
+            t("项目邀请代码", "Project invite code"),
+            r.invite,
+          );
           code.readOnly = true;
-          note(b, "协作服务：" + r.server + "。请把地址和邀请代码交给对方。");
-          a.replaceChildren(button("完成", closeModal, "primary"));
+          note(
+            b,
+            t(
+              `协作服务：${r.server}。请把地址和邀请代码交给对方。`,
+              `Team service: ${r.server}. Share this address and the invite code with the new member.`,
+            ),
+          );
+          a.replaceChildren(button(t("完成", "Done"), closeModal, "primary"));
         },
         "primary",
       ),
@@ -1725,20 +2286,23 @@ function invite() {
   });
 }
 function removeProjectAgent(project, agent) {
-  modal("移除项目 Agent", (body, actions) => {
+  modal(t("移除项目 Agent", "Remove project agent"), (body, actions) => {
     body.append(el("p", "", agent.name));
     note(
       body,
-      "Agent 将停止在此项目接收新任务。工作文件、会话和任务历史会保留。请先结束正在执行的任务。",
+      t(
+        "Agent 将停止在此项目接收新任务。工作文件、会话和任务历史会保留。请先结束正在执行的任务。",
+        "The agent will stop receiving new tasks in this project. Work files, conversations, and task history are kept. Finish any running tasks first.",
+      ),
     );
     actions.append(
-      button("取消", closeModal),
+      button(t("取消", "Cancel"), closeModal),
       button(
-        "确认移除",
+        t("确认移除", "Confirm removal"),
         async () => {
           await api("project-agent-delete", { project, agent_id: agent.id });
           closeModal();
-          notify("移除请求已提交。");
+          notify(t("移除请求已提交。", "Removal request submitted."));
           if (S.project === project) await refresh(true);
         },
         "danger",
@@ -1773,265 +2337,346 @@ async function openProjectAgentForm(agent = null) {
   const models = localConfig?.executor?.models || [];
   const current = agent?.project_agent_settings || {};
 
-  modal(agent ? "项目 Agent 设置" : "新增项目 Agent", (body, actions) => {
-    actions.append(button("取消", closeModal));
-    if (!agent && !devices.length) {
-      note(body, "请先将一台自己的机器接入该项目所在的协作服务。");
-      return;
-    }
-    const name = field(body, "Agent 名称", agent?.name || "");
-    name.maxLength = 120;
-    let machine;
-    if (agent) {
-      note(body, "执行机器 · " + deviceName(agent.node, server));
-    } else {
-      machine = field(body, "执行机器", "", [
-        ["", "选择已接入的机器"],
-        ...devices.map((device) => [
-          device.node || device.id,
-          device.name +
-            (device.local ? " · 本机" : "") +
-            (device.online ? "" : " · 离线"),
-        ]),
-      ]);
-    }
-    const selectedNode = () => agent?.node || machine.value;
-    const selectedDevice = () =>
-      devices.find((device) => (device.node || device.id) === selectedNode());
-    const workspace = el("div");
-    const modelFields = el("div");
-    body.append(workspace, modelFields);
-    let model;
-    const effort = field(
-      body,
-      "思考强度",
-      current.effort || "medium",
-      ["low", "medium", "high", "xhigh", "max", "ultra"].map((value) => [
-        value,
-        value,
-      ]),
-    );
-    const enabled = field(
-      body,
-      "接收项目任务",
-      String(current.enabled ?? true),
-      [
-        ["true", "启用"],
-        ["false", "暂停"],
-      ],
-    );
-    const stageBox = el("div");
-    stageBox.append(el("span", "label", "允许的工作阶段"));
-    const stages = [
-      ["discuss", "讨论"],
-      ["review", "审阅"],
-      ["implement", "实现"],
-    ].map(([value, label]) => {
-      const row = el("label", "setting-row", label);
-      const check = el("input", "check");
-      check.type = "checkbox";
-      check.checked = (current.stages || ["discuss", "review"]).includes(value);
-      row.append(check);
-      stageBox.append(row);
-      return [value, check];
-    });
-    body.append(stageBox);
-    const timeout = field(
-      body,
-      "每轮超时（秒）",
-      current.timeout || 600,
-      null,
-      "number",
-    );
-    timeout.min = "30";
-    timeout.max = "86400";
-    const strict = field(
-      body,
-      "实现任务安全模式",
-      String(!!current.strict_worktree),
-      [
-        ["false", "关闭"],
-        ["true", "仅允许 linked worktree 且限制变更文件"],
-      ],
-    );
-    const attachment = field(
-      body,
-      "附件发送权限",
-      current.attachment_policy || "ask",
-      [
-        ["ask", "请求批准"],
-        ["auto", "帮我批准"],
-        ["full", "直接发送"],
-      ],
-    );
-    const network = field(
-      body,
-      "模型请求代理",
-      current.network?.mode || "machine",
-      [
-        ["machine", "跟随执行机器设置"],
-        ["direct", "直连（不走代理）"],
-        ["custom", "自定义端口"],
-      ],
-    );
-    const port = field(
-      body,
-      "代理端口",
-      current.network?.port || "",
-      null,
-      "number",
-    );
-    port.min = "1";
-    port.max = "65535";
-    const syncPort = () => {
-      port.disabled = network.value !== "custom";
-    };
-    network.onchange = syncPort;
-    syncPort();
-
-    const workspaceStates = new Map();
-    const submit = button(
-      agent ? "保存设置" : "创建 Agent",
-      async () => {
-        const node = selectedNode();
-        const fields = {
-          project,
-          name: name.value.trim(),
-          model: model?.value.trim(),
-          effort: effort.value,
-          enabled: enabled.value === "true",
-          stages: stages
-            .filter(([, check]) => check.checked)
-            .map(([value]) => value),
-          timeout: Number(timeout.value),
-          strict_worktree: strict.value === "true",
-          attachment_policy: attachment.value,
-          network: { mode: network.value },
-        };
-        if (!node || !fields.name || !fields.model)
-          throw Error("请选择执行机器并填写名称和模型");
-        if (!agent && workspaceStates.get(node) !== "ready")
-          throw Error("请先设置这个项目在目标机器上的工作目录");
-        if (!fields.stages.length) throw Error("请至少选择一个工作阶段");
-        if (
-          !Number.isInteger(fields.timeout) ||
-          fields.timeout < 30 ||
-          fields.timeout > 86400
-        )
-          throw Error("每轮超时必须为 30 至 86400 秒");
-        if (network.value === "custom") {
-          const value = Number(port.value);
-          if (!Number.isInteger(value) || value < 1 || value > 65535)
-            throw Error("代理端口必须在 1 到 65535 之间");
-          fields.network.port = value;
-        }
-        if (agent)
-          await api("project-agent-configure", {
-            ...fields,
-            agent_id: agent.id,
-          });
-        else await api("project-agent-create", { ...fields, node });
-        closeModal();
-        notify(
-          agent ? "设置请求已提交。" : "创建请求已提交，等待目标设备确认。",
-        );
-        if (S.project === project) await refresh(true);
-      },
-      "primary",
-    );
-    actions.append(submit);
-
-    function renderWorkspace() {
-      workspace.replaceChildren();
-      const node = selectedNode();
-      if (agent || !node) {
-        submit.disabled = !node;
-        return;
-      }
-      if (!workspaceStates.has(node))
-        workspaceStates.set(
-          node,
-          projectWorkspaceReady(view, node, user) ? "ready" : "unset",
-        );
-      const state = workspaceStates.get(node);
-      submit.disabled = state !== "ready";
-      if (state === "ready") {
-        workspace.append(el("div", "muted small", "项目工作目录已设置"));
-        return;
-      }
-      const row = el("div", "note workspace-row");
-      row.append(
-        el(
-          "span",
-          "",
-          state === "pending"
-            ? "目标设备正在配置项目工作目录"
-            : "请先设置项目工作目录",
-        ),
-      );
-      if (state === "pending") {
-        row.append(
-          button("检查配置状态", async () => {
-            const latest = await api("project", { id: project });
-            if (projectWorkspaceReady(latest, node, user))
-              workspaceStates.set(node, "ready");
-            renderWorkspace();
-          }),
-        );
-      } else {
-        row.append(
-          button(
-            selectedDevice()?.local ? "选择目录" : "使用默认目录",
-            async () => {
-              const result = await api("workspace-configure", {
-                project,
-                node,
-                server,
-              });
-              if (result.pending) workspaceStates.set(node, "pending");
-              else if (result.configured) workspaceStates.set(node, "ready");
-              renderWorkspace();
-            },
+  modal(
+    agent
+      ? t("项目 Agent 设置", "Project agent settings")
+      : t("新增项目 Agent", "Add a project agent"),
+    (body, actions) => {
+      actions.append(button(t("取消", "Cancel"), closeModal));
+      if (!agent && !devices.length) {
+        note(
+          body,
+          t(
+            "请先将一台自己的机器接入该项目所在的协作服务。",
+            "Connect one of your devices to this project's team service first.",
           ),
         );
-      }
-      workspace.append(row);
-    }
-
-    function renderMachine() {
-      renderWorkspace();
-      modelFields.replaceChildren();
-      const node = selectedNode();
-      if (!node) {
-        model = null;
         return;
       }
-      const saved = current.model || agent?.model || "";
-      if (selectedDevice()?.local && (models.length || saved)) {
-        const choices = models.map(({ name, executor }) => [
-          name,
-          name +
-            " · " +
-            (executor === "dsh" ? "DeepSeek Harness" : "Codex CLI"),
-        ]);
-        if (saved && !choices.some(([name]) => name === saved))
-          choices.push([saved, saved + " · 当前配置"]);
-        model = field(modelFields, "模型", saved, [
-          ["", "选择模型"],
-          ...choices,
-        ]);
-      } else {
-        model = field(modelFields, "模型 ID", saved);
+      const name = field(
+        body,
+        t("Agent 名称", "Agent name"),
+        agent?.name || "",
+      );
+      name.maxLength = 120;
+      let machine;
+      if (agent) {
         note(
-          modelFields,
-          selectedDevice()?.local
-            ? "可在设置的本机可用模型列表中查看模型 ID。"
-            : "填写目标机器的可用模型列表中的模型 ID。",
+          body,
+          t("执行机器 · ", "Device · ") + deviceName(agent.node, server),
         );
+      } else {
+        machine = field(body, t("执行机器", "Device"), "", [
+          ["", t("选择已接入的机器", "Select a connected device")],
+          ...devices.map((device) => [
+            device.node || device.id,
+            device.name +
+              (device.local ? t(" · 本机", " · This device") : "") +
+              (device.online ? "" : t(" · 离线", " · Offline")),
+          ]),
+        ]);
       }
-    }
+      const selectedNode = () => agent?.node || machine.value;
+      const selectedDevice = () =>
+        devices.find((device) => (device.node || device.id) === selectedNode());
+      const workspace = el("div");
+      const modelFields = el("div");
+      body.append(workspace, modelFields);
+      let model;
+      const effort = field(
+        body,
+        t("思考强度", "Reasoning effort"),
+        current.effort || "medium",
+        ["low", "medium", "high", "xhigh", "max", "ultra"].map((value) => [
+          value,
+          value,
+        ]),
+      );
+      const enabled = field(
+        body,
+        t("接收项目任务", "Receive project tasks"),
+        String(current.enabled ?? true),
+        [
+          ["true", t("启用", "Enabled")],
+          ["false", t("暂停", "Paused")],
+        ],
+      );
+      const stageBox = el("div");
+      stageBox.append(
+        el("span", "label", t("允许的工作阶段", "Allowed work stages")),
+      );
+      const stages = [
+        ["discuss", t("讨论", "Discuss")],
+        ["review", t("审阅", "Review")],
+        ["implement", t("实现", "Implement")],
+      ].map(([value, label]) => {
+        const row = el("label", "setting-row", label);
+        const check = el("input", "check");
+        check.type = "checkbox";
+        check.checked = (current.stages || ["discuss", "review"]).includes(
+          value,
+        );
+        row.append(check);
+        stageBox.append(row);
+        return [value, check];
+      });
+      body.append(stageBox);
+      const timeout = field(
+        body,
+        t("每轮超时（秒）", "Turn timeout (seconds)"),
+        current.timeout || 600,
+        null,
+        "number",
+      );
+      timeout.min = "30";
+      timeout.max = "86400";
+      const strict = field(
+        body,
+        t("实现任务安全模式", "Implementation safeguards"),
+        String(!!current.strict_worktree),
+        [
+          ["false", t("关闭", "Off")],
+          [
+            "true",
+            t(
+              "仅允许 linked worktree 且限制变更文件",
+              "Require a linked worktree and restrict changed files",
+            ),
+          ],
+        ],
+      );
+      const attachment = field(
+        body,
+        t("附件发送权限", "Attachment permissions"),
+        current.attachment_policy || "ask",
+        [
+          ["ask", t("请求批准", "Ask for approval")],
+          ["auto", t("帮我批准", "Approve for me")],
+          ["full", t("直接发送", "Send directly")],
+        ],
+      );
+      const network = field(
+        body,
+        t("模型请求代理", "Model request proxy"),
+        current.network?.mode || "machine",
+        [
+          ["machine", t("跟随执行机器设置", "Use device setting")],
+          ["direct", t("直连（不走代理）", "Connect directly")],
+          ["custom", t("自定义端口", "Custom port")],
+        ],
+      );
+      const port = field(
+        body,
+        t("代理端口", "Proxy port"),
+        current.network?.port || "",
+        null,
+        "number",
+      );
+      port.min = "1";
+      port.max = "65535";
+      const syncPort = () => {
+        port.disabled = network.value !== "custom";
+      };
+      network.onchange = syncPort;
+      syncPort();
 
-    if (machine) machine.onchange = renderMachine;
-    renderMachine();
-  });
+      const workspaceStates = new Map();
+      const submit = button(
+        agent
+          ? t("保存设置", "Save settings")
+          : t("创建 Agent", "Create agent"),
+        async () => {
+          const node = selectedNode();
+          const fields = {
+            project,
+            name: name.value.trim(),
+            model: model?.value.trim(),
+            effort: effort.value,
+            enabled: enabled.value === "true",
+            stages: stages
+              .filter(([, check]) => check.checked)
+              .map(([value]) => value),
+            timeout: Number(timeout.value),
+            strict_worktree: strict.value === "true",
+            attachment_policy: attachment.value,
+            network: { mode: network.value },
+          };
+          if (!node || !fields.name || !fields.model)
+            throw Error(
+              t(
+                "请选择执行机器并填写名称和模型",
+                "Select a device and enter a name and model.",
+              ),
+            );
+          if (!agent && workspaceStates.get(node) !== "ready")
+            throw Error(
+              t(
+                "请先设置这个项目在目标机器上的工作目录",
+                "Set the project's working directory on the target device first.",
+              ),
+            );
+          if (!fields.stages.length)
+            throw Error(
+              t("请至少选择一个工作阶段", "Select at least one work stage."),
+            );
+          if (
+            !Number.isInteger(fields.timeout) ||
+            fields.timeout < 30 ||
+            fields.timeout > 86400
+          )
+            throw Error(
+              t(
+                "每轮超时必须为 30 至 86400 秒",
+                "Enter a turn timeout from 30 to 86,400 seconds.",
+              ),
+            );
+          if (network.value === "custom") {
+            const value = Number(port.value);
+            if (!Number.isInteger(value) || value < 1 || value > 65535)
+              throw Error(
+                t(
+                  "代理端口必须在 1 到 65535 之间",
+                  "Enter a proxy port from 1 to 65,535.",
+                ),
+              );
+            fields.network.port = value;
+          }
+          if (agent)
+            await api("project-agent-configure", {
+              ...fields,
+              agent_id: agent.id,
+            });
+          else await api("project-agent-create", { ...fields, node });
+          closeModal();
+          notify(
+            agent
+              ? t("设置请求已提交。", "Settings request submitted.")
+              : t(
+                  "创建请求已提交，等待目标设备确认。",
+                  "Creation request submitted. Waiting for device confirmation.",
+                ),
+          );
+          if (S.project === project) await refresh(true);
+        },
+        "primary",
+      );
+      actions.append(submit);
+
+      function renderWorkspace() {
+        workspace.replaceChildren();
+        const node = selectedNode();
+        if (agent || !node) {
+          submit.disabled = !node;
+          return;
+        }
+        if (!workspaceStates.has(node))
+          workspaceStates.set(
+            node,
+            projectWorkspaceReady(view, node, user) ? "ready" : "unset",
+          );
+        const state = workspaceStates.get(node);
+        submit.disabled = state !== "ready";
+        if (state === "ready") {
+          workspace.append(
+            el(
+              "div",
+              "muted small",
+              t("项目工作目录已设置", "Project working directory is ready"),
+            ),
+          );
+          return;
+        }
+        const row = el("div", "note workspace-row");
+        row.append(
+          el(
+            "span",
+            "",
+            state === "pending"
+              ? t(
+                  "目标设备正在配置项目工作目录",
+                  "The device is setting up the project directory",
+                )
+              : t(
+                  "请先设置项目工作目录",
+                  "Set the project working directory first",
+                ),
+          ),
+        );
+        if (state === "pending") {
+          row.append(
+            button(t("检查配置状态", "Check status"), async () => {
+              const latest = await api("project", { id: project });
+              if (projectWorkspaceReady(latest, node, user))
+                workspaceStates.set(node, "ready");
+              renderWorkspace();
+            }),
+          );
+        } else {
+          row.append(
+            button(
+              selectedDevice()?.local
+                ? t("选择目录", "Choose folder")
+                : t("使用默认目录", "Use default folder"),
+              async () => {
+                const result = await api("workspace-configure", {
+                  project,
+                  node,
+                  server,
+                });
+                if (result.pending) workspaceStates.set(node, "pending");
+                else if (result.configured) workspaceStates.set(node, "ready");
+                renderWorkspace();
+              },
+            ),
+          );
+        }
+        workspace.append(row);
+      }
+
+      function renderMachine() {
+        renderWorkspace();
+        modelFields.replaceChildren();
+        const node = selectedNode();
+        if (!node) {
+          model = null;
+          return;
+        }
+        const saved = current.model || agent?.model || "";
+        if (selectedDevice()?.local && (models.length || saved)) {
+          const choices = models.map(({ name, executor }) => [
+            name,
+            name +
+              " · " +
+              (executor === "dsh" ? "DeepSeek Harness" : "Codex CLI"),
+          ]);
+          if (saved && !choices.some(([name]) => name === saved))
+            choices.push([
+              saved,
+              saved + t(" · 当前配置", " · Current setting"),
+            ]);
+          model = field(modelFields, t("模型", "Model"), saved, [
+            ["", t("选择模型", "Select a model")],
+            ...choices,
+          ]);
+        } else {
+          model = field(modelFields, t("模型 ID", "Model ID"), saved);
+          note(
+            modelFields,
+            selectedDevice()?.local
+              ? t(
+                  "可在设置的本机可用模型列表中查看模型 ID。",
+                  "Find the model ID in the available models list in Settings.",
+                )
+              : t(
+                  "填写目标机器的可用模型列表中的模型 ID。",
+                  "Enter a model ID from the target device's available models list.",
+                ),
+          );
+        }
+      }
+
+      if (machine) machine.onchange = renderMachine;
+      renderMachine();
+    },
+  );
 }

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.20.0 - 2026-11-26
+
+- 桌面新增简体中文和英文界面。默认跟随系统显示语言，也可在「设置 → 外观 → 界面语言」手动切换。偏好保存在本机，切换立即生效。
+- 控制台、项目页、任务卡、设置、账户和文件速传采用统一的字体、间距和交互样式。项目页让会话、聊天和任务可同时查看，窄窗口保留任务入口。
+- 改善任务草稿的多行编辑和键盘操作。执行审批显示命令参数与工作目录。修复 DSH 连接过期时重连按钮触发断开的问题。
+
+- The desktop app now follows your system display language, with Simplified Chinese and English available in Settings.
+- The refreshed desktop layout makes conversations, task cards and approvals easier to find and review.
+
 ## 2.19.1 - 2026-11-26
 
 - 修复 Codex 后台回合等待任务工具审批而无法登记交付的问题。本轮专用任务工具可直接提交给 Hub 校验，命令执行和文件访问仍按原有权限处理。

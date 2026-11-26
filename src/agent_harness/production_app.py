@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from agent_harness import desktop_locale
 from agent_harness.app_lifecycle import Lifecycle
 from agent_harness.desktop_runtime import web_assets
 from agent_harness.app_bridge import AppBridge
@@ -97,12 +98,26 @@ def main():
     except Exception:
         bridge.autologin_failed = True
 
+    language = desktop_locale.resolved_language(desktop_locale.settings(bridge.root))
+    tray = None
+
     class API:
         def invoke(self, action, data=None):
+            nonlocal language
             logging.getLogger(__name__).info("Bridge request: %s", action)
             if background.is_set() and action == "project" and isinstance(data, dict):
                 data = {key: value for key, value in data.items() if key != "active_conversation_id"}
             result = bridge.invoke(action, data)
+            if action in {"interface-language", "set-interface-language"} and result.get("ok"):
+                updated = desktop_locale.resolved_language(result["result"])
+                if updated != language:
+                    language = updated
+                    try:
+                        window.set_title(desktop_locale.window_title(language))
+                    except Exception:
+                        diagnostic_logger.exception("Could not update the native window language")
+                    if tray is not None:
+                        tray.refresh_menu()
             logging.getLogger(__name__).info("Bridge response: %s ok=%s", action, result.get("ok"))
             return result
 
@@ -110,7 +125,7 @@ def main():
 
     brand.refresh_shell_icons(bridge.root)
     window = webview.create_window(
-        "Foolship · 协作工作台",
+        desktop_locale.window_title(language),
         url=str(web_assets() / "app.html"),
         js_api=API(),
         width=1220,
@@ -121,7 +136,6 @@ def main():
     bridge.window = window
     holder["window"] = window
 
-    tray = None
     tray_status = None
     if tray_available:
 
@@ -144,7 +158,7 @@ def main():
             status = Lifecycle(bridge.root, host_root=bridge._host_state_root()).status()
             return status["host"]["running"], status["receivers"]
 
-        tray = tray_module.Tray("Foolship", raise_window, quit_from_tray)
+        tray = tray_module.Tray("Foolship", raise_window, quit_from_tray, language=lambda: language)
         if tray.start():
             if tray_requested:
                 background.set()
@@ -156,6 +170,7 @@ def main():
                 lambda: (bridge.identity or {}).get("account_id"),
                 local_services,
                 background,
+                language=lambda: language,
             )
             bridge.tray_attention = tray_status.attention
             tray_status.start()
@@ -198,7 +213,7 @@ def main():
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 result = window.evaluate_js(
-                    "({title:document.title,login:!!document.getElementById('login'),bridge:typeof window.pywebview.api.invoke,heading:document.querySelector('#login h1')?.textContent,inputs:document.querySelectorAll('#login input').length})"
+                    "({title:document.title,login:!!document.getElementById('login'),bridge:typeof window.pywebview.api.invoke,heading:document.querySelector('#login h1:not(.startup-title)')?.textContent,language:document.documentElement.lang,inputs:document.querySelectorAll('#login input').length})"
                 )
                 if result.get("heading"):
                     break
@@ -232,12 +247,10 @@ def main():
                     deadline = time.monotonic() + 10
                     while time.monotonic() < deadline:
                         heading = window.evaluate_js("document.querySelector('#content h1')?.textContent")
-                        if heading == "控制台":
+                        if heading in {"控制台", "Home"}:
                             break
                         time.sleep(0.1)
                     result["dashboard_heading"] = heading
-                from agent_harness.app_lifecycle import Lifecycle
-
                 Lifecycle(bridge.root, host_root=bridge._host_state_root()).stop()
             Path(args.smoke_report).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
             window.destroy()

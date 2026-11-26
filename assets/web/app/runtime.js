@@ -71,7 +71,14 @@ async function refresh(force = false) {
     }
   } catch (e) {
     if (force) throw e;
-    else notify("连接暂时不可用：" + e.message, true);
+    else
+      notify(
+        t(
+          `连接暂时不可用：${e.message}`,
+          `Connection unavailable: ${e.message}`,
+        ),
+        true,
+      );
   } finally {
     polling = false;
     if (eventRefreshPending && !eventRefreshTimer)
@@ -80,6 +87,12 @@ async function refresh(force = false) {
 }
 async function boot() {
   try {
+    // The language applies before the first authenticated or sign-in view.
+    try {
+      applyInterfaceLanguage(await api("interface-language"));
+    } catch {
+      // Keep the current language if the native bridge cannot report it.
+    }
     const status = await api("local-status");
     S.profiles = status.profiles || [];
     S.server = status.server || "";
@@ -91,10 +104,10 @@ async function boot() {
     else renderAuth(S.profiles.length === 1 ? "login" : "home");
   } catch (e) {
     $("login").replaceChildren(
-      el("h1", "", "正在连接应用…"),
+      el("h1", "", t("正在连接应用…", "Connecting to the app…")),
       el("p", "error", e.message),
-      button("重试", boot),
-      button("完全退出", requestAppClose, "link"),
+      button(t("重试", "Retry"), boot),
+      button(t("完全退出", "Quit"), requestAppClose, "link"),
     );
   }
 }
@@ -119,15 +132,21 @@ $("closeModal").onclick = closeModal;
 $("modalWrap").onclick = (e) => {
   if (e.target === $("modalWrap")) closeModal();
 };
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeModal();
-});
+document.addEventListener("keydown", handleModalKeyboard);
+applyInterfaceLanguage();
 window.addEventListener("pywebviewready", boot);
 if (window.pywebview?.api) boot();
 else
   $("login").append(
-    el("h1", "", "协作工作台"),
-    el("p", "muted", "正在连接本机应用。此页面需要在桌面应用中运行。"),
+    el("h1", "startup-title", t("协作工作台", "Workspace")),
+    el(
+      "p",
+      "muted",
+      t(
+        "正在连接本机应用。此页面需要在桌面应用中运行。",
+        "Connecting to the local app. Open this page in the desktop app.",
+      ),
+    ),
   );
 setInterval(() => {
   if (S.page === "project" && !document.hidden) refresh();

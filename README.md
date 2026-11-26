@@ -32,6 +32,8 @@ Thus the fools gathered aboard a single ship, some of flesh, others of clockwork
 | macOS Apple Silicon | `Foolship-<版本>-macos-arm64.zip` | 把解压出的 `Foolship.app` 放进“应用程序”打开。未做 Apple 签名，系统可能要求在隐私与安全性中确认 |
 | Linux x64 / ARM64 | `Foolship-<版本>-linux-x64.tar.gz` 或 `Foolship-<版本>-linux-arm64.tar.gz` | 无界面接收端，见 [Linux 说明](docs/LINUX.md) |
 
+桌面界面支持简体中文和 English，默认跟随系统显示语言，可在「设置 → 外观 → 界面语言」切换。界面设计和双语文案规范见 [Foolship 桌面界面指南](docs/UI-STYLE.md)。
+
 发布包自带运行时，不需要另行安装 Python、pip 或 venv。Windows 需要 Edge WebView2；每台实际执行 Agent 的机器仍需安装并登录 Codex 或 DeepSeek Harness。升级只替换程序文件，不动账户数据。
 
 ### 让那台机器上的 AI 装

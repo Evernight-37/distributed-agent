@@ -3,52 +3,95 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>协作工作台</title>
+    <title data-en="Workspace">协作工作台</title>
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self' data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <link rel="stylesheet" href="styles/app.css" />
+    <link rel="stylesheet" href="styles/desktop.css" />
+    <link rel="stylesheet" href="styles/project.css" />
+    <link rel="stylesheet" href="styles/settings.css" />
     <link rel="stylesheet" href="vendor/katex/katex.min.css" />
   </head>
   <body>
     <div id="login" class="login"></div>
     <div id="app" class="layout hidden">
-      <aside class="sidebar" aria-label="主导航">
-        <div class="logo" title="协作工作台" aria-label="协作工作台">
-          <span class="logo-icon">◎</span>
+      <aside
+        class="sidebar"
+        aria-label="主导航"
+        data-en-label="Main navigation"
+      >
+        <div
+          class="logo"
+          title="协作工作台"
+          aria-label="协作工作台"
+          data-en-title="Workspace"
+          data-en-label="Workspace"
+        >
+          <span class="logo-icon" aria-hidden="true">◎</span>
         </div>
         <button
           id="dashboardNav"
           class="nav"
           title="控制台"
           aria-label="控制台"
+          data-en-title="Home"
+          data-en-label="Home"
         >
-          <span aria-hidden="true">▦</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="4" y="4" width="6" height="6" rx="1" />
+            <rect x="14" y="4" width="6" height="6" rx="1" />
+            <rect x="4" y="14" width="6" height="6" rx="1" />
+            <rect x="14" y="14" width="6" height="6" rx="1" />
+          </svg>
+          <span class="nav-label" data-en="Home">控制台</span>
         </button>
         <button
           id="transfersNav"
           class="nav"
           title="文件速传"
           aria-label="文件速传"
+          data-en-title="File transfers"
+          data-en-label="File transfers"
         >
-          <span aria-hidden="true">⇄</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 8h15m-4-4 4 4-4 4M20 16H5m4-4-4 4 4 4" />
+          </svg>
+          <span class="nav-label" data-en="Files">文件</span>
         </button>
-        <button id="settingsNav" class="nav" title="设置" aria-label="设置">
-          <span aria-hidden="true">⚙</span>
+        <button
+          id="settingsNav"
+          class="nav"
+          title="设置"
+          aria-label="设置"
+          data-en-title="Settings"
+          data-en-label="Settings"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 6h14M5 12h14M5 18h14" />
+            <circle cx="9" cy="6" r="2" />
+            <circle cx="15" cy="12" r="2" />
+            <circle cx="11" cy="18" r="2" />
+          </svg>
+          <span class="nav-label" data-en="Settings">设置</span>
         </button>
         <button
           id="accountNav"
           class="nav account-nav"
           title="账户"
           aria-label="账户"
+          data-en-title="Account"
+          data-en-label="Account"
         >
           <span id="avatar" class="avatar" aria-hidden="true"></span>
+          <span class="nav-label" data-en="Account">账户</span>
         </button>
         <div class="sidebar-foot hidden">
           <strong id="profileName"></strong><span id="deviceCount"></span
-          ><span id="localName"></span><button id="logout">退出账户</button
-          ><button id="quitApp">完全退出</button>
+          ><span id="localName"></span
+          ><button id="logout" data-en="Sign out">退出账户</button
+          ><button id="quitApp" data-en="Quit">完全退出</button>
         </div>
       </aside>
       <main id="content"></main>
@@ -62,16 +105,20 @@
       >
         <div class="row">
           <h2 id="modalTitle"></h2>
-          <button id="closeModal" aria-label="关闭">×</button>
+          <button id="closeModal" aria-label="关闭" data-en-label="Close">
+            ×
+          </button>
         </div>
         <div id="modalBody"></div>
         <div id="modalActions" class="modal-actions"></div>
       </div>
     </div>
-    <div id="toast" class="toast hidden" role="status"></div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
     <script src="vendor/marked.min.js"></script>
     <script src="vendor/purify.min.js"></script>
     <script src="vendor/katex/katex.min.js"></script>
+    <script src="app/i18n.js"></script>
+    <script src="app/desktop-messages.js"></script>
     <script src="app/render.js"></script>
     <script src="app/core.js"></script>
     <script src="app/dashboard.js"></script>

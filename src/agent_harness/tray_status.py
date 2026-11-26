@@ -4,11 +4,12 @@ import threading
 
 
 class TrayStatus:
-    def __init__(self, tray, account, services, background):
+    def __init__(self, tray, account, services, background, language=lambda: "zh-CN"):
         self.tray = tray
         self.account = account
         self.services = services
         self.background = background
+        self.language = language
         self.stopping = threading.Event()
         self.lock = threading.Lock()
         self.account_id = None
@@ -48,14 +49,21 @@ class TrayStatus:
             self._switch_account(account_id)
             unread = sum(entry[1] for entry in self.inboxes.values())
         host, receivers = self.services()
-        parts = ["本机 Hub " + ("运行中" if host else "未运行")]
+        chinese = self.language() == "zh-CN"
+
+        def text(zh, en):
+            return zh if chinese else en
+
+        parts = [text("本机 Hub 运行中", "Local hub running") if host else text("本机 Hub 未运行", "Local hub stopped")]
         if receivers:
             running = sum(bool(receiver["running"]) for receiver in receivers)
-            parts.append(f"接收端 {running}/{len(receivers)} 运行")
+            count = f"{running}/{len(receivers)}"
+            parts.append(text(f"接收端 {count} 运行", f"Receivers {count} running"))
         if account_id is None:
-            parts.append("账户未解锁")
+            parts.append(text("账户未解锁", "Account locked"))
         elif unread:
-            parts.append(f"{unread if unread < 100 else '99+'} 条未读")
+            count = unread if unread < 100 else "99+"
+            parts.append(text(f"{count} 条未读", f"{count} unread"))
         return " · ".join(parts)
 
     def start(self):
@@ -66,7 +74,7 @@ class TrayStatus:
             try:
                 status = self.title()
             except (OSError, ValueError, RuntimeError):
-                status = "暂时无法读取后台状态"
+                status = "暂时无法读取后台状态" if self.language() == "zh-CN" else "Background status unavailable"
             if self.stopping.is_set():
                 return
             self.tray.set_status(status)
