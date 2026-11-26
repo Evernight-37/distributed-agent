@@ -44,8 +44,10 @@ class ProjectTools:
         config = read_json(self.path / "request.json", {})
         self.policy = worker.project_action_policy(config)
         self.tools = {}
-        if not config.get("strict_guard") and worker.contract_spec(config).get("project_tools") is True:
-            self.tools = {spec["name"]: spec for spec in tool_specs(self.policy)}
+        contract = worker.contract_spec(config)
+        self.file_delivery = contract.get("project_file_delivery") is True
+        if not config.get("strict_guard") and contract.get("project_tools") is True:
+            self.tools = {spec["name"]: spec for spec in tool_specs(self.policy, file_delivery=self.file_delivery)}
         self.invoke = worker.invoke_project_tool
 
     def tool_specs(self):
@@ -56,7 +58,7 @@ class ProjectTools:
             return {"ok": False, "error_code": "action_not_allowed", "message": "本轮没有此任务工具。"}
         try:
             action = project_tool_action(name, arguments)
-            resolve_tool_action(action, self.policy)
+            resolve_tool_action(action, self.policy, file_delivery=self.file_delivery)
         except (TypeError, ValueError) as exc:
             return {"ok": False, "error_code": "invalid_arguments", "message": str(exc)}
         return self.invoke(self.path, action)

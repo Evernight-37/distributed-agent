@@ -2,8 +2,11 @@
 
 import hashlib
 import tempfile
+import time
 import unittest
+from functools import partial
 from pathlib import Path
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
@@ -70,7 +73,7 @@ class DirectTransferTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(destination.read_bytes()).hexdigest(), hashlib.sha256(self.payload).hexdigest())
 
     def test_a_stranger_cannot_fetch_it(self):
-        with self.assertRaises(direct_transfer.TransferError):
+        with self.assertRaisesRegex(direct_transfer.TransferError, "对方拒绝连接：403"):
             direct_transfer.probe(
                 self.url,
                 b64key(self.stranger["private"]),
@@ -78,7 +81,7 @@ class DirectTransferTests(unittest.TestCase):
                 "transfer-1",
             )
         destination = self.root / "stolen.bin"
-        with self.assertRaises(direct_transfer.TransferError):
+        with self.assertRaisesRegex(direct_transfer.TransferError, "传输被拒绝：403"):
             direct_transfer.fetch(
                 self.url,
                 b64key(self.stranger["private"]),
@@ -88,18 +91,39 @@ class DirectTransferTests(unittest.TestCase):
             )
         self.assertFalse(destination.exists())
 
-    def test_a_stale_signature_is_refused(self):
-        import time
+    def test_an_authentic_request_with_clock_skew_is_refused_with_a_diagnostic(self):
+        destination = self.root / "out" / "clock-skew.bin"
+        sign = direct_transfer.authorization
+        for offset in (-3600, 3600):
+            with (
+                self.subTest(offset=offset),
+                patch.object(direct_transfer, "authorization", partial(sign, stamp=int(time.time()) + offset)),
+            ):
+                keys = (b64key(self.receiver["private"]), b64key(self.receiver["public"]))
+                with self.assertRaisesRegex(direct_transfer.TransferError, "请校准两端时间后重试"):
+                    direct_transfer.probe(self.url, *keys, "transfer-1")
+                with self.assertRaisesRegex(direct_transfer.TransferError, "请校准两端时间后重试"):
+                    direct_transfer.fetch(self.url, *keys, "transfer-1", destination)
+        self.assertFalse(destination.exists())
+        self.assertFalse(destination.with_name(destination.name + ".part").exists())
 
-        stale = int(time.time()) - 3600
-        header = direct_transfer.authorization(
-            b64key(self.receiver["private"]),
-            b64key(self.receiver["public"]),
-            "transfer-1",
-            "/transfer/transfer-1/meta",
-            stamp=stale,
-        )
-        self.assertFalse(self.sender._authorized("/transfer/transfer-1/meta", header))
+    def test_clock_diagnostic_requires_a_signature_for_the_exact_resource(self):
+        sign = direct_transfer.authorization
+
+        def sign_other_resource(private_key, public_key, transfer_id, resource):
+            return sign(private_key, public_key, transfer_id, resource + "/other", stamp=int(time.time()) - 3600)
+
+        with patch.object(direct_transfer, "authorization", sign_other_resource):
+            with self.assertRaisesRegex(direct_transfer.TransferError, "对方拒绝连接：403"):
+                direct_transfer.probe(
+                    self.url, b64key(self.receiver["private"]), b64key(self.receiver["public"]), "transfer-1"
+                )
+
+        with patch.object(direct_transfer, "authorization", partial(sign, stamp=int(time.time()) - 3600)):
+            with self.assertRaisesRegex(direct_transfer.TransferError, "对方拒绝连接：403"):
+                direct_transfer.probe(
+                    self.url, b64key(self.stranger["private"]), b64key(self.receiver["public"]), "transfer-1"
+                )
 
     def test_an_interrupted_transfer_resumes_from_the_partial_file(self):
         destination = self.root / "out" / "resumed.bin"

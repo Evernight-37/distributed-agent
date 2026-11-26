@@ -112,6 +112,45 @@ class FencedReportTests(unittest.TestCase):
 
 
 class ProjectActionTransportTests(unittest.TestCase):
+    def test_unified_delivery_rules_end_the_turn_without_resubmitting_files(self):
+        rules = worker.reply_rules({"role": "executor"}, False, project_tools=True, file_delivery=True)
+        self.assertIn("Use project_task_deliver for every delivery", rules)
+        self.assertIn("pending_attachment_delivery", rules)
+        self.assertIn("project_action null and empty attachments", rules)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated DSH tool")
+    def test_native_delivery_tool_passes_optional_attachment_paths_to_the_mailbox(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tool.mjs").write_text(
+                worker.foolship_reply_js({"role": "executor"}, project_tools=True, file_delivery=True),
+                encoding="utf-8",
+            )
+            script = root / "check.mjs"
+            script.write_text(
+                'import {apply} from "./tool.mjs";\n'
+                'import assert from "node:assert/strict";\n'
+                'import {readdir,readFile,writeFile} from "node:fs/promises";\n'
+                'const tools = {}; apply({tools:{register:t=>tools[t.name]=t}},{path:"reply.json"});\n'
+                "const submit = tools.project_task_deliver;\n"
+                "assert.ok(submit.parameters.attachments);\n"
+                'const bad = await submit.execute({summary:"result",links:[],attachments:["same.txt","same.txt"]});\n'
+                'assert.equal(bad.error_code,"invalid_arguments");\n'
+                'const params = {summary:"result",links:[],attachments:["output/result.txt"]};\n'
+                "const pending = submit.execute(params);\n"
+                "let request;\n"
+                "for(let i=0;i<40 && !request;i++) {\n"
+                '  request = (await readdir(".")).find(x=>/^pt-request-[a-f0-9]{32}\\.json$/.test(x));\n'
+                "  if(!request) await new Promise(resolve=>setTimeout(resolve, 20));\n"
+                "}\n"
+                'assert.deepEqual(JSON.parse(await readFile(request,"utf8")),{action:{kind:"deliver",...params}});\n'
+                'await writeFile(request.replace("pt-request-","pt-result-"),JSON.stringify({ok:true,status:"pending_attachment_delivery"}));\n'
+                'assert.deepEqual(await pending,{ok:true,status:"pending_attachment_delivery"});\n',
+                encoding="utf-8",
+            )
+            run = subprocess.run([shutil.which("node"), str(script)], cwd=root, timeout=15, capture_output=True)
+            self.assertEqual(run.returncode, 0, run.stderr.decode("utf-8", "replace"))
+
     def test_native_text_delivery_rejects_final_reply_without_files(self):
         answer = {"reply": "", "project_action": {"kind": "deliver", "summary": "done", "links": []}}
         self.assertIn("project_task_deliver", worker.project_delivery_error(json.dumps(answer)))

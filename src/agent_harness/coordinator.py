@@ -8,10 +8,16 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from agent_harness.collaboration_store import uid
 from agent_harness.broker import PullBackend
-from agent_harness.project_actions import resolve_tool_action, validate_action
+from agent_harness.project_actions import FILE_DELIVERY_PENDING, resolve_tool_action, validate_action
 from agent_harness.project_memory import ProjectMemory
+from agent_harness.project_work import ATTACHMENT_DELIVERY_BLOCKED
 
 TERMINAL = {"needs_review", "failed", "cancelled", "timed_out", "interrupted"}
+
+
+class FileDeliveryError(ValueError):
+    pass
+
 
 # Who may read the result of a task delegated by an agent. "delegator" keeps the
 # existing private behaviour; "group" publishes the report to the project group;
@@ -617,7 +623,9 @@ class Coordinator:
             )
             return False, "这次建议未保存。请核对任务或草稿版本后再告诉我。"
 
-    def _complete_project_action(self, db, task, agent, project, source, policy, work_execution, answer, reply_to):
+    def _complete_project_action(
+        self, db, task, agent, project, source, policy, work_execution, answer, reply_to, reserved_delivery=None
+    ):
         legacy = any(answer.get(key) is not None for key in ("work_proposal", "work_follow_up", "work_delivery"))
         if not work_execution and not legacy and not answer.get("tasks") and answer.get("project_action") is None:
             return False
@@ -627,6 +635,14 @@ class Coordinator:
             if legacy or answer.get("tasks"):
                 raise ValueError("本轮使用了旧版任务回复格式，请更新接收端")
             action = validate_action(answer.get("project_action"), policy)
+            if reserved_delivery and (
+                not action
+                or action["kind"] != "deliver"
+                or answer.get("project_file_delivery") is not True
+                or action["summary"].strip() != reserved_delivery["summary"]
+                or action["links"] != reserved_delivery["links"]
+            ):
+                raise FileDeliveryError("接收端未回传与本轮提交一致的附件结果。")
             if action is None:
                 if not work_execution:
                     return False
@@ -652,10 +668,27 @@ class Coordinator:
                 store.add_work_execution_card(db, work_execution, message_id, event="waiting")
                 store.finish(db, work_execution, "waiting")
             elif action["kind"] == "deliver":
-                from agent_harness.attachments import Attachments
+                from agent_harness.attachments import Attachments, agent_attachment_id
 
                 files = Attachments(self.store)
+                error = answer.get("delivery_attachment_error")
+                if isinstance(error, str) and error.strip():
+                    raise FileDeliveryError(error[:600])
                 ids = files.validate_agent_reply(db, agent, task.get("job") or "", answer.get("attachment_ids", []))
+                expected = (
+                    len(reserved_delivery["attachments"])
+                    if reserved_delivery
+                    else answer.get("delivery_attachment_count")
+                )
+                if expected is not None and (
+                    type(expected) is not int
+                    or expected <= 0
+                    or expected != len(ids)
+                    or ids != [agent_attachment_id(task["job"], slot) for slot in range(expected)]
+                ):
+                    raise FileDeliveryError("没有收到本次交付要求的全部附件。")
+                if not ids and ("attachment_ids" in answer or answer.get("attachments")):
+                    raise FileDeliveryError("没有收到本次交付要求的全部附件。")
                 summary = action["summary"].strip()
                 message_id = self._publish_reply(db, task, summary, reply_to)
                 if ids:
@@ -675,14 +708,18 @@ class Coordinator:
             self.store.log(
                 db, "scheduler", "rejected_system_project_action", {"task": task["id"], "reason": str(exc)[:500]}
             )
-            notice = (
-                "本轮使用了旧版任务回复格式。请更新执行设备的接收端后重试。"
-                if legacy or answer.get("tasks")
-                else "这次任务操作未通过校验。请核对任务、草稿版本或交付内容后重试。"
-            )
+            attachment_failure = reserved_delivery is not None or isinstance(exc, FileDeliveryError)
+            if attachment_failure:
+                notice = f"附件交付未完成：{exc}"
+            elif legacy or answer.get("tasks"):
+                notice = "本轮使用了旧版任务回复格式。请更新执行设备的接收端后重试。"
+            else:
+                notice = "这次任务操作未通过校验。请核对任务、草稿版本或交付内容后重试。"
             self._publish_reply(db, task, notice, reply_to)
             if work_execution:
-                store.finish(db, work_execution, "blocked")
+                store.finish(
+                    db, work_execution, "blocked", reason=ATTACHMENT_DELIVERY_BLOCKED if attachment_failure else None
+                )
         finally:
             db.execute("RELEASE system_project_action")
         return True
@@ -725,7 +762,7 @@ class Coordinator:
             return {"ok": False, "error_code": "forbidden", "message": "本轮的任务操作权限已改变。"}
         db.execute("SAVEPOINT project_tool")
         try:
-            action = resolve_tool_action(raw_action, snapshot)
+            action = resolve_tool_action(raw_action, snapshot, file_delivery=True)
             result = self._apply_project_tool(
                 db, task, agent, project, live_policy, source, execution, original, action
             )
@@ -756,6 +793,13 @@ class Coordinator:
             if not active:
                 raise PermissionError("本轮没有可提交交付的工作。")
             summary = action["summary"].strip()
+            if action.get("attachments"):
+                return {
+                    **result,
+                    "status": FILE_DELIVERY_PENDING,
+                    "delivery": {"summary": summary, "links": action["links"], "attachments": action["attachments"]},
+                    "message": "附件交付已登记为待处理。请结束本轮，由系统执行审批、上传和发布。",
+                }
             message_id = self._publish_reply(db, task, summary, self.store.task_reply_recipient(agent, contract))
             work = store.finish(
                 db, execution, "delivered", {"summary": summary, "links": action["links"], "message_id": message_id}
@@ -822,10 +866,15 @@ class Coordinator:
             work_execution = self._work_execution(db, task)
             policy, _, _, action_source = self._action_scope(db, task, agent, project, original, work_execution)
             reply_to = self.store.task_reply_recipient(agent, original)
-            if db.execute("SELECT 1 FROM project_tool_results WHERE task_id=?", (task_id,)).fetchone():
-                # The tool already committed the authoritative result and card.
-                self.store.clear_draft(db, task_id)
-                return
+            saved = db.execute("SELECT result FROM project_tool_results WHERE task_id=?", (task_id,)).fetchone()
+            reserved_delivery = None
+            if saved:
+                tool_result = json.loads(saved["result"])
+                if tool_result.get("status") != FILE_DELIVERY_PENDING:
+                    # The tool already committed the authoritative result and card.
+                    self.store.clear_draft(db, task_id)
+                    return
+                reserved_delivery = tool_result["delivery"]
             private = bool(original.get("private_turn"))
             # Where this turn's final report lands. A task delegated by an agent
             # comes back to the delegator by default; the task itself may ask for
@@ -879,7 +928,12 @@ class Coordinator:
                 if formal_handoff:
                     self._notify_delegator(db, task, original, reply_to if reply else None)
                 if work_execution:
-                    self._work().finish(db, work_execution, "waiting" if (answer or {}).get("request") else "blocked")
+                    self._work().finish(
+                        db,
+                        work_execution,
+                        "waiting" if (answer or {}).get("request") else "blocked",
+                        reason=ATTACHMENT_DELIVERY_BLOCKED if reserved_delivery else None,
+                    )
                 return
             try:
                 answer = json.loads(task["report"])
@@ -897,10 +951,15 @@ class Coordinator:
                 if private and audience == "group":
                     self._notify_delegator(db, task, original, reply_to, message_id)
                 if work_execution:
-                    self._work().finish(db, work_execution, "blocked")
+                    self._work().finish(
+                        db,
+                        work_execution,
+                        "blocked",
+                        reason=ATTACHMENT_DELIVERY_BLOCKED if reserved_delivery else None,
+                    )
                 return
             if policy and self._complete_project_action(
-                db, task, agent, project, action_source, policy, work_execution, answer, reply_to
+                db, task, agent, project, action_source, policy, work_execution, answer, reply_to, reserved_delivery
             ):
                 return
             reply = answer.get("reply", "").strip()

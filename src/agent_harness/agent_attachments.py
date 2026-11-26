@@ -200,6 +200,9 @@ def prepare_reply(connector, receipt, features, decision=None):
     requested = receipt.get("attachment_requested", answer.get("attachments"))
     if not requested:
         return
+    action = answer.get("project_action")
+    formal_delivery = isinstance(action, dict) and action.get("kind") == "deliver"
+    attachment_count = len(requested) if isinstance(requested, list) else 0
     errors = []
     path = connector.receipt_path(str(job.get("job_id", job.get("id"))))
     if not isinstance(requested, list) or len(requested) > MAX_ATTACHMENTS:
@@ -250,7 +253,7 @@ def prepare_reply(connector, receipt, features, decision=None):
                     )
                 except (OSError, ValueError):
                     errors.append(f"附件 {slot + 1} 无法读取或不在项目目录")
-            if manifest:
+            if manifest and not (formal_delivery and errors):
                 receipt["attachment_requested"] = requested
                 pending = connector.transport(
                     connector.config,
@@ -297,6 +300,8 @@ def prepare_reply(connector, receipt, features, decision=None):
                     approved_contents[slot] = (name, content)
                 if requested:
                     requested = [item if slot in expected else {} for slot, item in enumerate(requested)]
+    if formal_delivery and errors:
+        requested = []
     uploads = receipt.setdefault("attachment_uploads", {})
     ids = []
     for slot, item in enumerate(requested):
@@ -335,6 +340,10 @@ def prepare_reply(connector, receipt, features, decision=None):
         write_json(path, receipt)
     answer["attachment_ids"] = ids
     answer.pop("attachments", None)
+    if formal_delivery:
+        answer["delivery_attachment_count"] = attachment_count
+        if errors:
+            answer["delivery_attachment_error"] = "；".join(errors)[:600]
     if ids and not answer.get("reply", "").strip():
         answer["reply"] = "已发送附件。"
     if errors:

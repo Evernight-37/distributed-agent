@@ -114,6 +114,10 @@ const desktopMessages = new Map([
     "The host does not support file transfers yet. Update and restart the collaboration service, then try again.",
   ],
   [
+    "两台设备的系统时间相差过大，请校准两端时间后重试。",
+    "The system clocks are too far apart. Synchronize the time on both devices and try again.",
+  ],
+  [
     "协作服务尚不支持项目任务。请升级托管端并重启协作服务。",
     "The host does not support project tasks yet. Update and restart the collaboration service.",
   ],

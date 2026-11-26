@@ -1,5 +1,14 @@
 """The executor and Hub share one allowlisted project task action contract."""
 
+from pathlib import PurePosixPath, PureWindowsPath
+from urllib.parse import urlsplit
+
+from agent_harness.attachments import MAX_ATTACHMENTS
+
+
+FILE_DELIVERY_FEATURE = "project_file_delivery_v1"
+FILE_DELIVERY_PENDING = "pending_attachment_delivery"
+
 PROJECT_TOOLS = {
     "project_draft_create": (
         "create_draft",
@@ -15,7 +24,7 @@ PROJECT_TOOLS = {
     ),
     "project_task_deliver": (
         "deliver",
-        "Register the actual result for the assigned project task, with any delivery links.",
+        "Register the actual result for the assigned project task, with any HTTP or HTTPS links.",
     ),
 }
 
@@ -83,17 +92,52 @@ def _matches(value, schema):
     if types == "null":
         return value is None
     if types == "string":
-        return isinstance(value, str) and len(value) <= 16000
+        return isinstance(value, str) and schema.get("minLength", 0) <= len(value) <= schema.get("maxLength", 16000)
     if types == "integer":
         return type(value) is int and 0 < value < 2**63
     if types == "array":
-        return isinstance(value, list) and len(value) <= 30 and all(_matches(item, schema["items"]) for item in value)
+        return (
+            isinstance(value, list)
+            and len(value) <= schema.get("maxItems", 30)
+            and all(_matches(item, schema["items"]) for item in value)
+            and (not schema.get("uniqueItems") or len(value) == len(set(value)))
+        )
     properties = schema["properties"]
     return (
         isinstance(value, dict)
         and value.keys() == properties.keys()
         and all(_matches(value[key], rule) for key, rule in properties.items())
     )
+
+
+def _validate_delivery(value):
+    if not value["summary"].strip() or len(value["links"]) > 20:
+        raise ValueError("summary 不能为空，links 最多 20 条")
+    for link in value["links"]:
+        try:
+            url = urlsplit(link)
+            if (
+                url.scheme in {"http", "https"}
+                and url.hostname
+                and url.username is None
+                and not any(char.isspace() or ord(char) < 32 or char == "\\" for char in link)
+            ):
+                continue
+        except ValueError:
+            pass
+        raise ValueError("links 只能填写 http:// 或 https:// 链接。本地文件请填入 attachments。")
+    for attachment in value.get("attachments", []):
+        posix = PurePosixPath(attachment)
+        windows = PureWindowsPath(attachment)
+        if (
+            not attachment.strip()
+            or posix.is_absolute()
+            or windows.anchor
+            or any(char == ":" or ord(char) < 32 for char in attachment)
+            or not windows.parts
+            or any(part.startswith(".") for part in windows.parts)
+        ):
+            raise ValueError("attachments 只能填写项目内普通文件的相对路径。")
 
 
 def validate_action(value, policy):
@@ -107,14 +151,14 @@ def validate_action(value, policy):
         row["id"] == value["draft_id"] and row["revision"] == value["base_revision"] for row in policy["drafts"]
     ):
         raise ValueError("任务草稿版本与本轮授权不一致")
-    if kind == "deliver" and (not value["summary"].strip() or len(value["links"]) > 20):
-        raise ValueError("交付内容不能为空，链接最多 20 条")
+    if kind == "deliver":
+        _validate_delivery(value)
     if kind == "wait" and not value["question"].strip():
         raise ValueError("等待说明不能为空")
     return value
 
 
-def tool_specs(policy):
+def tool_specs(policy, *, file_delivery=False):
     """Describe the task tools enabled for the trusted turn scope."""
     if policy is None:
         return []
@@ -136,6 +180,19 @@ def tool_specs(policy):
                 fields.pop("draft_id")
             fields.pop("base_revision")
             fields["changes"] = {**fields.pop("spec"), "required": [], "minProperties": 1}
+        required = list(fields)
+        if kind == "deliver" and file_delivery:
+            description = (
+                "Submit text, web links and project files together. Use attachments for project-relative file paths. "
+                "A pending attachment receipt is not a published delivery; finish the turn normally so it can proceed."
+            )
+            fields["attachments"] = {
+                "type": "array",
+                "description": "Project-relative paths of files to attach. Omit or leave empty for text/link delivery.",
+                "items": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "maxItems": MAX_ATTACHMENTS,
+                "uniqueItems": True,
+            }
         tools.append(
             {
                 "name": name,
@@ -143,7 +200,7 @@ def tool_specs(policy):
                 "inputSchema": {
                     "type": "object",
                     "properties": fields,
-                    "required": list(fields),
+                    "required": required,
                     "additionalProperties": False,
                 },
             }
@@ -181,10 +238,12 @@ def _validate_tool_input(value, schema, path=()):
         _validate_tool_input(item, properties[key], (*path, key))
 
 
-def resolve_tool_action(action, policy):
+def resolve_tool_action(action, policy, *, file_delivery=False):
     """Validate an action and resolve its draft target from the dispatched scope."""
     kind = action.get("kind") if isinstance(action, dict) else None
-    allowed = {PROJECT_TOOLS[tool["name"]][0]: tool["inputSchema"] for tool in tool_specs(policy)}
+    allowed = {
+        PROJECT_TOOLS[tool["name"]][0]: tool["inputSchema"] for tool in tool_specs(policy, file_delivery=file_delivery)
+    }
     if not isinstance(kind, str) or kind not in allowed:
         raise ValueError("本轮不允许此任务操作")
     _validate_tool_input({key: value for key, value in action.items() if key != "kind"}, allowed[kind])
@@ -195,6 +254,6 @@ def resolve_tool_action(action, policy):
             else next(row for row in policy["drafts"] if row["id"] == action["draft_id"])
         )
         return {**action, "draft_id": draft["id"], "base_revision": draft["revision"]}
-    if kind == "deliver" and (not action["summary"].strip() or len(action["links"]) > 20):
-        raise ValueError("summary 不能为空，links 最多 20 条")
+    if kind == "deliver":
+        _validate_delivery(action)
     return action

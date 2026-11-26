@@ -801,7 +801,7 @@ Never reveal a human's private message outside its conversation. Do not read cre
 REPLY_REMINDER = "Reply with one JSON object using the full structured reply contract; include work_proposal or work_delivery only when this turn calls for it."
 
 
-def reply_rules(policy, first_turn, *, project_tools=False):
+def reply_rules(policy, first_turn, *, project_tools=False, file_delivery=False):
     base = GROUP_RULES if first_turn else REPLY_REMINDER
     if policy is None:
         return base
@@ -814,15 +814,34 @@ def reply_rules(policy, first_turn, *, project_tools=False):
     else:
         base = "Return the structured final response defined by the runtime."
     if project_tools:
-        return base + (
+        tool_rules = (
             "\nUse the registered project tools to save a draft, revise a draft, follow up or submit a delivery. "
-            "For a text or link delivery call the project_task_deliver tool before the final response. "
-            "The final response cannot register text or link deliveries. "
-            "Use only tools offered for this turn. A revision supplies only the changed fields; the system chooses "
-            "the base version. Check the tool result, and correct invalid arguments before retrying. Once a tool "
-            "reports success, do not repeat the operation or its delivery in chat. Leave project_action null in "
-            "the final response except when the execution needs a human decision (wait) or is submitting "
-            "project files as attachments (deliver with attachments, using the file approval workflow)."
+            "Only use tools offered for this turn. For a revision send only the changed fields; "
+            "the system chooses the base version. Check tool errors and correct the inputs before retrying."
+        )
+        if file_delivery:
+            return (
+                base
+                + tool_rules
+                + (
+                    " Use project_task_deliver for every delivery. Put web URLs in links "
+                    "and project-relative file paths in attachments. For file deliveries, "
+                    "pending_attachment_delivery means the receiver accepted the request and will handle approval and upload "
+                    "after this turn. Never repeat it in chat or in the final response. "
+                    "After a successful tool call, finish normally with project_action null and empty attachments. "
+                    "Only use project_action wait when you need a human decision."
+                )
+            )
+        return (
+            base
+            + tool_rules
+            + (
+                " For a text or link delivery call the project_task_deliver tool before the final response. "
+                "The final response cannot register text or link deliveries. Once a tool "
+                "reports success, do not repeat the operation or its delivery in chat. Leave project_action null in "
+                "the final response except when the execution needs a human decision (wait) or is submitting "
+                "project files as attachments (deliver with attachments, using the file approval workflow)."
+            )
         )
     return base + (
         "\nThis turn uses the strict project_action protocol. Return project_action as the role-specific "
@@ -1155,7 +1174,7 @@ def invoke_project_tool(path, action):
         result.unlink(missing_ok=True)
 
 
-def foolship_reply_js(policy=None, *, project_tools=False):
+def foolship_reply_js(policy=None, *, project_tools=False, file_delivery=False):
     """Render the DSH tool with the trusted turn policy enforced at execution."""
     if policy is None:
         return FOOLSHIP_REPLY_JS
@@ -1168,9 +1187,10 @@ function matchesAction(value, schema) {{
   return types.some((type) => {{
     if (schema.enum && !schema.enum.includes(value)) return false;
     if (type === "null") return value === null;
-    if (type === "string") return typeof value === "string" && value.length <= 16000;
+    if (type === "string") return typeof value === "string" && value.length >= (schema.minLength ?? 0) && value.length <= (schema.maxLength ?? 16000);
     if (type === "integer") return Number.isInteger(value) && value > 0 && value < 2 ** 63;
-    if (type === "array") return Array.isArray(value) && value.length <= 30 && value.every((v) => matchesAction(v, schema.items));
+    if (type === "array") return Array.isArray(value) && value.length <= (schema.maxItems ?? 30) &&
+      (!schema.uniqueItems || new Set(value).size === value.length) && value.every((v) => matchesAction(v, schema.items));
     if (type !== "object" || !value || Array.isArray(value) || typeof value !== "object") return false;
     const keys = Object.keys(value); const expected = schema.required || Object.keys(schema.properties || {{}});
     return keys.length === expected.length && expected.every((key) => keys.includes(key) && matchesAction(value[key], schema.properties[key]));
@@ -1199,7 +1219,9 @@ function matchesAction(value, schema) {{
     if project_tools:
         from agent_harness.project_actions import PROJECT_TOOLS, tool_specs
 
-        definitions = [{**spec, "kind": PROJECT_TOOLS[spec["name"]][0]} for spec in tool_specs(policy)]
+        definitions = [
+            {**spec, "kind": PROJECT_TOOLS[spec["name"]][0]} for spec in tool_specs(policy, file_delivery=file_delivery)
+        ]
         rendered = rendered.replace(
             "  ctx.tools.register({",
             "  registerProjectTools(ctx, target);\n  ctx.tools.register({",
@@ -1295,14 +1317,16 @@ def run(job):
         policy = project_action_policy(config)
         from agent_harness.project_actions import tool_specs
 
+        contract = contract_spec(config)
+        file_delivery = contract.get("project_file_delivery") is True
         project_tools = (
-            contract_spec(config).get("project_tools") is True
+            contract.get("project_tools") is True
             and not config.get("strict_guard")
-            and bool(tool_specs(policy))
+            and bool(tool_specs(policy, file_delivery=file_delivery))
         )
         if kind_hint == executors.DSH:
             (path / "foolship_reply.js").write_text(
-                foolship_reply_js(policy, project_tools=project_tools), encoding="utf-8"
+                foolship_reply_js(policy, project_tools=project_tools, file_delivery=file_delivery), encoding="utf-8"
             )
         command_project = dict(config["project"])
         if command_project.get("local_control"):
@@ -1336,7 +1360,11 @@ def run(job):
         # Re-sending them every turn repeats ~1k tokens and dilutes attention;
         # only the reply contract has to stay in front of the model each time.
         first_turn = not config.get("thread_id")
-        sections = [reply_rules(policy, first_turn, project_tools=project_tools) if managed else PEER_RULES]
+        sections = [
+            reply_rules(policy, first_turn, project_tools=project_tools, file_delivery=file_delivery)
+            if managed
+            else PEER_RULES
+        ]
         try:
             inbound = materialize_inbound(config, config["project"]["remote_path"])
         except Exception:

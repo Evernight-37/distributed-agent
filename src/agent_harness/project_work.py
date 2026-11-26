@@ -13,6 +13,7 @@ from agent_harness.workspace_ownership import DIRTY_WORKTREE
 
 
 WORK_STATUSES = {"queued", "running", "waiting", "delivered", "accepted", "blocked"}
+ATTACHMENT_DELIVERY_BLOCKED = "附件交付未完成。查看消息中的原因，然后重试。"
 FIELDS = ("title", "instructions", "deliverable", "acceptance", "validation")
 
 
@@ -947,12 +948,16 @@ class ProjectWork:
                 (work_id,),
             )
         ]
-        if (
-            result["status"] == "running"
-            and result["executions"]
-            and result["executions"][-1]["task_state"] == "unknown"
-        ):
-            result["status_reason"] = "原设备的执行状态待确认。确认前此任务不会重复派工。"
+        if result["status"] == "running" and result["executions"]:
+            execution = result["executions"][-1]
+            if execution["task_state"] == "unknown":
+                result["status_reason"] = "原设备的执行状态待确认。确认前此任务不会重复派工。"
+            elif db.execute(
+                "SELECT 1 FROM tasks t JOIN attachment_approvals a ON a.job_id=t.job "
+                "WHERE t.id=? AND a.state='pending'",
+                (execution["task_id"],),
+            ).fetchone():
+                result["status_reason"] = "附件等待设备所有者批准。"
         result["deliveries"] = [
             {**dict(x), "links": json.loads(x["links"])}
             for x in db.execute("SELECT * FROM project_work_deliveries WHERE work_id=? ORDER BY id", (work_id,))
@@ -1150,7 +1155,7 @@ class ProjectWork:
             ],
         }
 
-    def finish(self, db, execution_id, state, delivery=None):
+    def finish(self, db, execution_id, state, delivery=None, *, reason=None):
         execution = db.execute("SELECT * FROM project_work_executions WHERE id=?", (execution_id,)).fetchone()
         if execution is None or execution["finished_at"] is not None:
             return None
@@ -1195,11 +1200,10 @@ class ProjectWork:
         ).fetchone()
         final_state = "queued" if pending else state
         error = db.execute("SELECT error FROM tasks WHERE id=?", (execution["task_id"],)).fetchone()
-        reason = (
-            "上一项任务的工作区仍有未提交修改。请先保存其变更，再重新运行此任务。"
-            if final_state == "blocked" and error and error["error"] == DIRTY_WORKTREE
-            else None
-        )
+        if final_state != "blocked":
+            reason = None
+        elif reason is None and error and error["error"] == DIRTY_WORKTREE:
+            reason = "上一项任务的工作区仍有未提交修改。请先保存其变更，再重新运行此任务。"
         db.execute(
             "UPDATE project_work_items SET status=?,status_reason=?,updated_at=? WHERE id=?",
             (final_state, reason, now, execution["work_id"]),

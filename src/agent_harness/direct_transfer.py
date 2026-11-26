@@ -26,10 +26,13 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 CHUNK = 1024 * 1024
 SKEW_SECONDS = 300
+_CLOCK_ERROR_HEADER = "X-Foolship-Error"
+_CLOCK_ERROR_CODE = "clock_skew"
 
 
 def _b64(raw):
@@ -165,25 +168,17 @@ class Sender:
         """Learn the key of the device that claimed this transfer."""
         self.recipient_public_key = public_key
 
-    def _authorized(self, resource, header):
+    def _signed_timestamp(self, resource, header):
         try:
             public, stamp, signature = str(header or "").split(".")
-        except ValueError:
-            return False
-        if public != self.recipient_public_key:
-            return False
-        try:
+            if public != self.recipient_public_key:
+                return None
             stamp_value = int(stamp)
-        except ValueError:
-            return False
-        if abs(time.time() - stamp_value) > SKEW_SECONDS:
-            return False
-        message = canonical_request(self.transfer_id, stamp_value, resource)
-        try:
+            message = canonical_request(self.transfer_id, stamp_value, resource)
             Ed25519PublicKey.from_public_bytes(_unb64(public, 32)).verify(_unb64(signature, 64), message)
-        except Exception:
-            return False
-        return True
+        except (InvalidSignature, ValueError):
+            return None
+        return stamp_value
 
     def _handler(self):
         sender = self
@@ -196,18 +191,25 @@ class Sender:
             def log_message(self, *_args):
                 return
 
-            def _deny(self, code=403):
+            def _deny(self, code=403, *, clock_skew=False):
                 self.send_response(code)
+                if clock_skew:
+                    self.send_header(_CLOCK_ERROR_HEADER, _CLOCK_ERROR_CODE)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
             def _gate(self, resource):
-                """409 while nobody has claimed the transfer, 403 when the claim is wrong."""
+                """Disclose clock skew only after authenticating the signed request."""
                 if not sender.recipient_public_key:
                     self._deny(409)
                     return False
-                if not sender._authorized(resource, self.headers.get("X-Foolship-Auth", "")):
-                    self._deny(403)
+                stamp = sender._signed_timestamp(resource, self.headers.get("X-Foolship-Auth", ""))
+                if stamp is None:
+                    self._deny()
+                    return False
+                now = time.time()
+                if not now - SKEW_SECONDS <= stamp <= now + SKEW_SECONDS:
+                    self._deny(clock_skew=True)
                     return False
                 return True
 
@@ -282,6 +284,15 @@ def authorization(private_key, public_key, transfer_id, resource, stamp=None):
     return "%s.%d.%s" % (public_key, stamp, _b64(signature))
 
 
+def _raise_http_error(error, refused):
+    with error:
+        if error.code == 409:
+            raise TransferPending("对方尚未确认接收设备") from None
+        if error.code == 403 and error.headers and error.headers.get(_CLOCK_ERROR_HEADER) == _CLOCK_ERROR_CODE:
+            raise TransferError("两台设备的系统时间相差过大，请校准两端时间后重试。") from None
+        raise TransferError(refused % error.code) from None
+
+
 def probe(url, private_key, public_key, transfer_id, timeout=10):
     """Connectivity and metadata check both sides run before moving bytes."""
     resource = "/transfer/" + transfer_id + "/meta"
@@ -300,9 +311,7 @@ def probe(url, private_key, public_key, transfer_id, timeout=10):
                 "mtime": int(mtime) if mtime and mtime.isdigit() else None,
             }
     except urllib.error.HTTPError as exc:
-        if exc.code == 409:
-            raise TransferPending("对方尚未确认接收设备") from None
-        raise TransferError("对方拒绝连接：%s" % exc.code) from None
+        _raise_http_error(exc, "对方拒绝连接：%s")
     except OSError as exc:
         raise TransferError("对方不可达：%s" % exc) from None
 
@@ -379,9 +388,7 @@ def fetch(
     try:
         response = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60)
     except urllib.error.HTTPError as exc:
-        if exc.code == 409:
-            raise TransferPending("对方尚未确认接收设备") from None
-        raise TransferError("传输被拒绝：%s" % exc.code) from None
+        _raise_http_error(exc, "传输被拒绝：%s")
     except OSError as exc:
         raise TransferError("传输中断：%s" % exc) from None
     if offset and getattr(response, "status", None) != 206:

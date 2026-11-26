@@ -96,6 +96,40 @@ class ProjectToolMcpTests(unittest.TestCase):
                         self.assertFalse(result["ok"])
                         invoke.assert_not_called()
 
+    def test_file_paths_are_offered_only_for_an_upgraded_hub(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            args = {"summary": "Result", "links": [], "attachments": ["output/report.txt"]}
+            for enabled in (False, True):
+                with self.subTest(enabled=enabled):
+                    write_json(
+                        path / "request.json",
+                        {
+                            "prompt": json.dumps(
+                                {
+                                    "project_action_policy": {"role": "executor"},
+                                    "project_tools": True,
+                                    "project_file_delivery": enabled,
+                                }
+                            )
+                        },
+                    )
+                    with patch.object(
+                        worker,
+                        "invoke_project_tool",
+                        return_value={"ok": True, "status": "pending_attachment_delivery"},
+                    ) as invoke:
+                        tools = ProjectTools(path)
+                        [spec] = tools.tool_specs()
+                        self.assertEqual("attachments" in spec["inputSchema"]["properties"], enabled)
+                        result = tools.call("project_task_deliver", args)
+                        if enabled:
+                            self.assertEqual(result["status"], "pending_attachment_delivery")
+                            invoke.assert_called_once_with(path.resolve(), {"kind": "deliver", **args})
+                        else:
+                            self.assertEqual(result["error_code"], "invalid_arguments")
+                            invoke.assert_not_called()
+
     def test_cold_codex_injects_only_the_requested_job_server(self):
         project = {"model": "example", "effort": "low", "remote_path": "workspace", "local_control": True}
         with tempfile.TemporaryDirectory() as directory:

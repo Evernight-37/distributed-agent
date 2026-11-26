@@ -194,6 +194,7 @@ class PullBackend:
                 "agent_chat_attachments_v1",
                 "agent_attachment_approval_v1",
                 "project_action_tools_v1",
+                "project_file_delivery_v1",
             ],
             "owner_commands": commands,
             "node": device["node"],

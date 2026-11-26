@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import json
 import tempfile
 import unittest
@@ -5,6 +7,8 @@ import uuid
 import time
 from pathlib import Path
 
+from agent_harness.account_backend import AccountBackend
+from agent_harness.attachments import Attachments
 from agent_harness.broker import PullBackend, digest
 from agent_harness.collaboration_store import Store
 from agent_harness.coordinator import Coordinator
@@ -155,6 +159,75 @@ class ProjectWorkCoordinatorTests(unittest.TestCase):
         self.assertEqual(
             [(d["message_id"], d["summary"]) for d in deliveries], [(receipt["delivery_message_id"], "延迟 4 秒")]
         )
+
+        sample = b"checked file"
+        path = "report.txt"
+        self.command("follow-up", work_id=work["id"], body="Attach the sample.")
+        job = claim()
+        file_delivery = {"kind": "deliver", "summary": "Report", "links": [], "attachments": [path]}
+        self.assertEqual(call(job, {**delivery, "links": [path]})["error_code"], "invalid_arguments")
+        reserved = call(job, file_delivery)
+        self.assertEqual(reserved["status"], "pending_attachment_delivery")
+        self.assertEqual(call(job, file_delivery), reserved)
+        self.assertEqual(call(job, delivery)["error_code"], "already_submitted")
+        record = self.work_view()["items"][0]
+        self.assertEqual((record["status"], len(record["deliveries"])), ("running", 1))
+        manifest = [
+            {"slot": 0, "path": path, "name": path, "size": len(sample), "sha256": hashlib.sha256(sample).hexdigest()}
+        ]
+        request = self.backend.device_api("/api/device/task-attachment-request", {**job, "manifest": manifest}, token)
+        self.assertEqual(self.work_view()["items"][0]["status_reason"], "附件等待设备所有者批准。")
+        account = AccountBackend(self.store, self.backend)
+        account._operation(self.owner, "", "attachment-decide", {"id": request["id"], "approve": True})
+        uploaded = self.backend.device_api(
+            "/api/device/task-attachment",
+            {**job, "slot": 0, "name": path, "base64": base64.b64encode(sample).decode("ascii")},
+            token,
+        )
+        final_action = {key: value for key, value in file_delivery.items() if key != "attachments"}
+        finish(
+            job,
+            reply="",
+            project_action=final_action,
+            project_file_delivery=True,
+            delivery_attachment_count=1,
+            attachment_ids=[uploaded["id"]],
+        )
+        record = self.work_view()["items"][0]
+        self.assertEqual((record["status"], len(record["deliveries"])), ("delivered", 2))
+        message = record["deliveries"][-1]["message_id"]
+        with self.store.connect() as db:
+            self.assertEqual([item["id"] for item in Attachments(self.store).metadata(db, message)], [uploaded["id"]])
+
+        self.command("follow-up", work_id=work["id"], body="Retry the attachment.")
+        job = claim()
+        self.assertEqual(call(job, file_delivery)["status"], "pending_attachment_delivery")
+        finish(
+            job,
+            reply="",
+            project_action=final_action,
+            project_file_delivery=True,
+            delivery_attachment_count=1,
+            delivery_attachment_error="机器所有者拒绝了附件发送",
+            attachment_ids=[],
+        )
+        record = self.work_view()["items"][0]
+        self.assertEqual((record["status"], len(record["deliveries"])), ("blocked", 2))
+        self.assertIn("附件交付未完成", record["status_reason"])
+
+        self.command("follow-up", work_id=work["id"], body="Retry with a new approval.")
+        job = claim()
+        self.assertEqual(call(job, file_delivery)["status"], "pending_attachment_delivery")
+        finish(
+            job,
+            reply="",
+            project_action={**final_action, "summary": "Different content"},
+            project_file_delivery=True,
+            delivery_attachment_count=1,
+            attachment_ids=[],
+        )
+        record = self.work_view()["items"][0]
+        self.assertEqual((record["status"], len(record["deliveries"])), ("blocked", 2))
 
     def test_admin_prepares_revises_and_routes_followup_after_exact_confirmation(self):
         source = self.store.message(self.owner, self.project, "断网后不能登录", mention_agent_id="admin")
@@ -328,7 +401,11 @@ class ProjectWorkCoordinatorTests(unittest.TestCase):
             "report": json.dumps(
                 {
                     "reply": "",
-                    "project_action": {"kind": "deliver", "summary": "Guide updated", "links": ["GUIDE.md"]},
+                    "project_action": {
+                        "kind": "deliver",
+                        "summary": "Guide updated",
+                        "links": ["https://example.com/GUIDE.md"],
+                    },
                     "messages": [],
                     "tasks": [],
                     "executions": [],
@@ -345,7 +422,7 @@ class ProjectWorkCoordinatorTests(unittest.TestCase):
             message = db.execute("SELECT body FROM messages WHERE id=?", (delivery["message_id"],)).fetchone()
         self.assertEqual(item["status"], "delivered")
         self.assertEqual(delivery["summary"], "Guide updated")
-        self.assertEqual(json.loads(delivery["links"]), ["GUIDE.md"])
+        self.assertEqual(json.loads(delivery["links"]), ["https://example.com/GUIDE.md"])
         self.assertEqual(message["body"], "Guide updated")
 
 

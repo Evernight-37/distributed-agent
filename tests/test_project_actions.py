@@ -86,3 +86,20 @@ class ProjectActionTests(unittest.TestCase):
             resolve_tool_action(project_tool_action("project_task_deliver", {"summary": "ok", "links": []}), self.admin)
         with self.assertRaisesRegex(ValueError, "kind"):
             project_tool_action("project_draft_create", {"kind": "deliver"})
+
+    def test_native_delivery_distinguishes_web_links_from_relative_attachments(self):
+        policy = {"role": "executor"}
+        action = {"kind": "deliver", "summary": "Done", "links": ["https://example.com/result"]}
+        self.assertEqual(resolve_tool_action(action, policy, file_delivery=True), action)
+        with_file = {**action, "attachments": ["reports/result.txt"]}
+        self.assertEqual(resolve_tool_action(with_file, policy, file_delivery=True), with_file)
+        with self.assertRaisesRegex(ValueError, "attachments"):
+            resolve_tool_action(with_file, policy)
+        for link in ("result.txt", "C:\\result.txt", "file:///report.txt", "https:/host", "http://owner@host/path"):
+            for validate in (resolve_tool_action, validate_action):
+                with self.subTest(link=link), self.assertRaisesRegex(ValueError, "links"):
+                    validate({**action, "links": [link]}, policy)
+        for attachment in ("../outside", "C:\\outside", "C:relative", "/outside", ".git/config", ["a", "a"], [7]):
+            paths = attachment if isinstance(attachment, list) else [attachment]
+            with self.subTest(attachment=attachment), self.assertRaisesRegex(ValueError, "attachments"):
+                resolve_tool_action({**action, "attachments": paths}, policy, file_delivery=True)

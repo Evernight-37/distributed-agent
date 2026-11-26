@@ -230,6 +230,13 @@ function projectExecutionDisplayStatus(entry) {
   return status || projectExecutionStatus(entry.state || entry.status);
 }
 function projectWorkStatusReason(reason) {
+  if (reason === "附件等待设备所有者批准。")
+    return t(reason, "Attachments are waiting for device owner approval.");
+  if (reason === "附件交付未完成。查看消息中的原因，然后重试。")
+    return t(
+      reason,
+      "Attachment delivery failed. Check the message for details, then retry.",
+    );
   if (reason === "原设备的执行状态待确认。确认前此任务不会重复派工。")
     return t(
       reason,

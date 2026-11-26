@@ -252,18 +252,20 @@ class WarmManager:
         project = config["project"]
         contract = json.loads(config["prompt"])
         stage = contract.get("stage", "discuss")
-        full_access = "full_access" in (worker.contract_spec(config).get("grants") or [])
+        turn = worker.contract_spec(config)
+        full_access = "full_access" in (turn.get("grants") or [])
         cwd = project["remote_path"]
         login = codex_login_status(cli_path(ROOT), ROOT)
         if not login["logged_in"]:
             raise RuntimeError(login["login_error"])
         policy = worker.project_action_policy(config)
         project_tools = False
-        if not config.get("strict_guard") and worker.contract_spec(config).get("project_tools") is True:
+        file_delivery = turn.get("project_file_delivery") is True
+        if not config.get("strict_guard") and turn.get("project_tools") is True:
             from agent_harness.project_actions import tool_specs
             from agent_harness.project_tool_mcp import server_settings
 
-            project_tools = bool(tool_specs(policy))
+            project_tools = bool(tool_specs(policy, file_delivery=file_delivery))
         server = (
             self.ensure_server(stage, cwd, server_settings(path)) if project_tools else self.ensure_server(stage, cwd)
         )
@@ -283,9 +285,7 @@ class WarmManager:
                 self.directory / config.get("session_file", "session.json"),
                 {"thread_id": thread_id, "last_job": job},
             )
-        rules = (
-            worker.reply_rules(policy, True, project_tools=True) if project_tools else worker.reply_rules(policy, True)
-        )
+        rules = worker.reply_rules(policy, True, project_tools=project_tools, file_delivery=file_delivery)
         prompt = (
             rules
             + "\nASSIGNED LOCAL PROJECT DIRECTORY:\n"

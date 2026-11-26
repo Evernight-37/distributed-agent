@@ -589,6 +589,8 @@ class Connector:
                 },
                 reported_terminal=False,
             )
+            if not execution and receipt["phase"] == "terminal":
+                self._finalize_project_delivery(receipt, cancelled=False)
             write_json(path, receipt)
             return {"job_id": job_id, "status": result.get("status")}
 
@@ -752,6 +754,10 @@ class Connector:
             if error:
                 write_json(result_path, rejected("invalid_request", error))
                 continue
+            file_delivery = action.get("kind") == "deliver" and bool(action.get("attachments"))
+            if file_delivery and not receipt.get("project_file_delivery"):
+                write_json(result_path, rejected("action_not_allowed", "本轮交付工具不支持附件。"))
+                continue
             try:
                 result = self.transport(
                     self.config,
@@ -770,9 +776,65 @@ class Connector:
                 encoded = ""
             if not encoded or len(encoded.encode("utf-8")) > PROJECT_TOOL_MAX_BYTES:
                 result = rejected("invalid_response", "任务工具响应无效或过长")
+            if file_delivery and isinstance(result, dict) and result.get("ok") is True:
+                summary = action.get("summary")
+                expected = {
+                    "summary": summary.strip() if isinstance(summary, str) else None,
+                    "links": action.get("links"),
+                    "attachments": action["attachments"],
+                }
+                if (
+                    result.get("status") != "pending_attachment_delivery"
+                    or result.get("delivery") != expected
+                    or receipt.get("staged_file_delivery", expected) != expected
+                ):
+                    result = rejected("invalid_response", "Hub 返回的附件交付回执与提交内容不一致。")
+                else:
+                    # Preserve the checked reservation across a receiver restart
+                    # before telling the executor it may finish this turn.
+                    receipt["staged_file_delivery"] = expected
+                    write_json(self.receipt_path(str(job.get("job_id", job.get("id")))), receipt)
+                    result = {key: value for key, value in result.items() if key != "delivery"}
             write_json(result_path, result)
 
-    def advance(self, receipt, cancelled=False, execution_decision=None, project_tools=False):
+    @staticmethod
+    def _finalize_project_delivery(receipt, cancelled):
+        result = receipt["result"]
+        if result.get("status") != "needs_review":
+            return
+        if staged := receipt.get("staged_file_delivery"):
+            if cancelled:
+                receipt["result"] = {"status": "cancelled", "error": "Cancelled before attachment delivery"}
+                return
+            result["report"] = json.dumps(
+                {
+                    "reply": "",
+                    "project_action": {"kind": "deliver", "summary": staged["summary"], "links": staged["links"]},
+                    "attachments": [{"path": path} for path in staged["attachments"]],
+                    "project_file_delivery": True,
+                },
+                ensure_ascii=False,
+            )
+            return
+        try:
+            answer = json.loads(result.get("report") or "")
+        except (ValueError, TypeError):
+            return
+        if isinstance(answer, dict):
+            trusted = {
+                "project_file_delivery",
+                "delivery_attachment_count",
+                "delivery_attachment_error",
+                "attachment_ids",
+            }
+            if trusted.intersection(answer):
+                result["report"] = json.dumps(
+                    {key: value for key, value in answer.items() if key not in trusted}, ensure_ascii=False
+                )
+
+    def advance(
+        self, receipt, cancelled=False, execution_decision=None, project_tools=False, project_file_delivery=False
+    ):
         job = receipt["job"]
         request = job["request"]
         local_id = receipt["local_id"]
@@ -830,6 +892,7 @@ class Connector:
                     self.configure(binding)
                     receipt["phase"] = "launching"
                     receipt["project_tools"] = bool(project_tools)
+                    receipt["project_file_delivery"] = bool(project_tools and project_file_delivery)
                     write_json(path, receipt)
                     contract = {
                         "stage": stage,
@@ -838,6 +901,7 @@ class Connector:
                         "acceptance": request.get("acceptance", ""),
                         "validation": request.get("validation", ""),
                         "project_tools": bool(project_tools),
+                        "project_file_delivery": receipt["project_file_delivery"],
                     }
                     try:
                         self.executor(
@@ -949,6 +1013,8 @@ class Connector:
                     )
                     if k in result and (k != "reply_draft" or isinstance(result[k], str) and len(result[k]) <= 16000)
                 }
+                if not execution and receipt["phase"] == "terminal":
+                    self._finalize_project_delivery(receipt, cancelled)
         except Exception as exc:
             if receipt["phase"] in {"running", "launching"}:
                 # Observation failures are not cancellation authority.  Keep
@@ -1008,6 +1074,7 @@ class Connector:
         execution_decisions = {
             item.get("job_id"): item for item in data.get("execution_decisions", []) if isinstance(item, dict)
         }
+        features = data.get("features") or []
         with lock(self.root / "pull-receipts.lock"):
             for job in data.get("jobs", []):
                 self.accept(job)
@@ -1018,10 +1085,17 @@ class Connector:
                 if receipt.get("reported_terminal"):
                     continue
                 # A local owner may have reconciled an unknown receipt to a confirmed terminal result.
-                if receipt["phase"] == "waiting_attachment_approval" and job_id in cancellations:
+                if job_id in cancellations and (
+                    receipt["phase"] == "waiting_attachment_approval"
+                    or (
+                        receipt["phase"] == "terminal"
+                        and receipt.get("staged_file_delivery")
+                        and receipt.get("result", {}).get("status") == "needs_review"
+                    )
+                ):
                     receipt.update(
                         phase="terminal",
-                        result={"status": "cancelled", "error": "Cancelled while waiting for attachment approval"},
+                        result={"status": "cancelled", "error": "Cancelled before attachment delivery"},
                     )
                     write_json(path, receipt)
                 if receipt["phase"] != "waiting_attachment_approval":
@@ -1029,13 +1103,14 @@ class Connector:
                         receipt,
                         job_id in cancellations,
                         execution_decisions.get(job_id),
-                        project_tools="project_action_tools_v1" in set(data.get("features") or []),
+                        project_tools="project_action_tools_v1" in features,
+                        project_file_delivery="project_file_delivery_v1" in features,
                     )
                 if receipt["phase"] in {"terminal", "waiting_attachment_approval"}:
                     from agent_harness.agent_attachments import prepare_reply
 
                     decision = attachment_decisions.get(job_id)
-                    prepare_reply(self, receipt, data.get("features", []), decision)
+                    prepare_reply(self, receipt, features, decision)
                 if receipt["phase"] == "waiting_attachment_approval":
                     continue
                 result = receipt.get("result", {"status": "running", "local_status": receipt["phase"]})
