@@ -1,6 +1,7 @@
 import io
 import json
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -96,7 +97,7 @@ class ProjectToolMcpTests(unittest.TestCase):
                         invoke.assert_not_called()
 
     def test_cold_codex_injects_only_the_requested_job_server(self):
-        project = {"model": "example", "effort": "low", "remote_path": "workspace"}
+        project = {"model": "example", "effort": "low", "remote_path": "workspace", "local_control": True}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "job with spaces and 中文"
             settings = server_settings(path)
@@ -106,6 +107,9 @@ class ProjectToolMcpTests(unittest.TestCase):
             self.assertIn("--ignore-user-config", args)
             self.assertEqual(settings["args"][-1], str(path.resolve()))
             self.assertTrue(override.startswith("mcp_servers." + SERVER_NAME + "="))
+            self.assertEqual(tomllib.loads(override)["mcp_servers"], {SERVER_NAME: settings})
+            self.assertEqual(settings["default_tools_approval_mode"], "approve")
+            self.assertIn('approval_policy="never"', args)
             ordinary = executors.command(path, "codex", project, None, path, True, kind=executors.CODEX)
             self.assertNotIn(override, ordinary)
 

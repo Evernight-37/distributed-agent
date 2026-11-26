@@ -20,14 +20,20 @@ SERVER_NAME = "foolship_project"
 def server_settings(path):
     command = str(Path(sys.executable).resolve())
     args = ["-I", "-X", "utf8", str(Path(__file__).resolve()), str(Path(path).resolve())]
-    return {"command": command, "args": args, "enabled": True}
+    # This adapter only exposes the Hub's validated actions for one job. An
+    # unattended Codex turn cannot answer a second confirmation for those tools.
+    return {"command": command, "args": args, "enabled": True, "default_tools_approval_mode": "approve"}
 
 
 def server_override(settings):
     # JSON's quoted string and string-array forms also work in these TOML values.
     command = json.dumps(settings["command"], ensure_ascii=False)
     args = json.dumps(settings["args"], ensure_ascii=False)
-    return "mcp_servers." + SERVER_NAME + "={command=" + command + ",args=" + args + ",enabled=true}"
+    approval = json.dumps(settings["default_tools_approval_mode"])
+    return (
+        f"mcp_servers.{SERVER_NAME}={{command={command},args={args},enabled=true,"
+        f"default_tools_approval_mode={approval}}}"
+    )
 
 
 class ProjectTools:
