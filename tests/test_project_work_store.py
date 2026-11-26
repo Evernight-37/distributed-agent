@@ -2,6 +2,7 @@ import uuid
 import unittest
 
 from agent_harness.project_work import ProjectWork
+from agent_harness.storage import SCHEMA_VERSION, migrate_database
 from tests import test_collaboration as fixtures
 
 
@@ -130,6 +131,91 @@ class ProjectWorkStoreTests(unittest.TestCase):
             },
         )
         self.assertEqual(accepted["status"], "accepted")
+
+    def test_public_state_changes_project_safe_cards_and_delivery_reuses_message(self):
+        _, worker = self.set_agents()
+        work = ProjectWork(self.store).command(self.owner["id"], self.payload(worker))
+        with self.store.connect() as db:
+            created = db.execute(
+                "SELECT * FROM project_work_cards WHERE record_id=? AND event='created'", (work["id"],)
+            ).fetchone()
+            self.assertIsNotNone(created)
+            message = db.execute("SELECT * FROM messages WHERE id=?", (created["message_id"],)).fetchone()
+            self.assertEqual(message["sender_type"], "system")
+            self.assertNotIn("Implement", message["body"])
+            self.assertEqual(
+                ProjectWork(self.store).card_for_message(db, self.owner["id"], self.project, message["id"]),
+                {"kind": "work", "id": work["id"], "event": "created"},
+            )
+            execution = ProjectWork(self.store).schedule(db)[0]
+            contract = db.execute("SELECT contract FROM tasks WHERE id=?", (execution["task_id"],)).fetchone()[0]
+            self.assertTrue(__import__("json").loads(contract)["project_action_v2"])
+            delivery = self.store._message(
+                db, self.project, worker, "agent", "published result", None, execution["task_id"]
+            )
+            ProjectWork(self.store).finish(
+                db,
+                execution["id"],
+                "delivered",
+                {"summary": "Complete", "links": [], "message_id": delivery["id"]},
+            )
+            delivered = db.execute(
+                "SELECT * FROM project_work_cards WHERE record_id=? AND event='delivered'", (work["id"],)
+            ).fetchone()
+            self.assertEqual(delivered["message_id"], delivery["id"])
+            db.execute("DROP TABLE project_tool_results")
+            db.execute("DROP TABLE project_work_cards")
+            db.execute("PRAGMA user_version=11")
+        result = migrate_database(self.store.database)
+        self.assertEqual((result["from"], result["to"]), (11, SCHEMA_VERSION))
+        self.assertTrue(result["backup"])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM project_tool_results").fetchone()[0], 0)
+            self.assertEqual(
+                ProjectWork(self.store).card_for_message(db, self.owner["id"], self.project, delivery["id"]),
+                {"kind": "work", "id": work["id"], "event": "delivered"},
+            )
+
+    def test_private_work_cards_stay_in_private_thread_and_duplicate_confirmation_is_quiet(self):
+        admin, worker = self.set_agents()
+        private = ProjectWork(self.store).command(
+            self.owner["id"],
+            self.payload(
+                admin,
+                visibility="private",
+                conversation_id=self.store._pair_conversation("human_agent", self.owner["id"], admin),
+            ),
+        )
+        with self.store.connect() as db:
+            card = db.execute("SELECT * FROM project_work_cards WHERE record_id=?", (private["id"],)).fetchone()
+            message = db.execute("SELECT * FROM messages WHERE id=?", (card["message_id"],)).fetchone()
+            self.assertEqual(
+                (message["recipient_id"], message["conversation_id"]),
+                (self.owner["id"], private["conversation_id"]),
+            )
+
+        source = self.store.message(self.owner["id"], self.project, "prepare", mention_agent_id=admin)
+        spec = self.payload(worker)
+        for key in ("project", "action", "client_request_id"):
+            spec.pop(key)
+        with self.store.connect() as db:
+            project = dict(db.execute("SELECT * FROM projects WHERE id=?", (self.project,)).fetchone())
+            admin_row = db.execute("SELECT * FROM agents WHERE id=?", (admin,)).fetchone()
+            draft = ProjectWork(self.store).propose(db, project, admin_row, source["id"], spec)
+        confirmation = {
+            "project": self.project,
+            "action": "confirm",
+            "client_request_id": str(uuid.uuid4()),
+            "draft_id": draft["id"],
+            "revision": 1,
+        }
+        work = ProjectWork(self.store).command(self.owner["id"], confirmation)
+        ProjectWork(self.store).command(self.owner["id"], {**confirmation, "client_request_id": str(uuid.uuid4())})
+        with self.store.connect() as db:
+            count = db.execute(
+                "SELECT COUNT(*) FROM project_work_cards WHERE record_id=? AND event='confirmed'", (work["id"],)
+            ).fetchone()[0]
+            self.assertEqual(count, 1)
 
     def test_follow_up_arriving_during_execution_requeues_after_delivery(self):
         admin, worker = self.set_agents()

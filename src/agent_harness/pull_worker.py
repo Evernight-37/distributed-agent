@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -39,6 +40,10 @@ TERMINAL = {
     "unknown",
 }
 LOCAL_RESULT_RETENTION_SECONDS = 30 * 86400
+PROJECT_TOOL_REQUEST = re.compile(r"pt-request-([a-f0-9]{32})\.json")
+PROJECT_TOOL_RESULT = "pt-result-{}.json"
+PROJECT_TOOL_MAX_FILES = 32
+PROJECT_TOOL_MAX_BYTES = 64 * 1024
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -644,7 +649,130 @@ class Connector:
             return template, None
         return template, execution_digest(project, template_name, template)
 
-    def advance(self, receipt, cancelled=False, execution_decision=None):
+    def _project_tool_directory(self, receipt):
+        """Return the isolated mailbox for one already-running local task.
+
+        The model-facing tool can create request files only inside its task
+        directory.  Keep every path check here so a crafted receipt or symlink
+        cannot make the receiver read or write elsewhere in its data root.
+        """
+
+        local_id = receipt.get("local_id")
+        if not isinstance(local_id, str) or not re.fullmatch(r"pull-[a-f0-9]{48}", local_id):
+            return None
+        parent = self.root.resolve() / "jobs"
+        directory = parent / local_id
+        if directory.is_symlink() or not directory.is_dir():
+            return None
+        try:
+            if parent.resolve() != parent or directory.resolve().parent != parent:
+                return None
+        except OSError:
+            return None
+        return directory
+
+    @staticmethod
+    def _read_project_tool_action(path):
+        """Read one bounded, regular request without following a symlink."""
+
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+        except OSError:
+            return None, "任务工具请求无法读取"
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > PROJECT_TOOL_MAX_BYTES:
+                return None, "任务工具请求格式无效"
+            with os.fdopen(descriptor, "rb") as source:
+                descriptor = None
+                raw = source.read(PROJECT_TOOL_MAX_BYTES + 1)
+        except OSError:
+            return None, "任务工具请求无法读取"
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        if len(raw) > PROJECT_TOOL_MAX_BYTES:
+            return None, "任务工具请求过长"
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return None, "任务工具请求不是 JSON"
+        if not isinstance(value, dict) or set(value) != {"action"} or not isinstance(value["action"], dict):
+            return None, "任务工具请求只能包含 action 对象"
+        return value["action"], None
+
+    def _service_project_tools(self, receipt, cancelled):
+        """Forward pending per-task tool calls over the task's existing lease.
+
+        Results are retained in the mailbox for the executor to consume. A
+        network failure leaves the request untouched so a later poll can retry
+        the exact same request.  Hub validation failures are useful tool output
+        and become a local JSON error response.
+        """
+
+        job = receipt.get("job") or {}
+        if (
+            cancelled
+            or receipt.get("phase") != "running"
+            or receipt.get("reported_terminal")
+            or not receipt.get("project_tools")
+            or job.get("kind") != "task"
+            or not isinstance(job.get("job_id", job.get("id")), str)
+            or not isinstance(job.get("lease_id"), str)
+        ):
+            return
+
+        def rejected(code, message):
+            # The local MCP bridge waits for this stable shape.  A malformed
+            # request must give the caller a result, rather than waiting for its
+            # timeout and losing the actionable validation message.
+            return {"ok": False, "error_code": code, "message": message[:2000]}
+
+        directory = self._project_tool_directory(receipt)
+        if directory is None:
+            return
+        try:
+            requests = sorted(directory.iterdir(), key=lambda item: item.name)
+        except OSError:
+            return
+        handled = 0
+        for request in requests:
+            match = PROJECT_TOOL_REQUEST.fullmatch(request.name)
+            if match is None:
+                continue
+            if handled >= PROJECT_TOOL_MAX_FILES:
+                return
+            handled += 1
+            token = match.group(1)
+            result_path = directory / PROJECT_TOOL_RESULT.format(token)
+            if request.is_symlink() or result_path.exists():
+                continue
+            action, error = self._read_project_tool_action(request)
+            if error:
+                write_json(result_path, rejected("invalid_request", error))
+                continue
+            try:
+                result = self.transport(
+                    self.config,
+                    "project-tool",
+                    {"job_id": job.get("job_id", job.get("id")), "lease_id": job["lease_id"], "action": action},
+                )
+            except (OSError, TimeoutError, urllib.error.URLError):
+                # The request file is the idempotency record.  Keep it for the
+                # next receiver cycle and never forge a successful response.
+                continue
+            except ValueError as exc:
+                result = rejected("hub_rejected", str(exc))
+            try:
+                encoded = json.dumps(result, ensure_ascii=False)
+            except (TypeError, ValueError):
+                encoded = ""
+            if not encoded or len(encoded.encode("utf-8")) > PROJECT_TOOL_MAX_BYTES:
+                result = rejected("invalid_response", "任务工具响应无效或过长")
+            write_json(result_path, result)
+
+    def advance(self, receipt, cancelled=False, execution_decision=None, project_tools=False):
         job = receipt["job"]
         request = job["request"]
         local_id = receipt["local_id"]
@@ -701,6 +829,7 @@ class Connector:
                             )
                     self.configure(binding)
                     receipt["phase"] = "launching"
+                    receipt["project_tools"] = bool(project_tools)
                     write_json(path, receipt)
                     contract = {
                         "stage": stage,
@@ -708,6 +837,7 @@ class Connector:
                         "allowed_files": request.get("scope", "" if stage == "implement" else "No edits"),
                         "acceptance": request.get("acceptance", ""),
                         "validation": request.get("validation", ""),
+                        "project_tools": bool(project_tools),
                     }
                     try:
                         self.executor(
@@ -786,6 +916,8 @@ class Connector:
                         receipt["phase"] = "running"
             else:
                 # launching means a process may have been created before a crash: reconcile its fixed ID.
+                if not execution and not cancelled:
+                    self._service_project_tools(receipt, cancelled)
                 if cancelled:
                     self.executor(
                         {
@@ -838,13 +970,21 @@ class Connector:
         return receipt
 
     def cycle(self, wait_seconds=10):
+        # Running task tools need prompt polls. A long poll would otherwise
+        # leave a model waiting for its Hub result for the full poll interval.
+        active_tools = any(
+            (row := read_json(path, {})).get("phase") == "running"
+            and row.get("project_tools")
+            and (row.get("job") or {}).get("kind") == "task"
+            for path in (self.root / "pull-receipts").glob("*.json")
+        )
         health = self._health()
         data = self.transport(
             self.config,
             "poll",
             {
                 "bindings": self.advertisements(),
-                "wait_seconds": wait_seconds,
+                "wait_seconds": 0 if active_tools else wait_seconds,
                 "health": health,
                 "encrypt_public_key": self.encryption_public_key(),
                 "transfer_public_key": self.transfer_public_key(),
@@ -885,7 +1025,12 @@ class Connector:
                     )
                     write_json(path, receipt)
                 if receipt["phase"] != "waiting_attachment_approval":
-                    receipt = self.advance(receipt, job_id in cancellations, execution_decisions.get(job_id))
+                    receipt = self.advance(
+                        receipt,
+                        job_id in cancellations,
+                        execution_decisions.get(job_id),
+                        project_tools="project_action_tools_v1" in set(data.get("features") or []),
+                    )
                 if receipt["phase"] in {"terminal", "waiting_attachment_approval"}:
                     from agent_harness.agent_attachments import prepare_reply
 

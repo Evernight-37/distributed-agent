@@ -8,19 +8,19 @@ import sys
 import threading
 import time
 from pathlib import Path
+from agent_harness.app_lifecycle import Lifecycle
 from agent_harness.desktop_runtime import web_assets
 from agent_harness.app_bridge import AppBridge
 from agent_harness.instance import Instance
 from agent_harness import tray as tray_module
+from agent_harness.tray_status import TrayStatus
 
 
 def request_close_dialog(window, bridge):
-    """Ask the loaded page how to close, or safely close only the UI.
+    """Ask the loaded page how to close, or leave the services running.
 
-    Native close events can arrive before pywebview has loaded the page.  In
-    that case there is no UI in which to offer the full-exit choice, so the
-    safe fallback is the same as "continue in background": permit destruction
-    of the native window without touching any service.
+    Before the page is ready, use the tray or Dock background handler if present.
+    Otherwise close the native window and leave the services running.
     """
     try:
         handled = window.evaluate_js(
@@ -29,6 +29,9 @@ def request_close_dialog(window, bridge):
     except Exception:
         handled = False
     if handled:
+        return True
+    if callable(getattr(bridge, "on_background", None)):
+        bridge.on_background()
         return True
     bridge.allow_window_close = True
     try:
@@ -43,6 +46,7 @@ def request_close_dialog(window, bridge):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data")
+    parser.add_argument("--tray", action="store_true", help="Start in the Windows notification area")
     parser.add_argument("--smoke-report")
     parser.add_argument("--smoke-register", action="store_true")
     args = parser.parse_args()
@@ -52,16 +56,29 @@ def main():
 
     bridge = AppBridge(args.data)
     holder = {}
+    tray_available = tray_module.available()
+    tray_requested = args.tray and tray_available
+    background = threading.Event()
+    minimized = threading.Event()
+    ready = threading.Event()
+    show_requested = threading.Event()
 
-    def raise_window():
+    def show_window():
         window = holder.get("window")
         if window is not None:
+            if minimized.is_set():
+                window.restore()
             window.show()
+            background.clear()
+
+    def raise_window():
+        show_requested.set()
+        if ready.is_set():
+            show_requested.clear()
+            threading.Thread(target=show_window, name="show-window", daemon=True).start()
 
     instance = Instance(bridge.root)
-    if not instance.claim(on_show=raise_window):
-        # Another process owns this data directory and has been asked to show
-        # itself; starting a second window would fight over the same ports.
+    if not instance.claim(on_show=raise_window, show_existing=not tray_requested):
         return 0
     diagnostic_path = bridge.root / "app-errors.log"
     diagnostic_handler = RotatingFileHandler(
@@ -83,6 +100,8 @@ def main():
     class API:
         def invoke(self, action, data=None):
             logging.getLogger(__name__).info("Bridge request: %s", action)
+            if background.is_set() and action == "project" and isinstance(data, dict):
+                data = {key: value for key, value in data.items() if key != "active_conversation_id"}
             result = bridge.invoke(action, data)
             logging.getLogger(__name__).info("Bridge response: %s ok=%s", action, result.get("ok"))
             return result
@@ -97,19 +116,53 @@ def main():
         width=1220,
         height=820,
         min_size=(800, 600),
+        hidden=tray_requested,
     )
     bridge.window = window
     holder["window"] = window
 
     tray = None
-    if tray_module.available():
-        # Hiding the window only makes sense when a tray icon can bring it back.
+    tray_status = None
+    if tray_available:
+
         def quit_from_tray():
             threading.Thread(target=lambda: bridge.invoke("app-exit", {}), daemon=True).start()
 
-        tray = tray_module.Tray("Foolship", window.show, quit_from_tray)
-        tray.start()
-        bridge.on_background = window.hide
+        def hide_window():
+            background.set()
+            window.hide()
+
+        def restored():
+            minimized.clear()
+            background.clear()
+
+        def minimize_window():
+            minimized.set()
+            background.set()
+
+        def local_services():
+            status = Lifecycle(bridge.root, host_root=bridge._host_state_root()).status()
+            return status["host"]["running"], status["receivers"]
+
+        tray = tray_module.Tray("Foolship", raise_window, quit_from_tray)
+        if tray.start():
+            if tray_requested:
+                background.set()
+            bridge.on_background = hide_window
+            window.events.minimized += minimize_window
+            window.events.restored += restored
+            tray_status = TrayStatus(
+                tray,
+                lambda: (bridge.identity or {}).get("account_id"),
+                local_services,
+                background,
+            )
+            bridge.tray_attention = tray_status.attention
+            tray_status.start()
+        else:
+            tray.stop()
+            tray = None
+            window.hidden = False
     elif sys.platform == "darwin":
         # No tray on macOS, but a minimised window is restored from the Dock.
         bridge.on_background = window.minimize
@@ -125,6 +178,9 @@ def main():
     window.events.closing += closing
 
     def closed():
+        bridge.tray_attention = None
+        if tray_status is not None:
+            tray_status.stop()
         if tray is not None:
             tray.stop()
         instance.release()
@@ -133,6 +189,11 @@ def main():
     window.events.closed += closed
 
     def loaded():
+        ready.set()
+        bridge._sync_event_pump()
+        if show_requested.is_set():
+            show_requested.clear()
+            show_window()
         if args.smoke_report:
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
@@ -149,6 +210,10 @@ def main():
                 result["tls_context"] = context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
             except Exception as exc:
                 result["tls_error"] = str(exc)
+            result["tray_ready"] = bool(tray and tray.ready)
+            result["starts_in_tray"] = background.is_set()
+            if sys.platform == "win32":
+                result["window_visible"] = bool(window.native.Visible)
             if args.smoke_register:
                 window.evaluate_js(
                     "window.__registrationProbe={pending:true};"

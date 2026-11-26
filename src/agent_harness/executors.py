@@ -571,7 +571,7 @@ def _dsh_session_id(thread_id):
     return thread_id
 
 
-def codex_command(exe, project, thread_id, managed=False, schema_path=None):
+def codex_command(exe, project, thread_id, managed=False, schema_path=None, *, project_tool_path=None):
     """Codex ``exec`` invocation; its output already matches the contract."""
     args = [
         exe,
@@ -599,6 +599,10 @@ def codex_command(exe, project, thread_id, managed=False, schema_path=None):
         "-C",
         project["remote_path"],
     ]
+    if project_tool_path is not None:
+        from agent_harness.project_tool_mcp import server_override, server_settings
+
+        args += ["-c", server_override(server_settings(project_tool_path))]
     if project.get("local_control"):
         # Keep the model's own capabilities: the workspace is writable in every
         # stage, and approvals are answered by the human, not guessed here.
@@ -643,11 +647,15 @@ def dsh_command(root, exe, project, thread_id, scratch):
     return args + ["-"]
 
 
-def command(root, exe, project, thread_id, scratch=None, managed=False, schema_path=None, kind=None):
+def command(
+    root, exe, project, thread_id, scratch=None, managed=False, schema_path=None, kind=None, *, project_tools=False
+):
     """Build one turn's argv for the executor that model needs."""
     if (kind or selected(root)) == DSH:
         return dsh_command(root, exe, project, thread_id, scratch)
-    return codex_command(exe, project, thread_id, managed, schema_path)
+    return codex_command(
+        exe, project, thread_id, managed, schema_path, project_tool_path=scratch if project_tools else None
+    )
 
 
 def normalize(kind, event):

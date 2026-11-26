@@ -2,8 +2,10 @@ import json
 import tempfile
 import unittest
 import uuid
+import time
 from pathlib import Path
 
+from agent_harness.broker import PullBackend, digest
 from agent_harness.collaboration_store import Store
 from agent_harness.coordinator import Coordinator
 from agent_harness.project_work import ProjectWork
@@ -59,6 +61,101 @@ class ProjectWorkCoordinatorTests(unittest.TestCase):
         with self.store.connect() as db:
             return ProjectWork(self.store).view(db, self.owner, self.project)
 
+    def test_project_tools_commit_before_reply_and_system_manages_revision(self):
+        token = "registered-device-token-for-test-only"
+        with self.store.connect() as db:
+            db.execute("INSERT INTO pull_devices VALUES('node',?,?)", (digest(token), time.time()))
+            db.execute("INSERT INTO pull_bindings VALUES('admin','[\"discuss\"]','[]')")
+        self.backend = PullBackend(self.store)
+        self.coordinator = Coordinator(self.store, self.backend)
+
+        def claim():
+            self.coordinator.tick()
+            jobs = self.backend.device_api("/api/device/poll", {"wait_seconds": 0}, token)["jobs"]
+            self.assertEqual(len(jobs), 1)
+            job = jobs[0]
+            lease = {"job_id": job["job_id"], "lease_id": job["lease_id"]}
+            self.backend.device_api("/api/device/report", {**lease, "state": "running", "result": {}}, token)
+            return lease
+
+        def call(job, action):
+            return self.backend.device_api("/api/device/project-tool", {**job, "action": action}, token)["result"]
+
+        def finish(job, **answer):
+            self.backend.device_api(
+                "/api/device/report",
+                {**job, "state": "needs_review", "result": {"report": json.dumps(answer)}},
+                token,
+            )
+            self.coordinator.collect()
+
+        spec = {
+            "title": "登录修复",
+            "instructions": "重新连接再登录",
+            "deliverable": "测试结果",
+            "acceptance": "重连成功",
+            "validation": "重复登录",
+            "agent": "admin",
+            "stage": "discuss",
+            "allowed_files": "",
+            "reference_message_ids": [],
+        }
+        source = self.store.message(self.owner, self.project, "整理登录任务", mention_agent_id="admin")
+        job = claim()
+        action = {"kind": "create_draft", "spec": spec}
+        with self.assertRaises(PermissionError):
+            call({**job, "lease_id": "wrong"}, action)
+        invalid = call(job, {"kind": "create_draft", "spec": {"title": "missing required fields"}})
+        self.assertEqual(invalid["error_code"], "invalid_arguments")
+        self.assertIn("spec.instructions", invalid["message"])
+        self.assertEqual(self.work_view()["drafts"], [])
+        created = call(job, action)
+        self.assertEqual((created["ok"], created["revision"], created["status"]), (True, 1, "draft"))
+        self.assertEqual(call(job, action), created)
+        self.assertEqual(
+            call(job, {**action, "spec": {**spec, "title": "另一个任务"}})["error_code"], "already_submitted"
+        )
+        self.assertEqual(self.work_view()["items"], [])
+        finish(job, reply="", project_action=action)
+        self.assertEqual(len(self.work_view()["drafts"]), 1)
+
+        self.command("draft-discuss", draft_id=created["id"], revision=1, body="把延迟写进交付")
+        job = claim()
+        self.command(
+            "revise",
+            draft_id=created["id"],
+            revision=1,
+            **{**spec, "acceptance": "人工修订的验收条件", "reference_message_ids": [source["id"]]},
+        )
+        change = {"kind": "revise_draft", "changes": {"deliverable": "测试结果和延迟"}}
+        conflict = call(job, change)
+        self.assertEqual((conflict["error_code"], conflict["current_revision"]), ("revision_conflict", 2))
+        self.assertEqual(self.work_view()["drafts"][0]["deliverable"], "测试结果")
+        finish(job, reply="", project_action=None)
+
+        self.command("draft-discuss", draft_id=created["id"], revision=2, body="在最新草稿增加延迟数据")
+        job = claim()
+        self.assertEqual(call(job, {**change, "base_revision": 2})["error_code"], "invalid_arguments")
+        revised = call(job, change)
+        self.assertEqual((revised["id"], revised["revision"]), (created["id"], 3))
+        draft = self.work_view()["drafts"][0]
+        self.assertEqual(draft["deliverable"], "测试结果和延迟")
+        self.assertEqual(draft["acceptance"], "人工修订的验收条件")
+        self.assertIn(source["id"], draft["reference_message_ids"])
+        finish(job, reply="", project_action=None)
+
+        work = self.command("confirm", draft_id=created["id"], revision=3)
+        job = claim()
+        delivery = {"kind": "deliver", "summary": "延迟 4 秒", "links": []}
+        receipt = call(job, delivery)
+        self.assertEqual((receipt["id"], receipt["status"]), (work["id"], "delivered"))
+        self.assertEqual(call(job, delivery), receipt)
+        finish(job, reply="", project_action=delivery)
+        deliveries = self.work_view()["items"][0]["deliveries"]
+        self.assertEqual(
+            [(d["message_id"], d["summary"]) for d in deliveries], [(receipt["delivery_message_id"], "延迟 4 秒")]
+        )
+
     def test_admin_prepares_revises_and_routes_followup_after_exact_confirmation(self):
         source = self.store.message(self.owner, self.project, "断网后不能登录", mention_agent_id="admin")
         unrelated = self.store.message(self.owner, self.project, "打包出错了")
@@ -71,17 +168,41 @@ class ProjectWorkCoordinatorTests(unittest.TestCase):
             "validation": "复现后重跑登录测试",
             "agent": "admin",
             "stage": "discuss",
+            "allowed_files": "",
+            "reference_message_ids": [],
         }
-        self.finish_turn(reply="请核对草稿", work_proposal=proposal)
+        self.finish_turn(reply="我已经立项", project_action={"kind": "create_draft", "spec": proposal})
         draft = self.work_view()["drafts"][0]
+        self.assertNotIn(
+            "我已经立项", [message["body"] for message in self.store.project_view(self.owner, self.project)["messages"]]
+        )
+        self.assertRegex(draft["id"], r"^draft-[a-f0-9]{32}$")
         self.assertEqual(self.work_view()["items"], [])
         self.assertEqual(draft["reference_message_ids"], [source["id"]])
         self.command("draft-discuss", draft_id=draft["id"], revision=1, body="交付中加上复现步骤")
         self.coordinator.tick()
         self.assertEqual(self.backend.submissions[-1][0]["project_work_drafts"][0]["id"], draft["id"])
         self.finish_turn(
+            reply="误填编号",
+            project_action={
+                "kind": "revise_draft",
+                "draft_id": draft["id"],
+                "base_revision": 2,
+                "spec": proposal,
+            },
+        )
+        self.assertEqual([item["id"] for item in self.work_view()["drafts"]], [draft["id"]])
+        self.assertEqual(self.work_view()["drafts"][0]["revision"], 1)
+        self.command("draft-discuss", draft_id=draft["id"], revision=1, body="还是把复现步骤加进交付")
+        self.coordinator.tick()
+        self.finish_turn(
             reply="请核对修订稿",
-            work_proposal={**proposal, "id": draft["id"], "revision": 1, "deliverable": "修复和复现步骤"},
+            project_action={
+                "kind": "revise_draft",
+                "draft_id": draft["id"],
+                "base_revision": 1,
+                "spec": {**proposal, "deliverable": "修复和复现步骤"},
+            },
         )
         revised = self.work_view()["drafts"][0]
         self.assertEqual((revised["revision"], revised["id"]), (2, draft["id"]))
@@ -93,14 +214,25 @@ class ProjectWorkCoordinatorTests(unittest.TestCase):
         duplicate = self.command("confirm", draft_id=draft["id"], revision=2)
         self.assertEqual(duplicate["id"], confirmed["id"])
         other = self.command("create", **{**proposal, "title": "打包故障"})
+        self.store.message(self.owner, self.project, "请核对登录工作", mention_agent_id="admin")
+        self.coordinator.wake_messages()
+        self.coordinator.dispatch()
+        self.finish_turn(
+            reply="已经交付第二条", project_action={"kind": "deliver", "summary": "虚假的交付", "links": []}
+        )
+        self.assertFalse(any(item["deliveries"] for item in self.work_view()["items"]))
+        self.assertIn("未通过校验", self.store.project_view(self.owner, self.project)["messages"][-1]["body"])
         follow_up = "登录修复再测切换 Wi-Fi"
         self.store.message(self.owner, self.project, follow_up, mention_agent_id="admin")
         self.coordinator.wake_messages()
         self.coordinator.dispatch()
-        self.finish_turn(reply="已经补充", work_follow_up={"work_id": confirmed["id"]})
+        self.finish_turn(
+            reply="已经补充",
+            project_action={"kind": "follow_up", "work_id": confirmed["id"], "instruction": "再测切换 Wi-Fi"},
+        )
         items = {item["id"]: item for item in self.work_view()["items"]}
-        self.assertTrue(any(row["body"] == follow_up for row in items[confirmed["id"]]["inputs"]))
-        self.assertFalse(any(row["body"] == follow_up for row in items[other["id"]]["inputs"]))
+        self.assertTrue(any(row["body"] == "再测切换 Wi-Fi" for row in items[confirmed["id"]]["inputs"]))
+        self.assertFalse(any(row["body"] == "再测切换 Wi-Fi" for row in items[other["id"]]["inputs"]))
 
     def test_one_time_permission_continues_the_same_work_without_granting_later_runs(self):
         work = self.command(
@@ -125,7 +257,7 @@ class ProjectWorkCoordinatorTests(unittest.TestCase):
         self.assertEqual(resumed["grants"], ["full_access"])
         self.assertEqual(resumed["project_work"]["work_id"], work["id"])
         self.assertNotEqual(resumed["project_work"]["execution_id"], first["project_work"]["execution_id"])
-        self.finish_turn(reply="Done", work_delivery={"summary": "Done", "links": []})
+        self.finish_turn(reply="Done", project_action={"kind": "deliver", "summary": "Done", "links": []})
         self.command("follow-up", work_id=work["id"], body="Add ordinary details")
         self.coordinator.tick()
         self.assertEqual(self.backend.submissions[-1][0]["grants"], [])
@@ -147,11 +279,11 @@ class ProjectWorkCoordinatorTests(unittest.TestCase):
             self.command("create", title="Public", **fields)
         work = self.command("create", title="Private", visibility="private", **fields)
         self.coordinator.tick()
-        self.finish_turn(reply="Which logs should I check?")
+        self.finish_turn(project_action={"kind": "wait", "question": "Which logs should I check?"})
         self.assertEqual(self.work_view()["items"][0]["status"], "waiting")
         self.command("follow-up", work_id=work["id"], body="Check the traces I sent")
         self.coordinator.tick()
-        self.finish_turn(work_delivery={"summary": "Private result", "links": []})
+        self.finish_turn(project_action={"kind": "deliver", "summary": "Private result", "links": []})
         delivery = self.work_view()["items"][0]["deliveries"][-1]
         with self.store.connect() as db:
             observer = ProjectWork(self.store).view(db, colleague, self.project)
@@ -196,7 +328,7 @@ class ProjectWorkCoordinatorTests(unittest.TestCase):
             "report": json.dumps(
                 {
                     "reply": "",
-                    "work_delivery": {"summary": "Guide updated", "links": ["GUIDE.md"], "message_id": None},
+                    "project_action": {"kind": "deliver", "summary": "Guide updated", "links": ["GUIDE.md"]},
                     "messages": [],
                     "tasks": [],
                     "executions": [],

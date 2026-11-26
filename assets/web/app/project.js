@@ -132,6 +132,98 @@ function projectWorkValues(controls) {
     ]),
   );
 }
+function projectWorkStatus(status, draft = false) {
+  if (draft) return status === "confirmed" ? "已确认" : "草稿";
+  return (
+    {
+      queued: "排队中",
+      running: "执行中",
+      waiting: "等待中",
+      delivered: "已交付",
+      accepted: "已验收",
+      blocked: "受阻",
+    }[status] ||
+    status ||
+    "未知"
+  );
+}
+function projectWorkCard(view, kind, record, options = {}) {
+  const draft = kind === "draft",
+    assigneeId = record.agent || record.agent_id,
+    assignee = (view.members || []).find((item) => item.id === assigneeId),
+    deliveries = record.deliveries || [],
+    delivery =
+      options.event === "delivered"
+        ? deliveries.find((item) => item.message_id === options.message?.id)
+        : options.event === "waiting"
+          ? null
+          : deliveries.at(-1),
+    event = {
+      created: "已创建",
+      draft_saved: "已保存",
+      draft_revised: "已修订",
+      confirmed: "已确认",
+      follow_up: "有新要求",
+      waiting: "待答复",
+      delivered: "已交付",
+      accepted: "已验收",
+      reopened: "已重新打开",
+      scope_updated: "范围已更新",
+    }[options.event],
+    card = el("section", "project-work-card " + kind);
+  card.setAttribute("data-work-id", String(record.id));
+  card.append(
+    el(
+      "div",
+      "project-work-card-kicker",
+      (draft ? "工作草稿" : "项目工作") + (event ? " · " + event : ""),
+    ),
+    el("strong", "project-work-card-title", record.title || "未命名工作"),
+  );
+  const facts = el("div", "project-work-card-facts");
+  [
+    ["状态", projectWorkStatus(record.status, draft)],
+    ["版本", record.revision == null ? "—" : "v" + record.revision],
+    ["负责人", assignee?.name || assigneeId || "未指派"],
+  ].forEach(([label, value]) =>
+    facts.append(el("span", "", label + " · " + value)),
+  );
+  card.append(facts);
+  [
+    ["任务目标", record.instructions || record.body],
+    ["验收标准", record.acceptance],
+    ["预期交付", record.deliverable],
+    [
+      options.event === "delivered" ? "本次交付" : "最新结果",
+      delivery?.summary || delivery?.body || record.status_reason,
+    ],
+    ["等待答复", options.event === "waiting" && options.message?.body],
+  ].forEach(([label, value]) => {
+    if (!value) return;
+    const row = el("div", "project-work-card-field");
+    row.append(
+      el("span", "project-work-card-label", label),
+      el("p", "", value),
+    );
+    card.append(row);
+  });
+  if (options.controls !== false)
+    card.append(
+      button(
+        draft
+          ? record.status === "draft" && record.can_edit !== false
+            ? "审阅并确认"
+            : "查看草稿"
+          : "查看详情",
+        () =>
+          draft
+            ? openProjectWorkForm(view, { draft: record })
+            : openProjectWorkDetail(view, record),
+        "link small project-work-card-action",
+      ),
+    );
+  return card;
+}
 function openProjectWorkForm(view, options = {}) {
   const source = options.draft || options.task || {},
     project = view.project.id;
@@ -345,17 +437,7 @@ function openProjectWorkDetail(view, work) {
     const agent = (view.members || []).find(
       (item) => item.id === (work.agent || work.agent_id),
     );
-    const status =
-      {
-        queued: "排队中",
-        running: "执行中",
-        waiting: "等待中",
-        delivered: "已交付",
-        accepted: "已验收",
-        blocked: "受阻",
-      }[work.status] ||
-      work.status ||
-      "未知";
+    const status = projectWorkStatus(work.status);
     const revision = work.revision;
     body.append(
       el("div", "setting-row", "状态 · " + status),
@@ -939,6 +1021,15 @@ function renderProject() {
   if (!visible.length)
     empty(msgs, isGroup ? "在项目大群开始讨论。" : "这段会话还没有消息。");
   const tasksById = new Map((v.tasks || []).map((task) => [task.id, task]));
+  const firstClassWorkCards = (v.capabilities || []).includes(
+    "project_work_cards_v1",
+  );
+  const draftsById = new Map(
+    (v.work?.drafts || []).map((draft) => [String(draft.id), draft]),
+  );
+  const workById = new Map(
+    (v.work?.items || []).map((work) => [String(work.id), work]),
+  );
   const workByMessage = new Map();
   (v.work?.drafts || [])
     .filter((draft) => draft.status === "draft")
@@ -968,10 +1059,29 @@ function renderProject() {
     row.tabIndex = -1;
     if (m.mention_agent_name)
       name.append(el("span", "channel", "@" + m.mention_agent_name));
-    const body = el("div", "message-text");
-    FoolshipRender.render(body, m.body);
-    streamMessageText(m, body, msgs);
+    const cardMetadata = firstClassWorkCards && m.project_work_card,
+      cardKind = cardMetadata?.kind,
+      cardRecord =
+        cardKind === "draft"
+          ? draftsById.get(String(cardMetadata.id))
+          : cardKind === "work"
+            ? workById.get(String(cardMetadata.id))
+            : null,
+      body = el("div", "message-text");
+    if (!cardRecord) {
+      FoolshipRender.render(body, m.body);
+      streamMessageText(m, body, msgs);
+    }
     bubble.append(name, body, el("div", "muted small", date(m.created_at)));
+    if (cardRecord) {
+      bubble.classList.add("work-card-message");
+      bubble.append(
+        projectWorkCard(v, cardKind, cardRecord, {
+          event: cardMetadata.event,
+          message: m,
+        }),
+      );
+    }
     const linkedTask = tasksById.get(m.task_id);
     if (linkedTask)
       bubble.append(
@@ -985,6 +1095,7 @@ function renderProject() {
       bubble.append(attachmentCard(file, S.project)),
     );
     if (
+      !cardRecord &&
       (isGroup || privateWorkAgent) &&
       (v.capabilities || []).includes("project_work_v1")
     )
@@ -1000,18 +1111,19 @@ function renderProject() {
           "link small",
         ),
       );
-    (workByMessage.get(m.id) || []).forEach(({ kind, record }) =>
-      bubble.append(
-        button(
-          kind === "draft" ? "查看工作草稿" : "查看项目工作",
-          () =>
-            kind === "draft"
-              ? openProjectWorkForm(v, { draft: record })
-              : openProjectWorkDetail(v, record),
-          "link small",
+    if (!firstClassWorkCards)
+      (workByMessage.get(m.id) || []).forEach(({ kind, record }) =>
+        bubble.append(
+          button(
+            kind === "draft" ? "查看工作草稿" : "查看项目工作",
+            () =>
+              kind === "draft"
+                ? openProjectWorkForm(v, { draft: record })
+                : openProjectWorkDetail(v, record),
+            "link small",
+          ),
         ),
-      ),
-    );
+      );
     const request = m.permission_request;
     if (request?.id) {
       const agent = v.members.find((item) => item.id === request.agent_id);
@@ -1296,38 +1408,14 @@ function renderProject() {
           !draft.conversation_id || draft.conversation_id === selectedId,
       )
       .forEach((draft) => {
-        const card = el(
-          "div",
-          "task",
-          (draft.title || "未命名草稿") + " · 草稿 v" + draft.revision,
-        );
-        card.append(
-          button(
-            "审阅并确认",
-            () => openProjectWorkForm(v, { draft }),
-            "link small",
-          ),
-        );
-        projectWork.append(card);
+        projectWork.append(projectWorkCard(v, "draft", draft));
       });
     items
       .filter(
         (item) => !item.conversation_id || item.conversation_id === selectedId,
       )
       .forEach((item) => {
-        const card = el(
-          "div",
-          "task",
-          (item.title || item.id) + " · " + item.status,
-        );
-        card.append(
-          button(
-            "查看详情",
-            () => openProjectWorkDetail(v, item),
-            "link small",
-          ),
-        );
-        projectWork.append(card);
+        projectWork.append(projectWorkCard(v, "work", item));
       });
     side.append(projectWork);
   }

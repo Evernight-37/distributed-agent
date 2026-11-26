@@ -51,43 +51,10 @@ def configure_runtime(root):
     return root
 
 
-def response_schema():
-    def obj(properties):
-        return {
-            "type": "object",
-            "additionalProperties": False,
-            "required": list(properties),
-            "properties": properties,
-        }
+def response_schema(policy=None, *, project_tools=False):
+    from agent_harness.worker import reply_schema
 
-    def array(properties):
-        return {"type": "array", "items": obj(properties)}
-
-    return obj(
-        {
-            "reply": {"type": "string"},
-            "attachments": array({"path": {"type": "string"}}),
-            "done": {"type": "boolean"},
-            "messages": array({"recipient": {"type": ["string", "null"]}, "body": {"type": "string"}}),
-            "tasks": array(
-                {
-                    key: {"type": "string"}
-                    for key in (
-                        "agent",
-                        "title",
-                        "instructions",
-                        "stage",
-                        "allowed_files",
-                        "acceptance",
-                        "validation",
-                    )
-                }
-            ),
-            "executions": array({"template": {"type": "string"}}),
-            "memory_notes": {"type": "array", "items": {"type": "string"}},
-            "request": {"anyOf": [obj({"reason": {"type": "string"}}), {"type": "null"}]},
-        }
-    )
+    return reply_schema(policy, project_tools=True) if project_tools else reply_schema(policy)
 
 
 def local_env():
@@ -133,6 +100,7 @@ class WarmManager:
         )
         self.directory = project_dir(project)
         self.server = self.stage = self.stderr = None
+        self.project_server = None
         # A thread stays attached to one app-server for that process lifetime.
         # Calling thread/resume again on the same server asks Codex to create a
         # second writer for a thread it already owns and is rejected.
@@ -189,9 +157,16 @@ class WarmManager:
         )
         raise RuntimeError(reason)
 
-    def ensure_server(self, stage, cwd):
-        if self.server and self.stage == stage and self.server.process.poll() is None:
+    def ensure_server(self, stage, cwd, project_server=None):
+        if (
+            self.server
+            and self.stage == stage
+            and self.project_server == project_server
+            and self.server.process.poll() is None
+        ):
             return self.server
+        from agent_harness.project_tool_mcp import SERVER_NAME, server_override
+
         self.close_server()
         stderr_path = self.directory / "app-server-stderr.log"
         rotate_log(stderr_path)
@@ -205,15 +180,24 @@ class WarmManager:
         for name in names:
             if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
                 raise RuntimeError("Cannot safely disable a configured MCP server name")
-            command += ["-c", "mcp_servers." + name + '={command="",enabled=false}']
+            if not project_server or name != SERVER_NAME:
+                command += ["-c", "mcp_servers." + name + '={command="",enabled=false}']
+        if project_server:
+            command += ["-c", server_override(project_server)]
         self.server = AppServer(command, cwd, local_env(), self.stderr)
         configured = (self.server.call("config/read", {"includeLayers": False}, 20).get("config") or {}).get(
             "mcp_servers"
         ) or {}
+        if project_server:
+            active = configured.pop(SERVER_NAME, None)
+            if not isinstance(active, dict) or any(active.get(key) != value for key, value in project_server.items()):
+                self.close_server()
+                raise RuntimeError("Could not install this job's MCP tool scope")
         if any(not isinstance(item, dict) or item.get("enabled") is not False for item in configured.values()):
             self.close_server()
             raise RuntimeError("Could not disable inherited MCP servers for the group worker")
         self.stage = stage
+        self.project_server = project_server
         return self.server
 
     def close_server(self):
@@ -223,6 +207,7 @@ class WarmManager:
         if self.stderr:
             self.stderr.close()
             self.stderr = None
+        self.project_server = None
         self.attached_thread_ids.clear()
 
     def attach_thread(self, server, settings, existing):
@@ -272,7 +257,16 @@ class WarmManager:
         login = codex_login_status(cli_path(ROOT), ROOT)
         if not login["logged_in"]:
             raise RuntimeError(login["login_error"])
-        server = self.ensure_server(stage, cwd)
+        policy = worker.project_action_policy(config)
+        project_tools = False
+        if not config.get("strict_guard") and worker.contract_spec(config).get("project_tools") is True:
+            from agent_harness.project_actions import tool_specs
+            from agent_harness.project_tool_mcp import server_settings
+
+            project_tools = bool(tool_specs(policy))
+        server = (
+            self.ensure_server(stage, cwd, server_settings(path)) if project_tools else self.ensure_server(stage, cwd)
+        )
         existing = config.get("thread_id")
         settings = {
             "model": project["model"],
@@ -289,8 +283,11 @@ class WarmManager:
                 self.directory / config.get("session_file", "session.json"),
                 {"thread_id": thread_id, "last_job": job},
             )
+        rules = (
+            worker.reply_rules(policy, True, project_tools=True) if project_tools else worker.reply_rules(policy, True)
+        )
         prompt = (
-            GROUP_RULES
+            rules
             + "\nASSIGNED LOCAL PROJECT DIRECTORY:\n"
             + cwd
             + "\nPROJECT MEMORY:\n"
@@ -327,7 +324,7 @@ class WarmManager:
                 "effort": project["effort"],
                 "approvalPolicy": "never",
                 "sandboxPolicy": sandbox,
-                "outputSchema": response_schema(),
+                "outputSchema": response_schema(policy, project_tools=project_tools),
             },
             40,
         )["turn"]["id"]
@@ -419,6 +416,8 @@ class WarmManager:
                         error = "Effective model differs from requested model"
                     else:
                         error = worker._check_strict_guard(config.get("strict_guard"))
+                    if not error and project_tools:
+                        error = worker.project_delivery_error(report)
                     if error:
                         status = "failed"
                 self.update_state(
@@ -429,7 +428,7 @@ class WarmManager:
                     effective_model=effective,
                     model_verified=bool(effective),
                 )
-                if interrupted:
+                if interrupted or project_tools:
                     self.close_server()
                 return
 

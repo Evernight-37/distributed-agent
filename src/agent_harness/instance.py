@@ -24,13 +24,13 @@ class Instance:
         self._socket = None
         self._thread = None
 
-    def claim(self, on_show=None):
+    def claim(self, on_show=None, *, show_existing=True):
         """Own the application, or ask the owner to come forward.
 
         Returns True when this process is the only one, False when another
         instance was running and has been asked to show its window.
         """
-        if self._raise_existing():
+        if self._raise_existing(show_existing):
             return False
         self._listen(on_show)
         self._write()
@@ -54,11 +54,11 @@ class Instance:
                 pass
 
     def _write(self):
-        payload = {"port": self._socket.getsockname()[1], "token": self.token}
+        payload = {"port": self._socket.getsockname()[1], "token": self.token, "ping": True}
         self.root.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(payload) + "\n", "utf-8")
 
-    def _raise_existing(self):
+    def _raise_existing(self, show):
         try:
             recorded = json.loads(self.path.read_text("utf-8"))
         except (OSError, ValueError):
@@ -70,7 +70,8 @@ class Instance:
             return False
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.6) as client:
-                client.sendall(json.dumps({"action": "show", "token": token}).encode("utf-8"))
+                action = "show" if show or recorded.get("ping") is not True else "ping"
+                client.sendall(json.dumps({"action": action, "token": token}).encode("utf-8"))
                 client.settimeout(0.6)
                 reply = client.recv(64)
         except OSError:
@@ -103,17 +104,19 @@ class Instance:
                         request = json.loads(client.recv(4096).decode("utf-8"))
                     except (OSError, ValueError):
                         continue
-                    if (
-                        isinstance(request, dict)
-                        and request.get("action") == "show"
-                        and request.get("token") == self.token
-                        and on_show is not None
-                    ):
+                    if not isinstance(request, dict) or request.get("token") != self.token:
+                        continue
+                    action = request.get("action")
+                    if action == "show" and on_show is not None:
                         try:
                             on_show()
                         except Exception:
                             continue
-                        client.sendall(b"ok")
+                    if action in {"show", "ping"}:
+                        try:
+                            client.sendall(b"ok")
+                        except OSError:
+                            pass
 
         self._thread = threading.Thread(target=serve, name="instance-listen", daemon=True)
         self._thread.start()

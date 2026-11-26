@@ -8,6 +8,8 @@ and the final state commit. Only the model itself is replaced.
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,6 +18,7 @@ from unittest import mock
 
 from agent_harness import worker
 from agent_harness.common import read_json, write_json
+from agent_harness.project_actions import action_schema
 
 FAKE_SOURCE = r"""
 import json
@@ -106,6 +109,126 @@ class FencedReportTests(unittest.TestCase):
         self.assertEqual(unfenced_report('{"reply": "hi"}'), '{"reply": "hi"}')
         # A fence that is not a JSON object is left alone.
         self.assertEqual(unfenced_report("```\nhello\n```"), "```\nhello\n```")
+
+
+class ProjectActionTransportTests(unittest.TestCase):
+    def test_native_text_delivery_rejects_final_reply_without_files(self):
+        answer = {"reply": "", "project_action": {"kind": "deliver", "summary": "done", "links": []}}
+        self.assertIn("project_task_deliver", worker.project_delivery_error(json.dumps(answer)))
+        self.assertIsNone(
+            worker.project_delivery_error(json.dumps({**answer, "attachments": [{"path": "result.txt"}]}))
+        )
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated DSH tool")
+    def test_native_dsh_rejects_final_text_delivery_and_accepts_file_delivery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tool.mjs").write_text(
+                worker.foolship_reply_js({"role": "executor"}, project_tools=True), encoding="utf-8"
+            )
+            script = root / "check.mjs"
+            script.write_text(
+                'import {apply} from "./tool.mjs";\n'
+                'import assert from "node:assert/strict";\n'
+                'const tools = {}; apply({tools:{register:t=>tools[t.name]=t}},{path:"reply.json"});\n'
+                'const result = {reply:"",project_action:{kind:"deliver",summary:"done",links:[]}};\n'
+                "await assert.rejects(tools.foolship_reply.execute(result), /project_task_deliver/);\n"
+                'assert.deepEqual(await tools.foolship_reply.execute({...result,attachments:[{path:"result.txt"}]}),{ok:true});\n',
+                encoding="utf-8",
+            )
+            run = subprocess.run([shutil.which("node"), str(script)], cwd=root, timeout=15, capture_output=True)
+            self.assertEqual(run.returncode, 0, run.stderr.decode("utf-8", "replace"))
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated DSH tool")
+    def test_native_draft_tool_uses_job_mailbox_without_accepting_a_version(self):
+        policy = {
+            "role": "admin",
+            "bound_draft": True,
+            "agents": ["admin"],
+            "drafts": [{"id": "draft-bound", "revision": 7}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tool.mjs").write_text(worker.foolship_reply_js(policy, project_tools=True), encoding="utf-8")
+            script = root / "check.mjs"
+            script.write_text(
+                """
+import {apply} from "./tool.mjs";
+import assert from "node:assert/strict";
+import {readdir, readFile, writeFile} from "node:fs/promises";
+import {setTimeout} from "node:timers/promises";
+const tools = {};
+apply({tools: {register: tool => tools[tool.name] = tool}}, {path:"reply.json"});
+assert.deepEqual(Object.keys(tools).sort(), ["foolship_reply", "project_draft_revise"]);
+const revise = tools.project_draft_revise;
+const changes = {deliverable:"new result"};
+assert.deepEqual(Object.keys(revise.parameters), ["changes"]);
+const invalid = await revise.execute({changes, base_revision:7});
+assert.equal(invalid.error_code, "invalid_arguments");
+assert.match(invalid.message, /base_revision/);
+assert.equal((await readdir(".")).some(x => x.startsWith("pt-request-")), false);
+const pending = revise.execute({changes});
+let requestName;
+while (!requestName) {
+  requestName = (await readdir(".")).find(x => /^pt-request-[a-f0-9]{32}\\.json$/.test(x));
+  if (!requestName) await setTimeout(10);
+}
+assert.deepEqual(JSON.parse(await readFile(requestName, "utf8")), {action:{kind:"revise_draft", changes}});
+const receipt = {ok:true,id:"draft-bound",revision:8,status:"draft"};
+await writeFile(requestName.replace("pt-request-", "pt-result-"), JSON.stringify(receipt));
+assert.deepEqual(await pending, receipt);
+assert.equal((await readdir(".")).some(x => x.startsWith("pt-")), false);
+await assert.rejects(tools.foolship_reply.execute({reply:"",project_action:{kind:"revise_draft"}}));
+assert.deepEqual(await tools.foolship_reply.execute({reply:"",project_action:null}), {ok:true});
+""",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [shutil.which("node"), str(script)],
+                cwd=root,
+                timeout=15,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_policy_schema_replaces_legacy_actions_and_forces_empty_tasks(self):
+        policy = {"role": "executor"}
+        schema = worker.reply_schema(policy)
+        fields = schema["properties"]
+        self.assertEqual(fields["project_action"], action_schema(policy))
+        self.assertEqual(fields["tasks"]["maxItems"], 0)
+        self.assertFalse({"work_proposal", "work_follow_up", "work_delivery"} & fields.keys())
+
+    def test_dsh_tool_embeds_and_enforces_the_trusted_action_union(self):
+        source = worker.foolship_reply_js({"role": "executor"})
+        self.assertIn('"deliver"', source)
+        self.assertIn('"wait"', source)
+        self.assertIn("matchesAction(args.project_action", source)
+        self.assertIn("legacy project action is not allowed", source)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated DSH tool")
+    def test_dsh_tool_accepts_one_valid_action_and_rejects_another_roles_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tool.mjs").write_text(worker.foolship_reply_js({"role": "executor"}), encoding="utf-8")
+            script = root / "check.mjs"
+            script.write_text(
+                'import {apply} from "./tool.mjs";\n'
+                'import assert from "node:assert/strict";\n'
+                'let tool; apply({tools:{register: t => tool = t}}, {path:"reply.json"});\n'
+                'await assert.rejects(tool.execute({project_action:{kind:"follow_up",work_id:"x",instruction:null}}));\n'
+                'await assert.rejects(tool.execute({project_action:{kind:"deliver",summary:"ok",links:[],message_id:1}}));\n'
+                'const reply = {reply:"",project_action:{kind:"deliver",summary:"ok",links:[]}};\n'
+                "assert.deepEqual(await tool.execute(reply), {ok:true});\n"
+                "await assert.rejects(tool.execute(reply));\n",
+                encoding="utf-8",
+            )
+            subprocess.run([shutil.which("node"), str(script)], cwd=root, check=True, timeout=15, capture_output=True)
+            self.assertEqual(
+                read_json(root / "reply.json")["project_action"], {"kind": "deliver", "summary": "ok", "links": []}
+            )
 
 
 class DshWorkerTurnTests(unittest.TestCase):

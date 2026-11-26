@@ -14,7 +14,7 @@ from pathlib import Path
 from agent_harness.common import lock
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 BACKUP_RETENTION = 5
 
 
@@ -320,6 +320,36 @@ CREATE TABLE IF NOT EXISTS project_work_draft_discussion(
 );
 """
 
+SCHEMA_V12 = """
+CREATE TABLE IF NOT EXISTS project_work_cards(
+    message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('draft','work')),
+    record_id TEXT NOT NULL,
+    event TEXT NOT NULL,
+    revision INTEGER,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS project_work_cards_project
+    ON project_work_cards(project_id,message_id);
+INSERT OR IGNORE INTO project_work_cards(message_id,project_id,conversation_id,kind,record_id,event,revision,created_at)
+    SELECT d.message_id,w.project_id,w.conversation_id,'work',w.id,'delivered',e.revision,d.created_at
+    FROM project_work_deliveries d
+    JOIN project_work_items w ON w.id=d.work_id
+    JOIN project_work_executions e ON e.id=d.execution_id AND e.work_id=w.id
+    JOIN messages m ON m.id=d.message_id AND m.project_id=w.project_id
+        AND m.conversation_id=w.conversation_id AND m.causal_task=e.task_id;
+"""
+
+SCHEMA_V13 = """
+CREATE TABLE IF NOT EXISTS project_tool_results(
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    result TEXT NOT NULL
+);
+"""
+
 
 def _v4_layout_current(connection):
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -506,6 +536,8 @@ def migrate_database(database, backup_root=None):
                 == 2
                 and connection.execute("SELECT 1 FROM sqlite_master WHERE name='task_trace'").fetchone()
                 and connection.execute("SELECT 1 FROM sqlite_master WHERE name='project_work_items'").fetchone()
+                and connection.execute("SELECT 1 FROM sqlite_master WHERE name='project_work_cards'").fetchone()
+                and connection.execute("SELECT 1 FROM sqlite_master WHERE name='project_tool_results'").fetchone()
             ):
                 _integrity(connection)
                 _private(database)
@@ -675,6 +707,32 @@ def migrate_database(database, backup_root=None):
                         (11, time.time()),
                     )
                     connection.execute("PRAGMA user_version=11")
+                if (
+                    current < 12
+                    or not connection.execute("SELECT 1 FROM sqlite_master WHERE name='project_work_cards'").fetchone()
+                ):
+                    for statement in SCHEMA_V12.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+                        (12, time.time()),
+                    )
+                    connection.execute("PRAGMA user_version=12")
+                if (
+                    current < 13
+                    or not connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='project_tool_results'"
+                    ).fetchone()
+                ):
+                    for statement in SCHEMA_V13.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+                        (13, time.time()),
+                    )
+                    connection.execute("PRAGMA user_version=13")
                 connection.commit()
                 _integrity(connection)
                 connection.execute("PRAGMA journal_mode=WAL")

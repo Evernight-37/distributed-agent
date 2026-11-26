@@ -79,6 +79,9 @@ async function checkProjectAgentForms() {
       replaceChildren(...nodes) {
         this.children = nodes;
       },
+      setAttribute(name, value) {
+        this[name] = value;
+      },
     };
   }
   let actionBar;
@@ -294,6 +297,61 @@ async function checkProjectAgentForms() {
     ...traceView,
     members: [admin, agent],
   };
+  const card = context.projectWorkCard(
+    workView,
+    "work",
+    {
+      id: "work-card-a",
+      title: "发布候选版本",
+      status: "delivered",
+      revision: 3,
+      agent: admin.id,
+      instructions: "生成候选版本",
+      acceptance: "测试全部通过",
+      deliverable: "可安装包",
+      deliveries: [
+        { message_id: 103, summary: "构建 103 已完成" },
+        { message_id: 104, summary: "构建 104 已完成" },
+      ],
+    },
+    { event: "delivered", message: { id: 103 } },
+  );
+  assert.equal(card["data-work-id"], "work-card-a");
+  assert.match(JSON.stringify(card), /项目工作/);
+  assert.match(JSON.stringify(card), /项目工作 · 已交付/);
+  assert.match(JSON.stringify(card), /发布候选版本/);
+  assert.match(JSON.stringify(card), /状态 · 已交付/);
+  assert.match(JSON.stringify(card), /版本 · v3/);
+  assert.match(JSON.stringify(card), /负责人 · 管理员小蓝/);
+  assert.match(JSON.stringify(card), /任务目标/);
+  assert.match(JSON.stringify(card), /验收标准/);
+  assert.match(JSON.stringify(card), /预期交付/);
+  assert.match(JSON.stringify(card), /本次交付/);
+  assert.match(JSON.stringify(card), /构建 103 已完成/);
+  assert.doesNotMatch(JSON.stringify(card), /构建 104 已完成/);
+  assert.ok(findIn(card, "查看详情"));
+
+  const waiting = context.projectWorkCard(
+    workView,
+    "work",
+    { id: "work-card-a", title: "发布候选版本", status: "waiting" },
+    { event: "waiting", message: { body: "请确认发布分支" } },
+  );
+  assert.match(JSON.stringify(waiting), /等待答复/);
+  assert.match(JSON.stringify(waiting), /请确认发布分支/);
+
+  const draftCard = context.projectWorkCard(workView, "draft", {
+    id: "draft-card-a",
+    title: "发布草稿",
+    status: "draft",
+    revision: 2,
+    agent: agent.id,
+    instructions: "先核对变更",
+  });
+  assert.match(JSON.stringify(draftCard), /工作草稿/);
+  assert.match(JSON.stringify(draftCard), /状态 · 草稿/);
+  assert.ok(findIn(draftCard, "审阅并确认"));
+
   context.openProjectWorkForm(workView, {
     conversation_id: "group:project-a",
     source_message_id: 42,

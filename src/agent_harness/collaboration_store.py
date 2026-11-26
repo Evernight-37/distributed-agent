@@ -352,7 +352,40 @@ class Store:
             ).fetchone()
             return int(row[0]) if row else 0
 
-    def events_wait(self, user, after=0, wait_seconds=0):
+    def attention_summary(self, user):
+        """Return bounded notification metadata without reading a conversation.
+
+        The desktop shell needs enough information to badge a background tray
+        icon.  Keep this separate from the event log, which intentionally
+        stores no message or identity details.  The query follows the same
+        visibility rules as the project conversation list and never returns a
+        message body, sender, project, or conversation identifier.
+        """
+
+        with self.connect() as db:
+            if not db.execute("SELECT 1 FROM users WHERE id=?", (user,)).fetchone():
+                raise PermissionError("账户未加入此协作服务")
+            row = db.execute(
+                """SELECT COUNT(*),COALESCE(MAX(m.id),0) FROM messages m
+                JOIN project_users member ON member.project_id=m.project_id AND member.user_id=?
+                LEFT JOIN conversation_reads read ON read.project_id=m.project_id AND read.user_id=?
+                    AND read.conversation_id=m.conversation_id
+                WHERE m.sender_id<>? AND m.id>COALESCE(read.last_message,0)
+                AND (m.causal_task IS NULL OR m.causal_task NOT LIKE 'draft:%')
+                AND (m.conversation_id='group:' || m.project_id
+                    OR m.conversation_id LIKE 'agent_agent:%'
+                    OR m.conversation_id LIKE 'human_agent:' || ? || ':%'
+                    OR m.conversation_id LIKE 'human_human:' || ? || ':%'
+                    OR m.conversation_id LIKE 'human_human:%:' || ?)""",
+                (user, user, user, user, user, user),
+            ).fetchone()
+            return {
+                "service_id": self.service_id(),
+                "unread_count": int(row[0]),
+                "latest_unread_id": int(row[1]),
+            }
+
+    def events_wait(self, user, after=0, wait_seconds=0, attention=False):
         if isinstance(after, bool) or not isinstance(after, int) or not 0 <= after <= 2**63 - 1:
             raise ValueError("事件游标无效")
         if (
@@ -361,14 +394,22 @@ class Store:
             or not 0 <= wait_seconds <= MAX_EVENT_WAIT_SECONDS
         ):
             raise ValueError("事件等待时间无效")
+        if type(attention) is not bool:
+            raise ValueError("注意摘要开关无效")
         deadline = time.monotonic() + float(wait_seconds)
         while True:
             cursor = self.event_cursor(user)
             if cursor > after:
-                return {"cursor": cursor, "changed": True}
+                result = {"cursor": cursor, "changed": True}
+                if attention:
+                    result["attention"] = self.attention_summary(user)
+                return result
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return {"cursor": cursor, "changed": False}
+                result = {"cursor": cursor, "changed": False}
+                if attention and after == 0:
+                    result["attention"] = self.attention_summary(user)
+                return result
             time.sleep(min(0.1, remaining))
 
     def host_owner(self):
@@ -951,6 +992,10 @@ class Store:
             if audience not in (None, "group", "private", "owner"):
                 raise ValueError("audience 只能是 group、private 或 owner")
             contract = dict(data)
+            contract.pop("project_work_execution_id", None)
+            contract.pop("project_work_revision", None)
+            contract.pop("system_task_routing", None)
+            contract["project_action_v2"] = True
             if audience in {"private", "owner"}:
                 # The report goes to this person's private conversation with the
                 # agent instead of the project group; the identity stays the same.
@@ -1153,14 +1198,33 @@ class Store:
         with self.connect() as db:
             self._conversation_access(db, project, user, conversation_id)
             latest = db.execute(
-                "SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=? AND conversation_id=?",
+                "SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=? AND conversation_id=? "
+                "AND (causal_task IS NULL OR causal_task NOT LIKE 'draft:%')",
                 (project, conversation_id),
             ).fetchone()[0]
-            db.execute(
-                "INSERT INTO conversation_reads(project_id,user_id,conversation_id,last_message) VALUES(?,?,?,?) ON CONFLICT(project_id,user_id,conversation_id) DO UPDATE SET last_message=MAX(last_message,excluded.last_message)",
-                (project, user, conversation_id, latest),
+            key = (project, user, conversation_id)
+            previous = db.execute(
+                "SELECT last_message FROM conversation_reads WHERE project_id=? AND user_id=? AND conversation_id=?",
+                key,
+            ).fetchone()
+            previous = previous[0] if previous else 0
+            if latest <= previous:
+                return {"conversation_id": conversation_id, "last_message": previous}
+            current = db.execute(
+                "INSERT INTO conversation_reads(project_id,user_id,conversation_id,last_message) VALUES(?,?,?,?) "
+                "ON CONFLICT(project_id,user_id,conversation_id) DO UPDATE SET last_message=excluded.last_message "
+                "WHERE conversation_reads.last_message<excluded.last_message",
+                (*key, latest),
             )
-            self._emit_accounts(db, [user], project, "read")
+            if current.rowcount:
+                self._emit_accounts(db, [user], project, "read")
+            else:
+                # Another reader may have moved this cursor before our write.
+                latest = db.execute(
+                    "SELECT last_message FROM conversation_reads "
+                    "WHERE project_id=? AND user_id=? AND conversation_id=?",
+                    key,
+                ).fetchone()[0]
             return {"conversation_id": conversation_id, "last_message": latest}
 
     def _human_visible_messages(self, db, project, user):

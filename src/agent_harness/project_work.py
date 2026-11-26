@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import uuid
 
@@ -46,6 +47,96 @@ class ProjectWork:
         if row is None:
             raise PermissionError("无权引用此消息")
         return row
+
+    def _publish_card(self, db, row, kind, event, revision=None, message_id=None):
+        """Publish a scoped, payload-free work card and persist its projection."""
+
+        if message_id is None:
+            sent = self.store._message(
+                db,
+                row["project_id"],
+                "system",
+                "system",
+                "项目工作已更新",
+                row["creator_id"] if row["visibility"] == "private" else None,
+                conversation_id=row["conversation_id"],
+            )
+            message_id = sent["id"]
+        db.execute(
+            "INSERT OR IGNORE INTO project_work_cards(message_id,project_id,conversation_id,kind,record_id,"
+            "event,revision,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                message_id,
+                row["project_id"],
+                row["conversation_id"],
+                kind,
+                row["id"],
+                event,
+                revision,
+                time.time(),
+            ),
+        )
+        return message_id
+
+    def add_work_execution_card(self, db, execution_id, message_id, event="waiting"):
+        """Attach a validated execution publication to its visible work card."""
+
+        if event not in {"waiting", "delivered"}:
+            raise ValueError("执行卡事件无效")
+        row = db.execute(
+            "SELECT w.*,e.task_id FROM project_work_executions e "
+            "JOIN project_work_items w ON w.id=e.work_id WHERE e.id=?",
+            (execution_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("工作执行不存在")
+        message = self._message(db, row["project_id"], message_id)
+        if message["conversation_id"] != row["conversation_id"] or message["causal_task"] != row["task_id"]:
+            raise PermissionError("执行卡消息必须属于本次执行与约定会话")
+        self._publish_card(db, row, "work", event, message_id=message_id)
+        return message_id
+
+    def project_cards(self, db, user, project, messages):
+        """Return visible card tags keyed by the requested real message IDs."""
+
+        self.store.require_member(db, project, user)
+        requested = []
+        for item in messages or []:
+            message_id = item.get("id") if isinstance(item, dict) else item
+            if type(message_id) is int and message_id > 0 and message_id not in requested:
+                requested.append(message_id)
+        ids = requested
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        cards = {}
+        rows = db.execute(
+            f"SELECT c.*,m.conversation_id AS message_conversation FROM project_work_cards c "
+            f"JOIN messages m ON m.id=c.message_id AND m.project_id=c.project_id "
+            f"WHERE c.project_id=? AND c.message_id IN ({placeholders})",
+            (project, *ids),
+        ).fetchall()
+        for card in rows:
+            try:
+                self.store._conversation_access(db, project, user, card["message_conversation"])
+                table = "project_work_drafts" if card["kind"] == "draft" else "project_work_items"
+                record = db.execute(
+                    f"SELECT * FROM {table} WHERE id=? AND project_id=?",
+                    (card["record_id"], project),
+                ).fetchone()
+                if record is None or not self._visible(db, record, user):
+                    continue
+            except PermissionError:
+                continue
+            cards[card["message_id"]] = {
+                "kind": card["kind"],
+                "id": card["record_id"],
+                "event": card["event"],
+            }
+        return cards
+
+    def card_for_message(self, db, user, project, message_id):
+        return self.project_cards(db, user, project, [message_id]).get(message_id)
 
     def _reference_allowed(self, db, project, conversation, visibility, message_id):
         row = self._message(db, project, message_id)
@@ -160,6 +251,15 @@ class ProjectWork:
             )
             if prior:
                 return self._repeat(db, prior, user)
+            confirm_was_new = True
+            if action == "confirm" or (
+                action == "draft-discuss" and payload.get("body", "").strip() in {"按这一版创建", "确认创建"}
+            ):
+                draft_status = db.execute(
+                    "SELECT status FROM project_work_drafts WHERE id=? AND project_id=?",
+                    (payload.get("draft_id"), project_id),
+                ).fetchone()
+                confirm_was_new = draft_status is not None and draft_status["status"] == "draft"
             if action == "create":
                 record = self._create(db, project, user, payload, delegate)
                 kind, revision = "work", None
@@ -176,6 +276,24 @@ class ProjectWork:
                 kind, revision = "work", None
             else:
                 raise ValueError("未知项目工作操作")
+            card_events = {
+                "create": "created",
+                "revise": "draft_revised",
+                "confirm": "confirmed",
+                "follow-up": "follow_up",
+                "accept": "accepted",
+                "reopen": "reopened",
+                "update-scope": "scope_updated",
+            }
+            card_event = "confirmed" if action == "draft-discuss" and kind == "work" else card_events.get(action)
+            if card_event and not (card_event == "confirmed" and not confirm_was_new):
+                card_row = db.execute(
+                    "SELECT * FROM project_work_drafts WHERE id=?"
+                    if kind == "draft"
+                    else "SELECT * FROM project_work_items WHERE id=?",
+                    (record["id"],),
+                ).fetchone()
+                self._publish_card(db, card_row, kind, card_event, revision)
             self._remember(db, project_id, user, request_id, digest, kind, record["id"], revision)
             if record.get("visibility") == "private":
                 self.store.emit_conversation_event(db, project_id, record["conversation_id"], "work")
@@ -597,8 +715,31 @@ class ProjectWork:
         pin = db.execute(
             "SELECT draft_id,revision FROM project_work_draft_discussion WHERE message_id=?", (source_row["id"],)
         ).fetchone()
-        if pin and (draft_id, expected) != (pin["draft_id"], pin["revision"]):
-            raise ValueError("此消息只能修订它所关联的草稿版本")
+        if pin:
+            if draft_id not in (None, pin["draft_id"]) or (
+                expected is not None
+                and (type(expected) is not int or expected not in (pin["revision"], pin["revision"] + 1))
+            ):
+                raise ValueError("此消息只能修订它所关联的草稿版本")
+            # The human's bound message determines the base revision. A model
+            # sometimes labels its proposal with the next revision it expects.
+            draft_id, expected = pin["draft_id"], pin["revision"]
+        if draft_id is not None and not isinstance(draft_id, str):
+            raise ValueError("草稿编号无效")
+        if (
+            not pin
+            and (expected is None or type(expected) is int and expected == 1)
+            and draft_id
+            and not re.fullmatch(r"draft-[a-f0-9]{32}", draft_id)
+            and not db.execute(
+                "SELECT 1 FROM project_work_drafts WHERE project_id=? AND creator_id=? AND conversation_id=? "
+                "AND status='draft'",
+                (project_id, source_row["sender_id"], conversation),
+            ).fetchone()
+        ):
+            # Some executors label a first proposal with a placeholder ID. It is
+            # never authoritative and can only be discarded for an unbound new draft.
+            draft_id, expected = None, None
         earlier = []
         if draft_id:
             draft = self._draft_row(db, project_id, draft_id)
@@ -642,6 +783,8 @@ class ProjectWork:
                 (draft_id, project_id, source_row["sender_id"], conversation, visibility, now, now),
             )
         self._insert_revision(db, draft_id, revision, spec, admin_row["id"], references)
+        card_row = db.execute("SELECT * FROM project_work_drafts WHERE id=?", (draft_id,)).fetchone()
+        self._publish_card(db, card_row, "draft", "draft_saved" if revision == 1 else "draft_revised", revision)
         self.store.log(
             db,
             admin_row["id"],
@@ -721,7 +864,7 @@ class ProjectWork:
             )
         ]
 
-    def propose_follow_up(self, db, project, admin, source, work_id):
+    def propose_follow_up(self, db, project, admin, source, work_id, instruction=None):
         """Persist the human's exact addressed message as an idempotent follow-up."""
 
         project_id = project["id"] if isinstance(project, dict) else project
@@ -741,10 +884,20 @@ class ProjectWork:
         ).fetchone()
         if existing:
             return self._work_record(db, source_row["sender_id"], work_id)
+        body = source_row["body"]
+        if instruction is not None:
+            if (
+                not isinstance(instruction, str)
+                or not instruction.strip()
+                or len(instruction) > 16000
+                or instruction not in body
+            ):
+                raise ValueError("跟进指令必须是来源消息中的非空连续原文")
+            body = instruction
         now = time.time()
         db.execute(
             "INSERT INTO project_work_inputs(work_id,kind,body,actor_id,created_at) VALUES(?,'follow-up',?,?,?)",
-            (work_id, source_row["body"], source_row["sender_id"], now),
+            (work_id, body, source_row["sender_id"], now),
         )
         db.execute(
             "INSERT INTO project_work_inputs(work_id,kind,message_id,actor_id,created_at) VALUES(?,'reference',?,?,?)",
@@ -754,6 +907,7 @@ class ProjectWork:
             db.execute("UPDATE project_work_items SET status='queued',updated_at=? WHERE id=?", (now, work_id))
         digest = self._hash({"source_message_id": source_row["id"], "work_id": work_id})
         self._remember(db, project_id, source_row["sender_id"], request_id, digest, "work", work_id)
+        self._publish_card(db, work, "work", "follow_up")
         self.store.emit_conversation_event(db, project_id, work["conversation_id"], "work")
         return self._work_record(db, source_row["sender_id"], work_id)
 
@@ -880,6 +1034,7 @@ class ProjectWork:
                 "stage": work["stage"],
                 "project_work_execution_id": execution_id,
                 "project_work_revision": work["revision"],
+                "project_action_v2": True,
             }
             if work["visibility"] == "private":
                 contract.update(private_turn=True, reply_to=work["creator_id"], audience="private")
@@ -1027,6 +1182,7 @@ class ProjectWork:
                     time.time(),
                 ),
             )
+            self.add_work_execution_card(db, execution_id, delivery["message_id"], "delivered")
             state = "delivered"
         now = time.time()
         db.execute(

@@ -5,6 +5,7 @@ let eventRefreshTimer = null;
 function drainEventRefresh() {
   eventRefreshTimer = null;
   if (!eventRefreshPending) return;
+  if (document.hidden) return;
   if (polling || !S.dash) {
     eventRefreshTimer = setTimeout(drainEventRefresh, 100);
     return;
@@ -19,7 +20,8 @@ function drainEventRefresh() {
 
 window.__harnessEvent = () => {
   eventRefreshPending = true;
-  if (!eventRefreshTimer) eventRefreshTimer = setTimeout(drainEventRefresh, 60);
+  if (!document.hidden && !eventRefreshTimer)
+    eventRefreshTimer = setTimeout(drainEventRefresh, 60);
 };
 
 async function refresh(force = false) {
@@ -37,7 +39,9 @@ async function refresh(force = false) {
         id: project,
         visit: false,
         active_conversation_id:
-          selected && !selected.startsWith("new:") ? selected : undefined,
+          !document.hidden && selected && !selected.startsWith("new:")
+            ? selected
+            : undefined,
       });
     }
     if (epoch !== S.epoch || project !== S.project || page !== S.page) return;

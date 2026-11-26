@@ -8,6 +8,7 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from agent_harness.collaboration_store import uid
 from agent_harness.broker import PullBackend
+from agent_harness.project_actions import resolve_tool_action, validate_action
 from agent_harness.project_memory import ProjectMemory
 
 TERMINAL = {"needs_review", "failed", "cancelled", "timed_out", "interrupted"}
@@ -36,6 +37,64 @@ class Coordinator:
         from agent_harness.project_work import ProjectWork
 
         return ProjectWork(self.store)
+
+    def _work_execution(self, db, task):
+        row = db.execute(
+            "SELECT e.id FROM project_work_executions e JOIN project_work_items w ON w.id=e.work_id "
+            "WHERE e.task_id=? AND w.project_id=? AND w.agent_id=?",
+            (task["id"], task["project_id"], task["agent_id"]),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def _action_scope(self, db, task, agent, project, contract, work_execution):
+        if contract.get("project_action_v2") is not True:
+            return None, [], [], None
+        if work_execution:
+            return {"role": "executor"}, [], [], None
+        if project["admin_agent_id"] != agent["id"]:
+            return {"role": "chat"}, [], [], None
+        source = db.execute(
+            "SELECT m.* FROM task_trace trace JOIN messages m ON m.id=trace.wake_source_id "
+            "WHERE trace.task_id=? AND m.project_id=? AND m.sender_type='human' "
+            "AND (m.recipient_id=? OR (m.recipient_id IS NULL AND m.mention_agent_id=?))",
+            (task["id"], project["id"], agent["id"], agent["id"]),
+        ).fetchone()
+        if not source:
+            return {"role": "chat"}, [], [], None
+        work = self._work()
+        drafts = work.agent_drafts(db, project, agent["id"], source)
+        items = work.agent_work(db, project, agent, source)
+        pin = db.execute("SELECT 1 FROM project_work_draft_discussion WHERE message_id=?", (source["id"],)).fetchone()
+        message = source["body"].casefold()
+        referenced = [item for item in items if item["id"].casefold() in message]
+        if not referenced:
+            referenced = [item for item in items if item["title"].casefold() in message]
+        eligible_work = referenced if len(referenced) == 1 and referenced[0]["can_follow_up"] else []
+        agents = (
+            [agent["id"]]
+            if source["recipient_id"]
+            else [
+                row["id"]
+                for row in db.execute(
+                    "SELECT id FROM agents WHERE project_id=? AND enabled=1 AND configuring=0 ORDER BY id",
+                    (project["id"],),
+                )
+            ]
+        )
+        return (
+            {
+                "role": "admin",
+                "bound_draft": bool(pin),
+                "agents": agents,
+                "drafts": [
+                    {"id": draft["id"], "revision": draft["revision"]} for draft in drafts if draft["status"] == "draft"
+                ],
+                "works": [item["id"] for item in eligible_work],
+            },
+            drafts,
+            items,
+            source,
+        )
 
     def recover(self):
         completed = []
@@ -119,8 +178,11 @@ class Coordinator:
                 "AND project_id=? AND agent_id=? AND owner_id=? AND state IN ('approved','consumed')",
                 (task.get("id"), project["id"], agent["id"], agent["owner_id"]),
             ).fetchone()
-        contract = json.loads(task["contract"])
-        work_execution = contract.get("project_work_execution_id")
+            contract = json.loads(task["contract"])
+            work_execution = self._work_execution(db, task) if task.get("id") else None
+            policy, authorized_drafts, authorized_items, _ = self._action_scope(
+                db, task, agent, project, contract, work_execution
+            )
         if work_execution:
             with self.store.connect() as db:
                 work_context = self._work().execution_context(db, work_execution)
@@ -139,6 +201,7 @@ class Coordinator:
                     "project": {"id": project["id"], "name": project["name"]},
                     "task": contract,
                     "project_work": work_context,
+                    **({"project_action_policy": policy} if policy else {}),
                     "grants": ["full_access"] if approval else [],
                     **(
                         {"permission_request_id": approval["id"], "approved_continuation": dict(approval)}
@@ -146,8 +209,16 @@ class Coordinator:
                         else {}
                     ),
                     "protocol": (
-                        "Execute only this scheduled project work. Use work_delivery for completion; "
-                        "do not send unrelated messages, delegate tasks, or request background executions."
+                        "This is the scheduled work execution, not the earlier administrator routing turn. "
+                        "Use the requested outcomes in project_work.follow_ups. Instructions there about how an "
+                        "administrator should queue this work apply only to that earlier routing turn. "
+                        + (
+                            "Submit the actual result using the delivery mechanism in this turn's executor instructions, "
+                            "or wait with a specific question. "
+                            if policy
+                            else "Put the actual result in work_delivery.summary when complete. "
+                        )
+                        + "Do not send unrelated messages, delegate tasks, or request background executions."
                     ),
                 },
                 ensure_ascii=False,
@@ -166,7 +237,9 @@ class Coordinator:
             contract["source_message_id"] = trace["source_message_id"]
         drafts = []
         existing_work = []
-        if project["admin_agent_id"] == agent["id"] and trace and trace["source_message_id"]:
+        if policy is not None:
+            drafts, existing_work = authorized_drafts, authorized_items
+        elif project["admin_agent_id"] == agent["id"] and trace and trace["source_message_id"]:
             with self.store.connect() as db:
                 source = db.execute("SELECT * FROM messages WHERE id=?", (trace["source_message_id"],)).fetchone()
                 if source and source["sender_type"] == "human":
@@ -191,6 +264,7 @@ class Coordinator:
                 "project_memory": shared_memory,
                 "project_work_drafts": drafts,
                 "project_work_items": existing_work,
+                **({"project_action_policy": policy} if policy else {}),
                 "task": contract,
                 "grants": ["full_access"] if approval else [],
                 **(
@@ -206,10 +280,24 @@ class Coordinator:
                     "Delegation is admin-only; a task carries audience delegator (private report back to you), "
                     "group (published to the project) or owner (to the executor's owner). Model capabilities are yours to use."
                     + (
+                        " Use the offered project action for a formal proposal, revision or follow-up. "
+                        "For a new assignment use create_draft so a human can confirm it. "
+                        "When following up, quote only the actual requirement as a verbatim instruction excerpt, if needed. "
+                        "The system will show a task card after the operation succeeds."
+                        if policy and policy["role"] == "admin"
+                        else ""
+                    )
+                    + (
                         " As project administrator in this human-directed turn, you may return a complete work_proposal "
-                        "for the human to review. This only saves or revises a draft: never claim it starts work, and "
-                        "ask the human to confirm the exact draft and revision in the desktop UI."
-                        if project["admin_agent_id"] == agent["id"]
+                        "for the human to review. For a new draft leave id and revision null or omit both; the Hub "
+                        "assigns them. To revise, reuse the draft ID and current base revision from project_work_drafts. "
+                        "Send the current revision, since the Hub computes the next one. "
+                        "This only saves or revises a draft: never claim it starts work, and "
+                        "ask the human to confirm the exact draft and revision in the desktop UI. "
+                        "To add a confirmed in-scope requirement to an existing item, return work_follow_up with its "
+                        "work_id from project_work_items. A later work execution submits the delivery. "
+                        "Never use work_delivery or claim to have delivered something in this routing turn."
+                        if policy is None and project["admin_agent_id"] == agent["id"]
                         else ""
                     )
                     + (
@@ -279,13 +367,17 @@ class Coordinator:
                 if project["paused"]:
                     continue
                 private = bool(partner)
+                human_source = db.execute("SELECT sender_type FROM messages WHERE id=?", (source_id,)).fetchone()
+                routing = human_source["sender_type"] == "human" and project["admin_agent_id"] == r["id"]
                 data = {
                     "title": "处理新消息",
-                    "instructions": "处理收到的可见消息；管理员根据目标协调分工，必要时向同事定向发送消息或派任务。若无需回复或后续行动，请将 reply 留空并结束本轮。",
+                    "instructions": "处理收到的可见消息。正式交办使用系统任务操作；必要时向同事定向发送消息。若无需回复或后续行动，请将 reply 留空并结束本轮。",
                     "stage": "discuss",
-                    "allowed_files": "可以使用项目 Agent 的工作目录与执行工具；写入项目外路径需由机器主人批准一次续跑。人类明确要求实现或跑实验时，管理员应分派 implement 任务，写明文件范围、验收与验证。",
+                    "allowed_files": "可以使用项目 Agent 的工作目录与执行工具；写入项目外路径需由机器主人批准一次续跑。",
                     "acceptance": "回复针对消息且遵守收件权限，任务分工明确",
                     "validation": "核对可见消息与任务契约；不要编造执行结果",
+                    "project_action_v2": True,
+                    "system_task_routing": routing,
                 }
                 from agent_harness.attachments import Attachments
 
@@ -332,7 +424,8 @@ class Coordinator:
                 self.store.emit_task_event(db, task)
             contract = json.loads(task["contract"])
             try:
-                work_execution = contract.get("project_work_execution_id")
+                with self.store.connect() as db:
+                    work_execution = self._work_execution(db, task)
                 if work_execution:
                     with self.store.connect() as db:
                         work_context = self._work().execution_context(db, work_execution)
@@ -449,6 +542,10 @@ class Coordinator:
             if not agent or not project:
                 return
             contract = json.loads(task["contract"])
+            if contract.get("project_action_v2") and (
+                contract.get("system_task_routing") or self._work_execution(db, task)
+            ):
+                return
             private = bool(contract.get("private_turn"))
             recipient = contract.get("reply_to") if private else None
             self.store.draft_message(db, project["id"], agent["id"], draft, recipient, task["id"])
@@ -520,6 +617,197 @@ class Coordinator:
             )
             return False, "这次建议未保存。请核对任务或草稿版本后再告诉我。"
 
+    def _complete_project_action(self, db, task, agent, project, source, policy, work_execution, answer, reply_to):
+        legacy = any(answer.get(key) is not None for key in ("work_proposal", "work_follow_up", "work_delivery"))
+        if not work_execution and not legacy and not answer.get("tasks") and answer.get("project_action") is None:
+            return False
+        store = self._work()
+        db.execute("SAVEPOINT system_project_action")
+        try:
+            if legacy or answer.get("tasks"):
+                raise ValueError("本轮使用了旧版任务回复格式，请更新接收端")
+            action = validate_action(answer.get("project_action"), policy)
+            if action is None:
+                if not work_execution:
+                    return False
+                self.store.post_permission_request(db, project["id"], agent, task, answer.get("request"))
+                self._publish_reply(db, task, "本轮尚未提交任务交付。", reply_to)
+                store.finish(db, work_execution, "waiting")
+            elif action["kind"] in {"create_draft", "revise_draft", "follow_up"}:
+                if not source:
+                    raise PermissionError("缺少有效的发起消息")
+                if action["kind"] == "follow_up":
+                    store.propose_follow_up(
+                        db, project, agent, source, action["work_id"], instruction=action["instruction"]
+                    )
+                else:
+                    spec = dict(action["spec"])
+                    if action["kind"] == "revise_draft":
+                        spec.update(draft_id=action["draft_id"], revision=action["base_revision"])
+                    store.propose(db, project, agent, source, spec)
+                self.store.clear_draft(db, task["id"])
+            elif action["kind"] == "wait":
+                self.store.post_permission_request(db, project["id"], agent, task, answer.get("request"))
+                message_id = self._publish_reply(db, task, action["question"].strip(), reply_to)
+                store.add_work_execution_card(db, work_execution, message_id, event="waiting")
+                store.finish(db, work_execution, "waiting")
+            elif action["kind"] == "deliver":
+                from agent_harness.attachments import Attachments
+
+                files = Attachments(self.store)
+                ids = files.validate_agent_reply(db, agent, task.get("job") or "", answer.get("attachment_ids", []))
+                summary = action["summary"].strip()
+                message_id = self._publish_reply(db, task, summary, reply_to)
+                if ids:
+                    files.bind(db, agent["id"], project["id"], message_id, ids)
+                store.finish(
+                    db,
+                    work_execution,
+                    "delivered",
+                    {
+                        "summary": summary,
+                        "links": action["links"],
+                        "message_id": message_id,
+                    },
+                )
+        except (ValueError, TypeError, PermissionError) as exc:
+            db.execute("ROLLBACK TO system_project_action")
+            self.store.log(
+                db, "scheduler", "rejected_system_project_action", {"task": task["id"], "reason": str(exc)[:500]}
+            )
+            notice = (
+                "本轮使用了旧版任务回复格式。请更新执行设备的接收端后重试。"
+                if legacy or answer.get("tasks")
+                else "这次任务操作未通过校验。请核对任务、草稿版本或交付内容后重试。"
+            )
+            self._publish_reply(db, task, notice, reply_to)
+            if work_execution:
+                store.finish(db, work_execution, "blocked")
+        finally:
+            db.execute("RELEASE system_project_action")
+        return True
+
+    def submit_project_tool(self, db, job, raw_action):
+        """Apply one scoped tool action in the authenticated receiver transaction."""
+        task = db.execute("SELECT * FROM tasks WHERE job=? AND agent_id=?", (job["id"], job["agent_id"])).fetchone()
+        agent = db.execute(
+            "SELECT a.* FROM agents a JOIN nodes n ON n.name=a.node AND n.owner_id=a.owner_id "
+            "JOIN project_users u ON u.project_id=a.project_id AND u.user_id=a.owner_id "
+            "WHERE a.id=? AND a.node=? AND a.enabled=1 AND a.configuring=0",
+            (job["agent_id"], job["node"]),
+        ).fetchone()
+        if not task or not agent or task["project_id"] != agent["project_id"]:
+            return {"ok": False, "error_code": "forbidden", "message": "当前设备没有本轮任务权限。"}
+        submitted = json.dumps(raw_action, ensure_ascii=False, sort_keys=True)
+        saved = db.execute("SELECT action,result FROM project_tool_results WHERE task_id=?", (task["id"],)).fetchone()
+        if saved:
+            if saved["action"] == submitted:
+                return json.loads(saved["result"])
+            return {"ok": False, "error_code": "already_submitted", "message": "本轮已经成功登记一次任务操作。"}
+        project = db.execute("SELECT * FROM projects WHERE id=?", (task["project_id"],)).fetchone()
+        if (
+            task["state"] not in {"starting", "running"}
+            or task["processed"]
+            or task["cancel_requested"]
+            or job["state"] not in {"claimed", "running"}
+            or job["cancel_requested"]
+            or not project
+            or project["paused"]
+        ):
+            return {"ok": False, "error_code": "turn_inactive", "message": "本轮任务已结束、暂停或取消。"}
+        task, agent, project = dict(task), dict(agent), dict(project)
+        original = json.loads(task["contract"])
+        assignment = json.loads(json.loads(job["request"])["prompt"])
+        snapshot = assignment.get("project_action_policy") or {"role": "chat"}
+        execution = self._work_execution(db, task)
+        live_policy, _, _, source = self._action_scope(db, task, agent, project, original, execution)
+        if not live_policy or live_policy["role"] != snapshot["role"]:
+            return {"ok": False, "error_code": "forbidden", "message": "本轮的任务操作权限已改变。"}
+        db.execute("SAVEPOINT project_tool")
+        try:
+            action = resolve_tool_action(raw_action, snapshot)
+            result = self._apply_project_tool(
+                db, task, agent, project, live_policy, source, execution, original, action
+            )
+            if result["ok"]:
+                db.execute(
+                    "INSERT INTO project_tool_results(task_id,action,result) VALUES(?,?,?)",
+                    (task["id"], submitted, json.dumps(result, ensure_ascii=False)),
+                )
+            return result
+        except (ValueError, TypeError, PermissionError) as exc:
+            db.execute("ROLLBACK TO project_tool")
+            return {
+                "ok": False,
+                "error_code": "forbidden" if isinstance(exc, PermissionError) else "invalid_arguments",
+                "message": str(exc)[:500],
+            }
+        finally:
+            db.execute("RELEASE project_tool")
+
+    def _apply_project_tool(self, db, task, agent, project, live_policy, source, execution, contract, action):
+        store = self._work()
+        kind = action["kind"]
+        result = {"ok": True, "action": kind}
+        if kind == "deliver":
+            active = db.execute(
+                "SELECT revision FROM project_work_executions WHERE id=? AND finished_at IS NULL", (execution,)
+            ).fetchone()
+            if not active:
+                raise PermissionError("本轮没有可提交交付的工作。")
+            summary = action["summary"].strip()
+            message_id = self._publish_reply(db, task, summary, self.store.task_reply_recipient(agent, contract))
+            work = store.finish(
+                db, execution, "delivered", {"summary": summary, "links": action["links"], "message_id": message_id}
+            )
+            return {**result, **work, "revision": active["revision"], "delivery_message_id": message_id}
+        if not source:
+            raise PermissionError("此轮没有定向给管理员的人类请求。")
+        self.store.require_member(db, project["id"], source["sender_id"])
+        if kind == "follow_up":
+            if action["work_id"] not in live_policy["works"]:
+                raise PermissionError("当前消息不能跟进此任务。")
+            item = store.propose_follow_up(
+                db, project, agent, source, action["work_id"], instruction=action["instruction"]
+            )
+        else:
+            if kind == "create_draft":
+                if live_policy["bound_draft"]:
+                    raise PermissionError("这条消息已绑定到草稿，只能修改该草稿。")
+                spec = action["spec"]
+            else:
+                current = store.draft_for_actor(db, source["sender_id"], project["id"], action["draft_id"])
+                if current["status"] != "draft" or current["revision"] != action["base_revision"]:
+                    return {
+                        "ok": False,
+                        "error_code": "revision_conflict",
+                        "id": current["id"],
+                        "current_revision": current["revision"],
+                        "status": current["status"],
+                        "message": "草稿已变化。请从最新草稿发起新的修订。",
+                    }
+                if not any(row["id"] == current["id"] for row in live_policy["drafts"]):
+                    raise PermissionError("当前消息不能修改此草稿。")
+                spec = {
+                    field: current[field]
+                    for field in (
+                        "title",
+                        "instructions",
+                        "deliverable",
+                        "acceptance",
+                        "validation",
+                        "agent",
+                        "stage",
+                        "allowed_files",
+                    )
+                }
+                spec.update(action["changes"], draft_id=current["id"], revision=current["revision"])
+            if spec["agent"] not in live_policy["agents"]:
+                raise PermissionError("负责 Agent 当前不可指派。")
+            item = store.propose(db, project, agent, source, spec)
+        self.store.clear_draft(db, task["id"])
+        return {**result, **{field: item[field] for field in ("id", "revision", "status")}}
+
     def process_completed(self, task_id):
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -531,8 +819,13 @@ class Coordinator:
             project = dict(db.execute("SELECT * FROM projects WHERE id=?", (task["project_id"],)).fetchone())
             db.execute("UPDATE tasks SET processed=1 WHERE id=?", (task_id,))
             original = json.loads(task["contract"])
-            work_execution = original.get("project_work_execution_id")
+            work_execution = self._work_execution(db, task)
+            policy, _, _, action_source = self._action_scope(db, task, agent, project, original, work_execution)
             reply_to = self.store.task_reply_recipient(agent, original)
+            if db.execute("SELECT 1 FROM project_tool_results WHERE task_id=?", (task_id,)).fetchone():
+                # The tool already committed the authoritative result and card.
+                self.store.clear_draft(db, task_id)
+                return
             private = bool(original.get("private_turn"))
             # Where this turn's final report lands. A task delegated by an agent
             # comes back to the delegator by default; the task itself may ask for
@@ -552,7 +845,7 @@ class Coordinator:
                     reply = ""
                 if task["state"] == "failed":
                     self.store.post_permission_request(db, project["id"], agent, task, (answer or {}).get("request"))
-                if reply:
+                if reply and not (policy and (work_execution or original.get("system_task_routing"))):
                     self._publish_reply(db, task, reply, reply_to)
                     notice = (
                         agent["name"]
@@ -597,11 +890,18 @@ class Coordinator:
                         raise ValueError("Invalid action list")
             except Exception:
                 # Plain reports remain auditable; never interpret commands or guessed JSON fragments.
-                message_id = self._publish_reply(db, task, (task["report"] or "")[:16000] or "无报告", reply_to)
+                report = (task["report"] or "")[:16000] or "无报告"
+                if policy and (work_execution or original.get("system_task_routing")):
+                    report = "执行端未返回可校验的任务回复，系统没有登记任务操作。"
+                message_id = self._publish_reply(db, task, report, reply_to)
                 if private and audience == "group":
                     self._notify_delegator(db, task, original, reply_to, message_id)
                 if work_execution:
                     self._work().finish(db, work_execution, "blocked")
+                return
+            if policy and self._complete_project_action(
+                db, task, agent, project, action_source, policy, work_execution, answer, reply_to
+            ):
                 return
             reply = answer.get("reply", "").strip()
             if work_execution and not reply and isinstance(answer.get("work_delivery"), dict):
@@ -613,8 +913,25 @@ class Coordinator:
             follow_up = answer.get("work_follow_up")
             if not work_execution and (proposal is not None or follow_up is not None):
                 saved, notice = self._apply_admin_work_action(db, task, project, agent, proposal, follow_up)
-                body = reply[:15000] + "\n\n" + notice if saved and reply else notice
+                body = (
+                    reply[:15000] + "\n\n" + notice
+                    if saved and reply and answer.get("work_delivery") is None
+                    else notice
+                )
                 self._publish_reply(db, task, body, reply_to)
+                return
+            if not work_execution and answer.get("work_delivery") is not None:
+                self.store.log(db, "scheduler", "rejected_unscoped_work_delivery", {"task": task_id})
+                self._publish_reply(db, task, "这轮是聊天回复，成果尚未登记。请从对应任务提交补充要求。", reply_to)
+                return
+            if (
+                work_execution
+                and answer.get("work_delivery") is None
+                and (proposal is not None or follow_up is not None)
+            ):
+                self.store.log(db, "scheduler", "rejected_scoped_work_routing", {"task": task_id})
+                self._publish_reply(db, task, "执行者这轮返回了派工操作，任务尚无新的交付。", reply_to)
+                self._work().finish(db, work_execution, "waiting")
                 return
             self.store.post_permission_request(db, project["id"], agent, task, answer.get("request"))
             from agent_harness.attachments import Attachments

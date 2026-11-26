@@ -157,7 +157,10 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
             shutil.copyfile(Path(__file__).parents[1] / "src" / "agent_harness" / name, root / name)
         shutil.copyfile(Path(__file__).parents[1] / "VERSION", root / "VERSION")
         (root / "projects" / "project").mkdir(parents=True)
-        write_json(root / "executor.json", {"warm_idle_seconds": 300})
+        write_json(
+            root / "executor.json",
+            {"warm_idle_seconds": 300, "models": [{"name": "gpt-5.6-sol", "executor": "codex"}]},
+        )
         return root
 
     def launch_record(self, root, token, generation):
@@ -669,7 +672,12 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
                         self.assertEqual(method, "turn/start")
                         self.assertEqual(params["sandboxPolicy"], sandbox)
                         self.assertEqual(params["approvalPolicy"], "never")
-                        self.assertIn("request", params["outputSchema"]["properties"])
+                        self.assertEqual(params["outputSchema"], worker.reply_schema())
+                        fields = params["outputSchema"]["properties"]
+                        self.assertIn("work_proposal", fields)
+                        self.assertIn("work_follow_up", fields)
+                        self.assertIn("work_delivery", fields)
+                        self.assertIn("request", fields)
                         state = read_json(path / "state.json")
                         thread = state["thread_id"]
                         self.assertEqual(thread, "thread")

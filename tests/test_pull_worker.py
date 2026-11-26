@@ -239,6 +239,92 @@ class PullWorkerTests(unittest.TestCase):
         self.assertEqual(json.loads(self.starts()[0]["prompt"])["allowed_files"], "No edits")
         self.assertEqual(self.reports[-1]["state"], "needs_review")
 
+    def test_project_tool_uses_task_mailbox_and_returns_hub_result(self):
+        self.local_state = "running"
+        self.jobs = [self.job("tool-turn")]
+        calls = []
+
+        def transport(_config, operation, payload):
+            if operation == "poll":
+                return {
+                    "jobs": self.jobs,
+                    "projects": [],
+                    "cancellations": [],
+                    "features": ["project_action_tools_v1"],
+                }
+            if operation == "project-tool":
+                calls.append(payload)
+                return {"ok": True, "id": "draft-1", "revision": 1, "status": "draft"}
+            self.reports.append(payload)
+            return {}
+
+        self.connector.transport = transport
+        self.connector.cycle()
+        receipt = read_json(self.connector.receipt_path("tool-turn"))
+        self.assertTrue(receipt["project_tools"])
+        task_dir = self.root / "jobs" / receipt["local_id"]
+        task_dir.mkdir(parents=True, exist_ok=True)
+        request = task_dir / ("pt-request-" + "a" * 32 + ".json")
+        write_json(request, {"action": {"kind": "create_draft", "title": "Smoke"}})
+
+        self.connector.cycle()
+
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "job_id": "tool-turn",
+                    "lease_id": "fixed-lease",
+                    "action": {"kind": "create_draft", "title": "Smoke"},
+                }
+            ],
+        )
+        self.assertEqual(
+            read_json(task_dir / ("pt-result-" + "a" * 32 + ".json")),
+            {"ok": True, "id": "draft-1", "revision": 1, "status": "draft"},
+        )
+
+    def test_project_tool_keeps_request_for_retry_and_skips_cancelled_task(self):
+        receipt = self.connector.accept(self.job("tool-retry"))
+        receipt.update(phase="running", project_tools=True)
+        task_dir = self.root / "jobs" / receipt["local_id"]
+        task_dir.mkdir(parents=True)
+        request = task_dir / ("pt-request-" + "b" * 32 + ".json")
+        write_json(request, {"action": {"kind": "create_draft"}})
+        attempts = []
+
+        def offline(_config, operation, payload):
+            if operation == "project-tool":
+                attempts.append(payload)
+                raise OSError("offline")
+            return {}
+
+        self.connector.transport = offline
+        self.connector._service_project_tools(receipt, False)
+        self.assertEqual(len(attempts), 1)
+        self.assertFalse((task_dir / ("pt-result-" + "b" * 32 + ".json")).exists())
+        self.connector._service_project_tools(receipt, True)
+        self.assertEqual(len(attempts), 1)
+
+    def test_project_tool_rejects_malformed_mailbox_request_with_tool_result(self):
+        receipt = self.connector.accept(self.job("tool-malformed"))
+        receipt.update(phase="running", project_tools=True)
+        task_dir = self.root / "jobs" / receipt["local_id"]
+        task_dir.mkdir(parents=True)
+        token = "c" * 32
+        write_json(task_dir / ("pt-request-" + token + ".json"), {"action": {}, "extra": True})
+
+        self.connector._service_project_tools(receipt, False)
+
+        self.assertEqual(
+            read_json(task_dir / ("pt-result-" + token + ".json")),
+            {
+                "ok": False,
+                "error_code": "invalid_request",
+                "message": "任务工具请求只能包含 action 对象",
+            },
+        )
+
     def test_implementation_handoff_supplies_the_canonical_allowed_files(self):
         self.connector.save_binding(dict(self.binding, stages=["implement"]))
         request = {

@@ -189,7 +189,12 @@ class PullBackend:
         ]
         return {
             "protocol": hub_advertisement(),
-            "features": ["device_file_transfers_v1", "agent_chat_attachments_v1", "agent_attachment_approval_v1"],
+            "features": [
+                "device_file_transfers_v1",
+                "agent_chat_attachments_v1",
+                "agent_attachment_approval_v1",
+                "project_action_tools_v1",
+            ],
             "owner_commands": commands,
             "node": device["node"],
             "projects": self._projects(db, device),
@@ -500,6 +505,20 @@ class PullBackend:
                 controls = OwnerBackend.__new__(OwnerBackend)
                 controls.store = self.store
                 return controls.report(db, device, data["id"], data["state"], data["result"])
+            if path == "/api/device/project-tool":
+                from agent_harness.coordinator import Coordinator
+
+                job = db.execute("SELECT * FROM pull_jobs WHERE id=?", (data.get("job_id"),)).fetchone()
+                if (
+                    not job
+                    or job["node"] != device["node"]
+                    or job["kind"] != "task"
+                    or not isinstance(data.get("lease_id"), str)
+                    or not hmac.compare_digest(data["lease_id"], job["lease_id"])
+                ):
+                    raise PermissionError("无效的任务租约")
+                result = Coordinator(self.store, self).submit_project_tool(db, job, data.get("action"))
+                return {"result": result}
             if path == "/api/device/report":
                 row = db.execute(
                     "SELECT * FROM pull_jobs WHERE id=?",

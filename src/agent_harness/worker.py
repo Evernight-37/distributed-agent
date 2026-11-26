@@ -789,9 +789,9 @@ If a foolship_reply tool is available, call it once with the structured result i
 - reply is the human-facing answer, without private reasoning or progress logs. messages are for distinct follow-ups only and never repeat reply.
 - attachments are project-relative paths: existing ordinary files inside the project, at most five, each at most 5 MB; never hidden files, credentials or paths outside it.
 - memory_notes only for durable facts from the public group; empty in a private turn.
-- work_proposal is only a draft for explicit human confirmation, never authorization to start work. Use it only as the project administrator in a human-directed turn. Include the complete title, instructions, deliverable, acceptance, validation, agent, allowed_files, stage, visibility and reference_message_ids. To revise a known draft include both its id and revision.
+- work_proposal is only a draft for explicit human confirmation, never authorization to start work. Use it only as the project administrator in a human-directed turn. Include the complete title, instructions, deliverable, acceptance, validation, agent, allowed_files, stage, visibility and reference_message_ids. For a new draft omit id and revision or set both to null. The Hub assigns them and reports whether the draft was saved. For a change use the existing id and current base revision supplied in the context. The Hub increments the version.
 - work_follow_up identifies one existing work item when the human explicitly asks for further action in that same scope. Use only an unambiguous work_id supplied in context; do not rewrite the human request or broaden the work.
-- work_delivery is only for a scheduled project-work execution. Report a concise summary and relevant links after doing the assigned work. Do not create unrelated tasks, executions or messages from that scoped turn.
+- work_delivery is only for a scheduled project-work execution. Put the actual requested result in work_delivery.summary even for a one-line result, use an empty links list when there are no links, and leave message_id null. The chat reply alone cannot register a delivery. Do not create unrelated tasks, executions or messages from that scoped turn.
 Use the tools your executor gives you. Your task stage describes its intent; the executor and machine owner decide what is permitted. You may spawn your own sub-agents and remain responsible for the combined result. If this task needs extra execution permissions, put request:{"reason": "..."} in the reply. The machine owner can approve one continuation of this task.
 Never reveal a human's private message outside its conversation. Do not read credentials or contact outside parties unless the task says so.
 """
@@ -799,6 +799,36 @@ Never reveal a human's private message outside its conversation. Do not read cre
 # Every resumed turn still needs the reply contract, even though the full rules
 # are only sent once per thread.
 REPLY_REMINDER = "Reply with one JSON object using the full structured reply contract; include work_proposal or work_delivery only when this turn calls for it."
+
+
+def reply_rules(policy, first_turn, *, project_tools=False):
+    base = GROUP_RULES if first_turn else REPLY_REMINDER
+    if policy is None:
+        return base
+    if first_turn:
+        lines = GROUP_RULES.splitlines()
+        lines[1] = (
+            "Use foolship_reply if offered. Otherwise return the structured final response defined by the runtime."
+        )
+        base = "\n".join(line for line in lines if not line.startswith("- work_"))
+    else:
+        base = "Return the structured final response defined by the runtime."
+    if project_tools:
+        return base + (
+            "\nUse the registered project tools to save a draft, revise a draft, follow up or submit a delivery. "
+            "For a text or link delivery call the project_task_deliver tool before the final response. "
+            "The final response cannot register text or link deliveries. "
+            "Use only tools offered for this turn. A revision supplies only the changed fields; the system chooses "
+            "the base version. Check the tool result, and correct invalid arguments before retrying. Once a tool "
+            "reports success, do not repeat the operation or its delivery in chat. Leave project_action null in "
+            "the final response except when the execution needs a human decision (wait) or is submitting "
+            "project files as attachments (deliver with attachments, using the file approval workflow)."
+        )
+    return base + (
+        "\nThis turn uses the strict project_action protocol. Return project_action as the role-specific "
+        "action or null; do not return work_proposal, work_follow_up or work_delivery. Legacy tasks must be empty. "
+        "For creation and delivery, provide content only; trusted systems assign mutable identifiers and versions."
+    )
 
 
 def unfenced_report(text):
@@ -830,7 +860,36 @@ def effective_model(thread_id, since=None):
     return executors.effective_model(executors.selected(ROOT), thread_id, since)
 
 
-def reply_schema():
+def final_action_schema(policy, project_tools=False):
+    from agent_harness.project_actions import action_schema
+
+    schema = action_schema(policy)
+    if not project_tools:
+        return schema
+    branches = [
+        branch
+        for branch in schema.get("anyOf", [schema])
+        if branch["type"] == "null" or branch["properties"]["kind"]["enum"][0] in {"wait", "deliver"}
+    ]
+    return branches[0] if len(branches) == 1 else {"anyOf": branches}
+
+
+def project_delivery_error(report):
+    """Keep text deliveries on the native tool path for tool-enabled turns."""
+    try:
+        answer = json.loads(report)
+    except (TypeError, ValueError):
+        return None
+    action = answer.get("project_action") if isinstance(answer, dict) else None
+    if not isinstance(action, dict) or action.get("kind") != "deliver":
+        return None
+    files = answer.get("attachments")
+    if not isinstance(files, list) or not files:
+        return "Text or link delivery must use project_task_deliver; final deliver requires file attachments."
+    return None
+
+
+def reply_schema(policy=None, *, project_tools=False):
     """Structured reply contract for managed group-chat turns."""
 
     def obj(properties):
@@ -844,12 +903,13 @@ def reply_schema():
     def array(properties):
         return {"type": "array", "items": obj(properties)}
 
-    proposal = {
-        "type": ["object", "null"],
-        "additionalProperties": False,
-        "properties": {
-            "id": {"type": "string"},
-            "revision": {"type": "integer"},
+    def optional_object(properties):
+        return {"anyOf": [obj(properties), {"type": "null"}]}
+
+    proposal = optional_object(
+        {
+            "id": {"type": ["string", "null"]},
+            "revision": {"type": ["integer", "null"]},
             **{
                 key: {"type": "string"}
                 for key in (
@@ -865,59 +925,54 @@ def reply_schema():
             "stage": {"type": "string", "enum": ["discuss", "implement"]},
             "visibility": {"type": "string", "enum": ["group", "private"]},
             "reference_message_ids": {"type": "array", "items": {"type": "integer"}},
-        },
-    }
-    delivery = {
-        "type": ["object", "null"],
-        "additionalProperties": False,
-        "properties": {
+        }
+    )
+    delivery = optional_object(
+        {
             "summary": {"type": "string"},
             "links": {"type": "array", "items": {"type": "string"}},
             "message_id": {"type": ["integer", "null"]},
-        },
-    }
-
-    return obj(
-        {
-            "reply": {"type": "string"},
-            "attachments": array({"path": {"type": "string"}}),
-            "done": {"type": "boolean"},
-            "messages": array(
-                {
-                    "recipient": {"type": ["string", "null"]},
-                    "body": {"type": "string"},
-                }
-            ),
-            "tasks": array(
-                {
-                    key: {"type": "string"}
-                    for key in (
-                        "agent",
-                        "title",
-                        "instructions",
-                        "stage",
-                        "allowed_files",
-                        "acceptance",
-                        "validation",
-                    )
-                }
-            ),
-            "executions": array({"template": {"type": "string"}}),
-            "memory_notes": {"type": "array", "items": {"type": "string"}},
-            "work_proposal": proposal,
-            "work_follow_up": {
-                "type": ["object", "null"],
-                "additionalProperties": False,
-                "properties": {"work_id": {"type": "string"}},
-            },
-            "work_delivery": delivery,
-            # A request the human answers with /allow or /deny.
-            "request": {
-                "type": "object",
-                "properties": {"reason": {"type": "string"}, "scope": {"type": "string"}},
-            },
         }
     )
+
+    properties = {
+        "reply": {"type": "string"},
+        "attachments": array({"path": {"type": "string"}}),
+        "done": {"type": "boolean"},
+        "messages": array(
+            {
+                "recipient": {"type": ["string", "null"]},
+                "body": {"type": "string"},
+            }
+        ),
+        "tasks": array(
+            {
+                key: {"type": "string"}
+                for key in (
+                    "agent",
+                    "title",
+                    "instructions",
+                    "stage",
+                    "allowed_files",
+                    "acceptance",
+                    "validation",
+                )
+            }
+        ),
+        "executions": array({"template": {"type": "string"}}),
+        "memory_notes": {"type": "array", "items": {"type": "string"}},
+        "work_proposal": proposal,
+        "work_follow_up": optional_object({"work_id": {"type": "string"}}),
+        "work_delivery": delivery,
+        # A request the human answers with /allow or /deny.
+        "request": optional_object({"reason": {"type": "string"}, "scope": {"type": ["string", "null"]}}),
+    }
+    if policy is not None:
+        properties["tasks"] = {"type": "array", "items": properties["tasks"]["items"], "maxItems": 0}
+        for legacy in ("work_proposal", "work_follow_up", "work_delivery"):
+            properties.pop(legacy)
+        properties["project_action"] = final_action_schema(policy, project_tools)
+    return obj(properties)
 
 
 FOOLSHIP_REPLY_JS = """\
@@ -1005,6 +1060,161 @@ export function apply(ctx, config) {
 """
 
 
+PROJECT_TOOLS_JS = """
+function checkToolInput(value, schema, path = "参数") {
+  if (schema.type !== "object") {
+    return matchesAction(value, schema) ? null : path + " 的值不符合本轮要求";
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return path + " 必须为对象";
+  const keys = Object.keys(value);
+  for (const key of keys) {
+    if (!Object.hasOwn(schema.properties, key)) return path + " 不接受字段 " + key;
+  }
+  for (const key of schema.required) {
+    if (!Object.hasOwn(value, key)) return "缺少字段 " + path + "." + key;
+  }
+  if (keys.length < (schema.minProperties || 0)) return path + " 至少需要一个修改字段";
+  for (const key of keys) {
+    const error = checkToolInput(value[key], schema.properties[key], path + "." + key);
+    if (error) return error;
+  }
+  return null;
+}
+
+function registerProjectTools(ctx, target) {
+  for (const {name, description, inputSchema, kind} of projectTools) {
+    ctx.tools.register({
+      name,
+      description,
+      parameters: inputSchema.properties,
+      output: {
+        schema: {
+          type: "object",
+          properties: {
+            ok: {type: "boolean"}, id: {type: "string"}, revision: {type: "integer"},
+            status: {type: "string"}, action: {type: "string"}, message: {type: "string"},
+            error_code: {type: "string"}, current_revision: {type: "integer"},
+            delivery_message_id: {type: "integer"},
+          },
+        },
+        render: result => [{type: "text", text: JSON.stringify(result)}],
+      },
+      async execute(args) {
+        const message = checkToolInput(args, inputSchema);
+        if (message) return {ok: false, error_code: "invalid_arguments", message};
+        const {dirname, join} = await import("node:path");
+        const {randomUUID} = await import("node:crypto");
+        const {writeFile, rename, readFile, rm} = await import("node:fs/promises");
+        const id = randomUUID().replace(/-/g, "");
+        const request = join(dirname(target), "pt-request-" + id + ".json");
+        const result = join(dirname(target), "pt-result-" + id + ".json");
+        const temporary = request + ".tmp";
+        try {
+          await writeFile(temporary, JSON.stringify({action: {kind, ...args}}), {flag: "wx"});
+          await rename(temporary, request);
+          for (let attempt = 0; attempt < 180; attempt++) {
+            try {
+              return JSON.parse(await readFile(result, "utf8"));
+            } catch (error) {
+              if (error.code !== "ENOENT") throw error;
+            }
+            await new Promise(resolve => setTimeout(resolve, 250));
+          }
+          return {ok: false, error_code: "result_unconfirmed", message: "未收到 Hub 回执。可用相同参数重试。"};
+        } finally {
+          await rm(temporary, {force: true});
+          await rm(request, {force: true});
+          await rm(result, {force: true});
+        }
+      },
+    });
+  }
+}
+"""
+
+
+def invoke_project_tool(path, action):
+    """Ask the enrolled receiver to submit an action and await its Hub receipt."""
+    path = Path(path)
+    request_id = uuid.uuid4().hex
+    request = path / f"pt-request-{request_id}.json"
+    result = path / f"pt-result-{request_id}.json"
+    try:
+        write_json(request, {"action": action})
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            value = read_json(result, tolerant=True)
+            if isinstance(value, dict) and type(value.get("ok")) is bool:
+                return value
+            if (path / "cancel.json").exists():
+                break
+            time.sleep(0.25)
+        return {"ok": False, "error_code": "result_unconfirmed", "message": "未收到 Hub 回执。可用相同参数重试。"}
+    finally:
+        request.unlink(missing_ok=True)
+        result.unlink(missing_ok=True)
+
+
+def foolship_reply_js(policy=None, *, project_tools=False):
+    """Render the DSH tool with the trusted turn policy enforced at execution."""
+    if policy is None:
+        return FOOLSHIP_REPLY_JS
+    schema = json.dumps(final_action_schema(policy, project_tools), ensure_ascii=False, separators=(",", ":"))
+    helper = f"""
+const projectActionSchema = {schema};
+function matchesAction(value, schema) {{
+  if (schema.anyOf) return schema.anyOf.some((part) => matchesAction(value, part));
+  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+  return types.some((type) => {{
+    if (schema.enum && !schema.enum.includes(value)) return false;
+    if (type === "null") return value === null;
+    if (type === "string") return typeof value === "string" && value.length <= 16000;
+    if (type === "integer") return Number.isInteger(value) && value > 0 && value < 2 ** 63;
+    if (type === "array") return Array.isArray(value) && value.length <= 30 && value.every((v) => matchesAction(v, schema.items));
+    if (type !== "object" || !value || Array.isArray(value) || typeof value !== "object") return false;
+    const keys = Object.keys(value); const expected = schema.required || Object.keys(schema.properties || {{}});
+    return keys.length === expected.length && expected.every((key) => keys.includes(key) && matchesAction(value[key], schema.properties[key]));
+  }});
+}}
+"""
+    rendered = FOOLSHIP_REPLY_JS.replace(
+        'export const inject = ["tools"];', 'export const inject = ["tools"];\n' + helper
+    )
+    start = rendered.index("      work_proposal: {")
+    end = rendered.index("      request: {", start)
+    rendered = rendered[:start] + rendered[end:]
+    rendered = rendered.replace("      request: {", "      project_action: projectActionSchema,\n      request: {")
+    rendered = rendered.replace('text: "reply delivered"', 'text: "Reply submitted for Hub validation"')
+    rendered = rendered.replace(
+        'writeFileSync(target, JSON.stringify(args && typeof args === "object" ? args : {}), "utf8");',
+        'writeFileSync(target, JSON.stringify(args), { encoding: "utf8", flag: "wx" });',
+    )
+    rendered = rendered.replace(
+        '      const { writeFileSync } = await import("node:fs");',
+        '      if (!args || !Object.prototype.hasOwnProperty.call(args, "project_action") || !matchesAction(args.project_action, projectActionSchema)) throw new Error("project_action is not allowed for this turn");\n'
+        '      if (["work_proposal", "work_follow_up", "work_delivery"].some((key) => Object.prototype.hasOwnProperty.call(args, key))) throw new Error("legacy project action is not allowed for this turn");\n'
+        '      if (Array.isArray(args.tasks) && args.tasks.length) throw new Error("legacy tasks are not allowed for this turn");\n'
+        '      const { writeFileSync } = await import("node:fs");',
+    )
+    if project_tools:
+        from agent_harness.project_actions import PROJECT_TOOLS, tool_specs
+
+        definitions = [{**spec, "kind": PROJECT_TOOLS[spec["name"]][0]} for spec in tool_specs(policy)]
+        rendered = rendered.replace(
+            "  ctx.tools.register({",
+            "  registerProjectTools(ctx, target);\n  ctx.tools.register({",
+            1,
+        )
+        rendered = rendered.replace(
+            '      const { writeFileSync } = await import("node:fs");',
+            '      if (args.project_action?.kind === "deliver" && (!Array.isArray(args.attachments) || !args.attachments.length)) throw new Error("Use project_task_deliver for text or links. Final deliver requires file attachments.");\n'
+            '      const { writeFileSync } = await import("node:fs");',
+            1,
+        )
+        rendered += "\nconst projectTools = " + json.dumps(definitions, ensure_ascii=False) + ";\n" + PROJECT_TOOLS_JS
+    return rendered
+
+
 def contract_spec(config):
     """The turn's structured context.
 
@@ -1030,6 +1240,12 @@ def contract_spec(config):
             merged.update({key: value for key, value in spec.items() if key != "objective"})
             return merged
     return spec
+
+
+def project_action_policy(config):
+    from agent_harness.project_actions import action_policy
+
+    return action_policy(contract_spec(config))
 
 
 def materialize_inbound(config, remote):
@@ -1076,8 +1292,18 @@ def run(job):
         if not login["logged_in"]:
             raise RuntimeError(login["login_error"])
         kind_hint = executors.kind_for(ROOT, config["project"].get("model"))
+        policy = project_action_policy(config)
+        from agent_harness.project_actions import tool_specs
+
+        project_tools = (
+            contract_spec(config).get("project_tools") is True
+            and not config.get("strict_guard")
+            and bool(tool_specs(policy))
+        )
         if kind_hint == executors.DSH:
-            (path / "foolship_reply.js").write_text(FOOLSHIP_REPLY_JS, encoding="utf-8")
+            (path / "foolship_reply.js").write_text(
+                foolship_reply_js(policy, project_tools=project_tools), encoding="utf-8"
+            )
         command_project = dict(config["project"])
         if command_project.get("local_control"):
             command_project["_stage"] = json.loads(config["prompt"]).get("stage", "discuss")
@@ -1094,7 +1320,7 @@ def run(job):
         schema_path = None
         if managed and kind == executors.CODEX:
             schema_path = path / "reply-schema.json"
-            write_json(schema_path, reply_schema())
+            write_json(schema_path, reply_schema(policy, project_tools=project_tools))
         command = executors.command(
             ROOT,
             exe,
@@ -1104,13 +1330,13 @@ def run(job):
             managed=managed,
             schema_path=schema_path,
             kind=kind,
+            **({"project_tools": True} if project_tools else {}),
         )
-        rules = GROUP_RULES if managed else PEER_RULES
         # The executor resumes a thread, so its history already holds the rules.
         # Re-sending them every turn repeats ~1k tokens and dilutes attention;
         # only the reply contract has to stay in front of the model each time.
         first_turn = not config.get("thread_id")
-        sections = [rules if first_turn else REPLY_REMINDER]
+        sections = [reply_rules(policy, first_turn, project_tools=project_tools) if managed else PEER_RULES]
         try:
             inbound = materialize_inbound(config, config["project"]["remote_path"])
         except Exception:
@@ -1271,8 +1497,25 @@ def run(job):
                     structured = json.dumps(payload, ensure_ascii=False)
                     (path / "report.txt").write_text(structured, encoding="utf-8")
                     reports.append(structured)
+            elif policy is not None and kind == executors.DSH and reports:
+                # Only the registered tool is trusted to carry a project action.
+                try:
+                    fallback = json.loads(reports[-1])
+                except (TypeError, ValueError):
+                    fallback = None
+                if isinstance(fallback, dict) and "project_action" in fallback:
+                    fallback.pop("project_action", None)
+                    reports[-1] = json.dumps(fallback, ensure_ascii=False)
+                    (path / "report.txt").write_text(reports[-1], encoding="utf-8")
             if state["status"] == "needs_review" and not reports:
                 state.update(status="failed", error="No report returned")
+            if (
+                state["status"] == "needs_review"
+                and project_tools
+                and reports
+                and (error := project_delivery_error(reports[-1]))
+            ):
+                state.update(status="failed", error=error)
             if state.get("effective_model") and state["effective_model"] != state["requested_model"]:
                 state.update(
                     status="failed",

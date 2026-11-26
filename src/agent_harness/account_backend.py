@@ -120,6 +120,7 @@ class AccountBackend:
                     "addressed_wake_v1",
                     "task_trace_v1",
                     "project_work_v1",
+                    "project_work_cards_v1",
                     "anchored_reply_draft",
                     "conversation_privacy_v2",
                     "service_host_owner_v1",
@@ -671,6 +672,7 @@ class AccountBackend:
                 user,
                 p.get("cursor", 0),
                 p.get("wait_seconds", 0),
+                attention=p.get("attention", False) if delegate_scopes is None else False,
             )
         if op == "service-links":
             with self.store.connect() as db:
@@ -805,7 +807,12 @@ class AccountBackend:
 
             result["project_memory"] = ProjectMemory(self.store).snapshot(user, project)
             with self.store.connect() as db:
-                result["work"] = ProjectWork(self.store).view(db, user, project)
+                project_work = ProjectWork(self.store)
+                result["work"] = project_work.view(db, user, project)
+                cards = project_work.project_cards(db, user, project, result["messages"])
+                for message in result["messages"]:
+                    if message["id"] in cards:
+                        message["project_work_card"] = cards[message["id"]]
                 if p.get("visit") is True:
                     db.execute(
                         "INSERT INTO account_project_visits VALUES(?,?,?) ON CONFLICT(account_id,project_id) DO UPDATE SET visited=excluded.visited",

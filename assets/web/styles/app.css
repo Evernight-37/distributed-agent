@@ -1411,6 +1411,69 @@ button.primary:hover {
   font-size: 13px;
   line-height: 1.58;
 }
+.project-work-card {
+  display: grid;
+  gap: 9px;
+  margin: 7px 0 4px;
+  padding: 13px 14px;
+  border: 1px solid #d8ddda;
+  border-left: 3px solid #586b63;
+  border-radius: 10px;
+  background: #fafbf9;
+  font-size: 12px;
+}
+.project-work-card.draft {
+  border-left-color: #9a783d;
+  background: #fdfbf6;
+}
+.work-card-message > .message-text:empty {
+  display: none;
+}
+.project-work-card-kicker {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.project-work-card-title {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.project-work-card-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 13px;
+  color: var(--muted);
+}
+.project-work-card-field {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+.project-work-card-label {
+  color: var(--muted);
+  font-weight: 600;
+}
+.project-work-card-field p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.project-work-card-action {
+  justify-self: start;
+}
+.side-section .project-work-card {
+  padding: 10px;
+}
+.side-section .project-work-card-field {
+  display: block;
+}
+.side-section .project-work-card-label {
+  display: block;
+  margin-bottom: 2px;
+}
 .composer {
   display: block;
   padding: 11px 16px 13px;

@@ -106,6 +106,7 @@ class AppBridge:
         )
         self.allow_window_close = False
         self.on_background = None
+        self.tray_attention = None
         self.broker_proxy = read_json(self.root / "broker-network.json", {}).get("proxy")
 
     def _profiles(self):
@@ -424,13 +425,17 @@ class AppBridge:
         )
         if "event_cursor_v1" not in set(challenge.get("features", [])):
             raise RuntimeError("协作服务尚不支持实时事件")
+        attention = getattr(self, "tray_attention", None)
+        payload = {"cursor": cursor, "wait_seconds": wait_seconds}
+        if attention is not None:
+            payload["attention"] = True
         envelope = sign_envelope(
             identity,
             {
                 "domain": "harness-account-request-v1",
                 "nonce": challenge["nonce"],
                 "operation": "events-wait",
-                "payload": {"cursor": cursor, "wait_seconds": wait_seconds},
+                "payload": payload,
             },
         )
         result = self._post(
@@ -440,6 +445,8 @@ class AppBridge:
         )
         if not isinstance(result, dict) or not isinstance(result.get("cursor"), int):
             raise RuntimeError("协作服务返回了无效事件游标")
+        if attention is not None and self.tray_attention is attention and "attention" in result:
+            attention(identity.get("account_id"), server, result["cursor"], result["attention"])
         return result
 
     def _sync_event_pump(self):

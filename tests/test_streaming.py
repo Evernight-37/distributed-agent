@@ -54,6 +54,11 @@ class StreamingTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def restore_legacy_contract(self):
+        # An upgrade can still receive results from turns queued on the previous version.
+        with self.store.connect() as db:
+            db.execute("UPDATE tasks SET contract=json_remove(contract,'$.project_action_v2','$.system_task_routing')")
+
     def test_app_server_reports_release_version(self):
         expected = Path(__file__).resolve().parents[1].joinpath("VERSION").read_text(encoding="utf-8").strip()
         self.assertEqual(application_version(), expected)
@@ -61,6 +66,7 @@ class StreamingTests(unittest.TestCase):
     def test_administrator_self_assignment_reports_back_to_the_group(self):
         self.store.message(self.owner, self.project, "请修改 README.md 中的项目说明", mention_agent_id="admin")
         self.coordinator.wake_messages()
+        self.restore_legacy_contract()
         self.coordinator.dispatch()
         self.backend.result = {
             "status": "needs_review",
@@ -103,7 +109,7 @@ class StreamingTests(unittest.TestCase):
         self.assertIsNone(view["messages"][-1]["recipient_id"])
 
     def test_reply_stream_stays_above_midturn_human_message(self):
-        self.store.message(self.owner, self.project, "first", mention_agent_id="admin")
+        self.store.message(self.owner, self.project, "first", mention_agent_id="peer")
         self.coordinator.wake_messages()
         self.coordinator.dispatch()
         self.store.message(self.owner, self.project, "second")
@@ -114,7 +120,7 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual([m["body"] for m in shown], ["first", "partial", "second"])
         draft_id = shown[1]["id"]
         self.assertEqual(
-            [m["body"] for m in self.store.visible_messages("peer") if m["sender_type"] != "system"],
+            [m["body"] for m in self.store.visible_messages("admin") if m["sender_type"] != "system"],
             ["first", "second"],
         )
         self.backend.result = {
@@ -277,6 +283,7 @@ class StreamingTests(unittest.TestCase):
     def test_delegation_preserves_pending_private_message_and_routes_public_result(self):
         request = self.store.message(self.owner, self.project, "Please delegate", mention_agent_id="admin")
         self.coordinator.wake_messages()
+        self.restore_legacy_contract()
         self.coordinator.dispatch()
         with self.store.connect() as db:
             private = self.store._message(db, self.project, "admin", "agent", "Separate question", "peer")

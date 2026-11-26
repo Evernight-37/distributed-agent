@@ -26,7 +26,7 @@ class NativeCloseTests(unittest.TestCase):
         window.destroy.assert_not_called()
 
     def test_missing_javascript_closes_window_and_keeps_services(self):
-        window, bridge = mock.Mock(), mock.Mock()
+        window, bridge = mock.Mock(), mock.Mock(on_background=None)
         bridge.allow_window_close = False
         window.evaluate_js.return_value = False
         self.assertFalse(request_close_dialog(window, bridge))
@@ -34,12 +34,21 @@ class NativeCloseTests(unittest.TestCase):
         window.destroy.assert_called_once()
 
     def test_evaluate_failure_has_same_safe_background_fallback(self):
-        window, bridge = mock.Mock(), mock.Mock()
+        window, bridge = mock.Mock(), mock.Mock(on_background=None)
         bridge.allow_window_close = False
         window.evaluate_js.side_effect = RuntimeError("webview unavailable")
         self.assertFalse(request_close_dialog(window, bridge))
         self.assertTrue(bridge.allow_window_close)
         window.destroy.assert_called_once()
+
+    def test_missing_javascript_hides_window_when_tray_is_available(self):
+        window, bridge = mock.Mock(), mock.Mock()
+        bridge.allow_window_close = False
+        window.evaluate_js.return_value = False
+        self.assertTrue(request_close_dialog(window, bridge))
+        bridge.on_background.assert_called_once()
+        self.assertFalse(bridge.allow_window_close)
+        window.destroy.assert_not_called()
 
 
 class ReleaseMetadataTests(unittest.TestCase):

@@ -30,6 +30,20 @@ class InstanceTests(unittest.TestCase):
             first.release()
             self.assertFalse((root / "instance.json").exists())
 
+    def test_tray_launch_leaves_the_running_window_in_its_current_state(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            shown = []
+            first = Instance(root)
+            try:
+                self.assertTrue(first.claim(on_show=lambda: shown.append(True)))
+                self.assertFalse(Instance(root).claim(show_existing=False))
+                self.assertEqual(shown, [])
+                self.assertFalse(Instance(root).claim())
+                self.assertEqual(shown, [True])
+            finally:
+                first.release()
+
     def test_a_stale_record_does_not_block_a_new_start(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -32,11 +32,14 @@ class Regressions(unittest.TestCase):
         }
         task = self.store.task(self.owner["id"], data)["id"]
         with self.store.connect() as db:
-            db.execute("UPDATE tasks SET state=?,report=? WHERE id=?", (state, report, task))
+            db.execute(
+                "UPDATE tasks SET state=?,report=?,contract=json_remove(contract,'$.project_action_v2') WHERE id=?",
+                (state, report, task),
+            )
         return task
 
     def test_private_conversation_can_delegate_a_task(self):
-        """A human DM to the admin must be able to hand work out privately."""
+        """A private delegation already underway at upgrade retains its original audience."""
         a, b = self.agents()
         delegation = {
             "agent": b,
