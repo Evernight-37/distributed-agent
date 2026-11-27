@@ -69,6 +69,7 @@ def main():
                         },
                     }
                 ),
+                json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}),
                 json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
             )
         )
@@ -94,7 +95,9 @@ def main():
     if result.returncode:
         raise RuntimeError("fresh MCP failed: " + result.stderr[-500:])
     responses = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-    tools = next(item for item in responses if item.get("id") == 2)["result"]["tools"]
+    if [item.get("id") for item in responses] != [1, 2]:
+        raise RuntimeError("unexpected MCP response IDs from the packaged runtime")
+    tools = responses[1]["result"]["tools"]
     expected_tools = {
         "harness_status",
         "harness_projects_list",

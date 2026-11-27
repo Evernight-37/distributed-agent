@@ -1,3 +1,4 @@
+import os
 import tempfile
 import time
 import unittest
@@ -221,22 +222,27 @@ class OwnerTests(unittest.TestCase):
                 )
             return self.apply_owner_command("project-agent-create", data)
 
+        checkout = self.workspace / "专属目录 with spaces"
+        checkout.mkdir()
         roots = []
         for identity, mode, path in (
             ("a", "dedicated", None),
             ("b", "dedicated", None),
-            ("c", "custom", self.workspace),
+            ("c", "custom", checkout),
         ):
             response = create(identity, mode, path)
             self.assertEqual(response["state"], "applied", response)
             record = self.connector.root / "projects" / response["result"]["backend_project"] / "project.json"
             roots.append((record, Path(read_json(record)["remote_path"])))
-        self.assertEqual(roots[-1][1], self.workspace)
+        self.assertEqual(roots[-1][1], checkout)
         self.assertEqual(len({path for _, path in roots}), 3)
         self.assertTrue(all(path.is_dir() for _, path in roots))
-        self.assertEqual(create("duplicate", "custom", self.workspace)["state"], "failed")
+        self.assertEqual(create("duplicate", "custom", checkout)["state"], "failed")
         self.assertEqual(create("missing", "custom", self.workspace / "absent")["state"], "failed")
         self.assertEqual(create("relative", "custom", "relative/path")["state"], "failed")
+        if os.name == "nt":
+            self.assertEqual(create("drive-relative", "custom", checkout.drive + checkout.name)["state"], "failed")
+            self.assertEqual(create("drive-root", "custom", checkout.anchor)["state"], "failed")
         self.assertFalse(self.control._workspaces())
         with self.store.connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM project_workspaces").fetchone()[0], 0)
