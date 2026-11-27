@@ -348,6 +348,35 @@ class ProductionFlow(unittest.TestCase):
                 self.assertEqual(call(a, "project", {"id": second})["members"][0]["id"], beta["id"])
                 with self.assertRaisesRegex(ValueError, "existing absolute directory"):
                     OwnerControl(connector)._configure_workspace({"project_id": pid, "path": str(root / "missing")})
+                checkout = root / "remote-checkout"
+                checkout.mkdir()
+                for mode in ("custom", "dedicated"):
+                    fields = {"workspace_path": str(checkout)} if mode == "custom" else {}
+                    call(
+                        a,
+                        "project-agent-create",
+                        {
+                            **alpha_settings,
+                            "project": pid,
+                            "node": remote,
+                            "name": mode,
+                            "workspace_mode": mode,
+                            **fields,
+                        },
+                    )
+                connector.cycle()
+                connector.cycle()
+                members = call(a, "project", {"id": pid})["members"]
+                paths = {
+                    m["name"]: Path(
+                        read_json(connector.root / "projects" / m["backend_project"] / "project.json")["remote_path"]
+                    )
+                    for m in members
+                }
+                self.assertEqual({m["agent_workspace_mode"] for m in members}, {"custom", "dedicated"})
+                self.assertEqual(paths["custom"], checkout.resolve())
+                self.assertTrue(paths["dedicated"].is_dir())
+                self.assertNotEqual(paths["dedicated"], paths["custom"])
                 call(a, "device-revoke", {"id": b.profile["node"]})
                 self.assertFalse(b.invoke("dashboard")["ok"])
                 with self.assertRaises(Exception):

@@ -201,6 +201,52 @@ class OwnerTests(unittest.TestCase):
         self.assertFalse(current["enabled"])
         self.assertEqual(read_json(directory / "session.json"), {"thread_id": "original-session"})
 
+    def test_agent_workspaces_are_private_and_survive_shared_workspace_changes(self):
+        from agent_harness import sealing
+
+        pair = sealing.generate_keypair()
+        self.connector.config["encrypt_key"] = pair
+
+        def create(identity, mode, path=None):
+            data = dict(
+                id=identity,
+                project_id="p1",
+                name="Agent",
+                settings={"model": "gpt-5.6-sol", "effort": "low"},
+                workspace_mode=mode,
+            )
+            if path is not None:
+                data["sealed_workspace"] = sealing.seal(
+                    pair["public_key"], {"path": str(path)}, {"target": "n1", "id": identity, "project": "p1"}
+                )
+            return self.apply_owner_command("project-agent-create", data)
+
+        roots = []
+        for identity, mode, path in (
+            ("a", "dedicated", None),
+            ("b", "dedicated", None),
+            ("c", "custom", self.workspace),
+        ):
+            response = create(identity, mode, path)
+            self.assertEqual(response["state"], "applied", response)
+            record = self.connector.root / "projects" / response["result"]["backend_project"] / "project.json"
+            roots.append((record, Path(read_json(record)["remote_path"])))
+        self.assertEqual(roots[-1][1], self.workspace)
+        self.assertEqual(len({path for _, path in roots}), 3)
+        self.assertTrue(all(path.is_dir() for _, path in roots))
+        self.assertEqual(create("duplicate", "custom", self.workspace)["state"], "failed")
+        self.assertEqual(create("missing", "custom", self.workspace / "absent")["state"], "failed")
+        self.assertEqual(create("relative", "custom", "relative/path")["state"], "failed")
+        self.assertFalse(self.control._workspaces())
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM project_workspaces").fetchone()[0], 0)
+            for row in db.execute("SELECT envelope,result FROM owner_commands"):
+                self.assertNotIn(str(self.workspace), str(tuple(row)))
+        self.assertEqual(self.configure_default_workspace()["state"], "applied")
+        self.assertEqual(self.configure_workspace(path=self.root)["state"], "applied")
+        for record, path in roots:
+            self.assertEqual(Path(read_json(record)["remote_path"]), path)
+
     def test_native_project_agent_effort_is_validated_on_the_receiver(self):
         self.configure_workspace()
         settings = {"model": "deepseek-flash", "effort": "xhigh", "enabled": True, "model_config_version": 2}
