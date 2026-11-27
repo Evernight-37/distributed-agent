@@ -92,6 +92,7 @@ def run_stdio(backend: Any, stdin: TextIO | None = None, stdout: TextIO | None =
         if not line.strip():
             continue
         request_id = None
+        notification = False
         try:
             request = json.loads(line)
             if not isinstance(request, dict):
@@ -100,15 +101,20 @@ def run_stdio(backend: Any, stdin: TextIO | None = None, stdout: TextIO | None =
             method = request.get("method")
             if not isinstance(method, str):
                 raise JsonRpcError(-32600, "Invalid Request")
-            if "id" not in request:
-                _dispatch(backend, method, request.get("params", {}))
-                continue
+            notification = "id" not in request
             result = _dispatch(backend, method, request.get("params", {}))
-            sink.write(_response(request_id, result=result) + "\n")
+            if notification:
+                continue
+            response = _response(request_id, result=result)
         except json.JSONDecodeError as exc:
-            sink.write(_error(None, -32700, "Parse error", str(exc)) + "\n")
+            response = _error(None, -32700, "Parse error", str(exc))
         except JsonRpcError as exc:
-            sink.write(_error(request_id, exc.code, exc.message, exc.data) + "\n")
+            if notification:
+                continue
+            response = _error(request_id, exc.code, exc.message, exc.data)
         except Exception as exc:
-            sink.write(_error(request_id, -32603, "Internal error", str(exc)) + "\n")
+            if notification:
+                continue
+            response = _error(request_id, -32603, "Internal error", str(exc))
+        sink.write(response + "\n")
         sink.flush()

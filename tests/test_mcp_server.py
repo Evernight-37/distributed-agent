@@ -77,6 +77,14 @@ class McpServerTests(unittest.TestCase):
     def test_notification_has_no_response(self):
         self.assertEqual(run({"jsonrpc": "2.0", "method": "notifications/initialized"}), [])
 
+    def test_cancel_and_unknown_notifications_leave_only_the_ping_response(self):
+        results = run(
+            {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}},
+            {"jsonrpc": "2.0", "method": "notifications/unknown"},
+            {"jsonrpc": "2.0", "method": "ping", "id": 2},
+        )
+        self.assertEqual(results, [{"jsonrpc": "2.0", "result": {}, "id": 2}])
+
     def test_continuous_requests_and_ping(self):
         results = run(
             {"jsonrpc": "2.0", "id": 6, "method": "ping"},
