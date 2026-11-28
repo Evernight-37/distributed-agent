@@ -389,6 +389,23 @@ class DesktopOwnerActions:
                 if node == bridge.profile["node"] and server not in bridge._attached_services():
                     raise ValueError("请先把本机接收端接入该项目的协作服务")
                 payload["id"] = "project-agent-" + secrets.token_hex(16)
+                mode = data.get("workspace_mode")
+                if mode:
+                    payload["workspace_mode"] = mode
+                if mode == "custom":
+                    from agent_harness import sealing
+
+                    path = data.get("workspace_path")
+                    if not path or not path.strip():
+                        raise ValueError("请输入执行机器上的绝对路径")
+                    public = bridge._device_sealing_key(node, server)
+                    if not public:
+                        raise ValueError("请先将执行机器上线以获取目录加密密钥")
+                    payload["sealed_workspace"] = sealing.seal(
+                        public, {"path": path}, {"target": node, "id": payload["id"], "project": project}
+                    )
+                elif "workspace_path" in data:
+                    raise ValueError("请先选择自定义工作目录")
             else:
                 view = bridge._rpc("project", {"project": project}, server=server)
                 member = next((agent for agent in view.get("members", []) if agent["id"] == data["agent_id"]), None)

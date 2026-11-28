@@ -48,6 +48,16 @@ def project_agent_target(action, data):
     fields = {"project_id", "id"} if create else {"project_id", "agent_id", "backend_project"}
     if action != "project-agent-delete":
         fields |= {"name", "settings"}
+    if create and "workspace_mode" in data:
+        fields.add("workspace_mode")
+        mode = data["workspace_mode"]
+        if mode == "custom":
+            fields.add("sealed_workspace")
+            encrypted = data.get("sealed_workspace")
+            if not isinstance(encrypted, dict) or set(encrypted) != {"version", "epk", "nonce", "ciphertext"}:
+                raise ValueError("无效的加密工作目录")
+        elif mode != "dedicated":
+            raise ValueError("无效的 Agent 工作目录模式")
     if set(data) != fields:
         raise ValueError("无效的项目 Agent 操作参数")
     project = data["project_id"]
@@ -371,7 +381,7 @@ class OwnerBackend:
                         raise ValueError("设备报告的项目 Agent 配置无效")
                     if result.get("name") != data["name"].strip() or type(result.get("enabled")) is not bool:
                         raise ValueError("设备报告的项目 Agent 名称或状态无效")
-                if action == "project-agent-create":
+                if action == "project-agent-create" and not data.get("workspace_mode"):
                     db.execute(
                         "INSERT INTO project_workspaces(project_id,owner_id,node,status,write_policy,updated_at) "
                         "VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,node) DO UPDATE SET "
@@ -382,7 +392,7 @@ class OwnerBackend:
                     agent = db.execute("SELECT * FROM agents WHERE id=?", (identity,)).fetchone()
                     if agent:
                         self._remove_agent(db, agent, row["owner_id"])
-                else:
+                elif action == "project-agent-configure":
                     model, stages, effort, timeout = (settings[k] for k in ("model", "stages", "effort", "timeout"))
                     if (
                         not isinstance(model, str)

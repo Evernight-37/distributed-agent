@@ -267,6 +267,30 @@ async function checkProjectAgentForms() {
     },
   ]);
 
+  view.capabilities = ["agent_workspace_v1"];
+  await context.openProjectAgentForm();
+  const device = fields.get("执行机器");
+  device.value = "worker-a";
+  device.onchange();
+  fields.get("Agent 名称").value = "独立 Agent";
+  fields.get("模型 ID").value = "deepseek-flash";
+  const folderMode = fields.get("工作目录");
+  const newAgent = findButton("创建 Agent");
+  assert.equal(newAgent.disabled, false);
+  await newAgent.click();
+  assert.equal(calls.pop()[1].workspace_mode, "dedicated");
+  folderMode.value = "custom";
+  folderMode.onchange();
+  await assert.rejects(newAgent.click(), /绝对路径/);
+  fields.get("执行机器上的绝对路径").value = "/srv/project-a";
+  await newAgent.click();
+  const custom = calls.pop()[1];
+  assert.equal(custom.workspace_mode, "custom");
+  assert.equal(custom.workspace_path, "/srv/project-a");
+  folderMode.value = "shared";
+  folderMode.onchange();
+  assert.equal(newAgent.disabled, true);
+
   const agent = {
     id: "agent-a",
     name: "项目审阅员",

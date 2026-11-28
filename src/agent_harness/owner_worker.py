@@ -129,6 +129,8 @@ class OwnerControl:
         workspaces = document["workspaces"]
         by_project = {}
         for binding in self.connector.bindings():
+            if binding.get("agent_workspace"):
+                continue
             project_id = binding.get("project_id")
             backend = binding.get("backend_project")
             if not isinstance(project_id, str) or not isinstance(backend, str):
@@ -180,7 +182,9 @@ class OwnerControl:
         if resolved == Path(resolved.anchor):
             raise ValueError("Choose an existing absolute directory, not a drive root")
         remote = str(resolved)
-        bindings = [b for b in self.connector.bindings() if b.get("project_id") == project_id]
+        bindings = [
+            b for b in self.connector.bindings() if b.get("project_id") == project_id and not b.get("agent_workspace")
+        ]
         # Preserve each backend project's independent Codex sessions while all
         # employees dispatched to this shared project use the same local tree.
         with lock(self.root / "registry.lock"):
@@ -217,7 +221,9 @@ class OwnerControl:
         if not target.is_relative_to(resolved_root):
             raise ValueError("Invalid default workspace")
 
-        bindings = [b for b in self.connector.bindings() if b.get("project_id") == project_id]
+        bindings = [
+            b for b in self.connector.bindings() if b.get("project_id") == project_id and not b.get("agent_workspace")
+        ]
         with lock(self.root / "registry.lock"):
             document = read_json(self._workspace_file(), {"version": 1, "workspaces": {}})
             if not isinstance(document, dict) or not isinstance(document.get("workspaces"), dict):
@@ -393,6 +399,41 @@ class OwnerControl:
             self.connector.executor({"action": "configure", "project": backend, **options})
         self._remember_network(backend, settings["network"])
 
+    def _agent_workspace(self, data, backend):
+        if data["workspace_mode"] == "dedicated":
+            parent = self.root.resolve() / "agent-workspaces"
+            target = parent / backend
+            if target.resolve() != target:
+                raise ValueError("Agent 工作目录不能重定向到其他位置")
+        else:
+            from agent_harness import sealing
+
+            pair = self.connector.config.get("encrypt_key") or {}
+            if not pair.get("private_key"):
+                raise ValueError("执行机器缺少目录解密密钥")
+            value = sealing.open_sealed(
+                pair["private_key"],
+                data["sealed_workspace"],
+                {"target": self.connector.config["node"], "id": data["id"], "project": data["project_id"]},
+            ).get("path")
+            if not isinstance(value, str) or not value or len(value) > 4096 or "\0" in value:
+                raise ValueError("请输入执行机器上已有目录的绝对路径")
+            target = Path(value)
+            if not target.is_absolute() or not target.is_dir():
+                raise ValueError("执行机器上找不到指定的绝对目录")
+            target = target.resolve()
+            if target == Path(target.anchor):
+                raise ValueError("请选择根目录下的项目目录")
+        for record in (self.root / "projects").glob("*/project.json"):
+            if record.parent.name == backend:
+                continue
+            other = read_json(record).get("remote_path")
+            if other and Path(other).resolve() == target:
+                raise ValueError("这个目录已分配给其他 Agent，请选择单独的目录")
+        if data["workspace_mode"] == "dedicated":
+            target.mkdir(parents=True, exist_ok=True)
+        return str(target)
+
     def _project_agent(self, action, data):
         project, _identity, backend = project_agent_target(action, data)
         identifier(backend)
@@ -430,10 +471,14 @@ class OwnerControl:
             if effort not in capability["efforts"]:
                 raise ValueError("执行机器上的该模型不支持思考强度 " + effort)
         name = data["name"].strip()
-        self._write_project_settings(backend, settings, self._workspace(project) if creating else None)
+        workspace = None
+        if creating:
+            workspace = self._agent_workspace(data, backend) if data.get("workspace_mode") else self._workspace(project)
+        self._write_project_settings(backend, settings, workspace)
         self.connector.save_binding(
             {
                 **(existing or {}),
+                **({"agent_workspace": True} if data.get("workspace_mode") else {}),
                 **result,
                 **settings,
                 "name": name,

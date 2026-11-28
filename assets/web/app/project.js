@@ -2260,7 +2260,12 @@ function projectWorkspaceReady(view, node, user) {
     (view.workspaces || []).some(
       (item) => item.node === node && item.status === "ready",
     ) ||
-    view.members.some((item) => item.node === node && item.owner_id === user)
+    view.members.some(
+      (item) =>
+        item.node === node &&
+        item.owner_id === user &&
+        !item.agent_workspace_mode,
+    )
   );
 }
 
@@ -2326,6 +2331,25 @@ async function openProjectAgentForm(agent = null) {
       const selectedNode = () => agent?.node || machine.value;
       const selectedDevice = () =>
         devices.find((device) => (device.node || device.id) === selectedNode());
+      const agentWorkspaces =
+        !agent && view.capabilities?.includes("agent_workspace_v1");
+      const mode =
+        agentWorkspaces &&
+        field(body, t("工作目录", "Working directory"), "dedicated", [
+          [
+            "dedicated",
+            t("自动创建专属空目录", "Create a dedicated empty folder"),
+          ],
+          [
+            "custom",
+            t(
+              "使用执行机器上的已有目录",
+              "Use an existing folder on the device",
+            ),
+          ],
+          ["shared", t("使用项目共享目录", "Use the shared project folder")],
+        ]);
+      let customPath;
       const workspace = el("div");
       const modelFields = el("div");
       body.append(workspace, modelFields);
@@ -2480,7 +2504,19 @@ async function openProjectAgentForm(agent = null) {
                 "Select a device and enter a name and model.",
               ),
             );
-          if (!agent && workspaceStates.get(node) !== "ready")
+          if (mode && mode.value !== "shared") {
+            fields.workspace_mode = mode.value;
+            if (mode.value === "custom") {
+              fields.workspace_path = customPath.value.trim();
+              if (!fields.workspace_path)
+                throw Error(
+                  t(
+                    "请输入执行机器上的绝对路径",
+                    "Enter an absolute path on the device",
+                  ),
+                );
+            }
+          } else if (!agent && workspaceStates.get(node) !== "ready")
             throw Error(
               t(
                 "请先设置这个项目在目标机器上的工作目录",
@@ -2540,6 +2576,16 @@ async function openProjectAgentForm(agent = null) {
         if (agent || !node) {
           submit.disabled =
             !node || capabilities.get(node)?.state === "loading";
+          return;
+        }
+        if (mode && mode.value !== "shared") {
+          submit.disabled = false;
+          if (mode.value === "custom")
+            customPath = field(
+              workspace,
+              t("执行机器上的绝对路径", "Absolute path on the device"),
+              "",
+            );
           return;
         }
         if (!workspaceStates.has(node))
@@ -2802,6 +2848,7 @@ async function openProjectAgentForm(agent = null) {
         if (managedModels && node && !capabilities.has(node)) fetchModels(node);
       }
 
+      if (mode) mode.onchange = renderWorkspace;
       if (machine) machine.onchange = renderMachine;
       renderMachine();
     },

@@ -125,6 +125,7 @@ class AccountBackend:
                     "project_lifecycle_v1",
                     "project_memory_review_v1",
                     "project_model_capabilities_v1",
+                    "agent_workspace_v1",
                     "anchored_reply_draft",
                     "conversation_privacy_v2",
                     "service_host_owner_v1",
@@ -401,6 +402,7 @@ class AccountBackend:
             )
         }
         legacy_dispatch = {}
+        workspace_modes = {}
         applied = {}
         pending = {}
         for row in db.execute(
@@ -421,6 +423,8 @@ class AccountBackend:
             report = json.loads(row["result"] or "{}")
             if row["state"] == "applied":
                 applied[key] = (action, report)
+                if action == "project-agent-create" and data.get("workspace_mode"):
+                    workspace_modes[key] = data["workspace_mode"]
             if not delegated and row["owner_id"] == user:
                 pending[key] = {
                     "id": row["id"],
@@ -457,6 +461,8 @@ class AccountBackend:
                 settings.setdefault("enabled", bool(member["enabled"]))
                 settings.setdefault("stages", json.loads(bound["stages"]) if bound else ["discuss"])
                 member["project_agent_settings"] = settings
+                if key in workspace_modes:
+                    member["agent_workspace_mode"] = workspace_modes[key]
             members.append(member)
         result["members"] = members
         visible = {member["backend_project"] for member in members}

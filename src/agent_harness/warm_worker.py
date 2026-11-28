@@ -232,17 +232,17 @@ class WarmManager:
                 self.attached_thread_ids.add(thread_id)
                 return thread_id, None
             except RuntimeError as exc:
-                # A previous app-server (including another Codex client) can
-                # retain the thread-store writer after this worker has gone.
-                # It is unsafe to kill an unrelated process.  Start a fresh
-                # session instead; every turn already carries the bounded chat
-                # context and project memory needed to continue the project.
-                if "already has an active writer" not in str(exc):
+                message = str(exc).lower()
+                if "already has an active writer" in message:
+                    reason = "active_writer_conflict"
+                elif "thread not found" in message or "no rollout found" in message:
+                    reason = "thread_not_found"
+                else:
                     raise
                 result = server.call("thread/start", settings, 40)
                 thread_id = result["thread"]["id"]
                 self.attached_thread_ids.add(thread_id)
-                return thread_id, existing
+                return thread_id, reason
         result = server.call("thread/start", settings, 40)
         thread_id = result["thread"]["id"]
         self.attached_thread_ids.add(thread_id)
@@ -290,21 +290,18 @@ class WarmManager:
                 "danger-full-access" if full_access else "workspace-write" if stage == "implement" else "read-only"
             ),
         }
-        thread_id, replaced_thread = self.attach_thread(server, settings, existing)
+        thread_id, replacement_reason = self.attach_thread(server, settings, existing)
         with lock(ROOT / "registry.lock"):
             write_json(
                 self.directory / config.get("session_file", "session.json"),
                 {"thread_id": thread_id, "last_job": job},
             )
-        rules = worker.reply_rules(policy, True, project_tools=project_tools, file_delivery=file_delivery)
-        prompt = (
-            rules
-            + "\nASSIGNED LOCAL PROJECT DIRECTORY:\n"
-            + cwd
-            + "\nPROJECT MEMORY:\n"
-            + json.dumps(config["memory"], ensure_ascii=False)
-            + "\nTASK CONTRACT:\n"
-            + config["prompt"]
+        prompt = worker.managed_prompt(
+            config,
+            thread_id if thread_id == existing and not replacement_reason else None,
+            policy,
+            project_tools=project_tools,
+            file_delivery=file_delivery,
         )
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
         if full_access:
@@ -323,8 +320,8 @@ class WarmManager:
             reasoning_effort=project["effort"],
             effective_reasoning_effort=actual_effort,
             app_server_pid=server.process.pid,
-            session_replaced_from=replaced_thread,
-            session_replaced_reason=("active_writer_conflict" if replaced_thread else None),
+            session_replaced_from=existing if replacement_reason else None,
+            session_replaced_reason=replacement_reason,
         )
         turn_id = server.call(
             "turn/start",

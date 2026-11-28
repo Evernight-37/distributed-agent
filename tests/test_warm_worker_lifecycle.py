@@ -73,9 +73,20 @@ class WarmWorkerLifecycleTests(unittest.TestCase):
         settings = {"model": "gpt-5.6-sol", "cwd": "C:\\project"}
         thread_id, replaced = manager.attach_thread(server, settings, "old-thread")
         self.assertEqual(thread_id, "replacement-thread")
-        self.assertEqual(replaced, "old-thread")
+        self.assertEqual(replaced, "active_writer_conflict")
         self.assertEqual([item[0] for item in server.calls], ["thread/resume", "thread/start"])
         self.assertNotIn("threadId", server.calls[1][1])
+
+    def test_missing_thread_starts_fresh_but_transient_errors_propagate(self):
+        manager = warm_worker.WarmManager("project")
+        server = Mock()
+        server.call.side_effect = [RuntimeError("no rollout found for old"), {"thread": {"id": "new"}}]
+        self.assertEqual(manager.attach_thread(server, {}, "old"), ("new", "thread_not_found"))
+        server.call.reset_mock()
+        server.call.side_effect = RuntimeError("connection interrupted")
+        with self.assertRaisesRegex(RuntimeError, "connection interrupted"):
+            manager.attach_thread(server, {}, "old")
+        self.assertEqual(server.call.call_count, 1)
 
     def test_receiver_retires_its_idle_worker_without_touching_active(self):
         with tempfile.TemporaryDirectory() as folder:

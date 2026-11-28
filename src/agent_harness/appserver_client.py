@@ -118,13 +118,21 @@ class AppServer:
     def event(self, timeout):
         if self.pending:
             return self.pending.pop(0)
-        try:
-            item = self.inbox.get(timeout=timeout)
-        except queue.Empty:
-            raise TimeoutError("Codex app-server did not respond") from None
-        if item is None:
-            raise RuntimeError("Codex app-server disconnected")
-        return item
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                item = self.inbox.get(timeout=max(0, deadline - time.monotonic()))
+            except queue.Empty:
+                raise TimeoutError("Codex app-server did not respond") from None
+            if item is None:
+                raise RuntimeError("Codex app-server disconnected")
+            if "id" not in item or "method" not in item:
+                return item
+            # This unattended client has no interactive request handlers. Reply
+            # immediately: the peer can wait for us before finishing our call.
+            self.send({"id": item["id"], "error": {"code": -32601, "message": "Method not supported by this client"}})
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Codex app-server did not respond")
 
     def call(self, method, params, timeout=30):
         request_id = self.next_id
@@ -141,12 +149,12 @@ class AppServer:
                     item = self.event(min(remaining, 1))
                 except TimeoutError:
                     continue
-                if item.get("id") == request_id:
+                if item.get("id") == request_id and ("result" in item or "error" in item):
                     if "error" in item:
                         raise RuntimeError(
                             "Codex app-server rejected " + method + ": " + str(item["error"].get("message", "error"))
                         )
-                    return item.get("result", {})
+                    return item["result"]
                 deferred.append(item)
         finally:
             self.pending = deferred + self.pending
