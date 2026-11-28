@@ -19,6 +19,7 @@ from agent_harness.common import (
     lock,
     outcome,
     read_json,
+    referenced_message_ids,
     tail,
     validate_project,
     write_json,
@@ -665,6 +666,7 @@ def _rpc(request, managed_runtime=None):
                 "memory": {} if channel else read_json(directory / "memory.json"),
                 "thread_id": session["thread_id"],
                 "session_file": session_file,
+                "previous_job": session.get("last_job"),
                 "managed_turn": bool(channel),
                 "strict_guard": strict_guard,
             }
@@ -818,6 +820,11 @@ def reply_rules(policy, first_turn, *, project_tools=False, file_delivery=False)
         base = "\n".join(line for line in lines if not line.startswith("- work_"))
     else:
         base = "Return the structured final response defined by the runtime."
+    if project_tools and policy["role"] == "admin":
+        return base + (
+            "\nUse the available task tools for formal assignments. Drafts require human confirmation. "
+            "For revisions send only changed fields. After success leave project_action null."
+        )
     if project_tools:
         tool_rules = (
             "\nUse the registered project tools to save a draft, revise a draft, follow up or submit a delivery. "
@@ -1269,6 +1276,94 @@ def contract_spec(config):
     return spec
 
 
+def previous_turn_context(config, thread_id):
+    """Only reuse context from a completed turn in this exact receiver session."""
+    previous_job = config.get("previous_job")
+    if not thread_id or thread_id != config.get("thread_id") or not previous_job:
+        return None
+    try:
+        path = job_dir(previous_job)
+        state = read_json(path / "state.json", {}, tolerant=True)
+        if not isinstance(state, dict) or state.get("thread_id") != thread_id or state.get("status") != "needs_review":
+            return None
+        prior = read_json(path / "request.json", {}, tolerant=True)
+        if not isinstance(prior, dict) or not prior.get("managed_turn") or prior.get("project") != config["project"]:
+            return None
+        if not config.get("session_file") or prior.get("session_file") != config["session_file"]:
+            return None
+        return contract_spec(prior)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def is_chat_context(context):
+    messages = context.get("visible_messages")
+    return (
+        isinstance(context.get("identity"), dict)
+        and isinstance(context.get("task"), dict)
+        and isinstance(messages, list)
+        and all(isinstance(row, dict) and type(row.get("id")) is int for row in messages)
+    )
+
+
+def managed_prompt(config, thread_id, policy, *, project_tools, file_delivery, inbound=()):
+    """Render the model input only. Authorization and file handling use the original contract."""
+    context = contract_spec(config)
+    chat = is_chat_context(context)
+    prior = previous_turn_context(config, thread_id) if chat else None
+    if prior and (
+        not is_chat_context(prior)
+        or prior["identity"] != context["identity"]
+        or prior.get("project") != context.get("project")
+    ):
+        prior = None
+    first = not prior if chat else not thread_id
+    rules = reply_rules(policy, first, project_tools=project_tools, file_delivery=file_delivery)
+    sections = [rules]
+    if inbound:
+        sections.extend(["ATTACHMENTS FROM THE CONVERSATION (inside the project directory):", *inbound])
+    if not prior:
+        sections.extend(["ASSIGNED LOCAL PROJECT DIRECTORY:", config["project"]["remote_path"]])
+    if config.get("memory"):
+        sections.extend(["PROJECT MEMORY:", json.dumps(config["memory"], ensure_ascii=False)])
+    if chat:
+        messages = context["visible_messages"]
+        if prior:
+            previous_messages = {row["id"]: row for row in prior.get("visible_messages", [])}
+            references = referenced_message_ids(context["task"])
+            messages = [row for row in messages if row["id"] in references or previous_messages.get(row["id"]) != row]
+            for key in (
+                "identity",
+                "project",
+                "members",
+                "project_memory",
+                "project_work_drafts",
+                "project_work_items",
+                "protocol",
+            ):
+                if key in context and context[key] == prior.get(key):
+                    del context[key]
+            sections.append(
+                "Continuation: only new, changed or referenced messages follow. Current task and grants apply."
+            )
+        context["visible_messages"] = [
+            {
+                k: v
+                for k, v in row.items()
+                if k not in {"project_id", "client_message_id", "sender_client"} and v is not None
+            }
+            for row in messages
+        ]
+        # The transport repeats these fields inside the task and its wrapper.
+        task = context.get("task") or {}
+        for key in ("stage", "allowed_files", "acceptance", "validation", "attachments"):
+            if key in task and task[key] == context.get(key):
+                context.pop(key, None)
+    contract = json.dumps(context, ensure_ascii=False, separators=(",", ":")) if chat else config["prompt"]
+    sections.extend(["TASK CONTRACT:", contract])
+    return "\n".join(sections)
+
+
 def project_action_policy(config):
     from agent_harness.project_actions import action_policy
 
@@ -1363,33 +1458,34 @@ def run(job):
             kind=kind,
             **({"project_tools": True} if project_tools else {}),
         )
-        # The executor resumes a thread, so its history already holds the rules.
-        # Re-sending them every turn repeats ~1k tokens and dilutes attention;
-        # only the reply contract has to stay in front of the model each time.
-        first_turn = not config.get("thread_id")
-        sections = [
-            reply_rules(policy, first_turn, project_tools=project_tools, file_delivery=file_delivery)
-            if managed
-            else PEER_RULES
-        ]
         try:
             inbound = materialize_inbound(config, config["project"]["remote_path"])
         except Exception:
             inbound = []
-        if inbound:
-            sections += [
-                "ATTACHMENTS FROM THE CONVERSATION (inside the project directory):",
-                "\n".join(inbound),
-            ]
-        sections += [
-            "ASSIGNED LOCAL PROJECT DIRECTORY:",
-            config["project"]["remote_path"],
-            "PROJECT MEMORY:",
-            json.dumps(config["memory"], ensure_ascii=False),
-            "TASK CONTRACT:",
-            config["prompt"],
-        ]
-        prompt = "\n".join(sections)
+        if managed:
+            prompt = managed_prompt(
+                config,
+                config.get("thread_id"),
+                policy,
+                project_tools=project_tools,
+                file_delivery=file_delivery,
+                inbound=inbound,
+            )
+        else:
+            sections = [PEER_RULES]
+            if inbound:
+                sections.extend(["ATTACHMENTS FROM THE CONVERSATION (inside the project directory):", *inbound])
+            sections.extend(
+                [
+                    "ASSIGNED LOCAL PROJECT DIRECTORY:",
+                    config["project"]["remote_path"],
+                    "PROJECT MEMORY:",
+                    json.dumps(config["memory"], ensure_ascii=False),
+                    "TASK CONTRACT:",
+                    config["prompt"],
+                ]
+            )
+            prompt = "\n".join(sections)
         (path / "prompt.txt").write_text(prompt, encoding="utf-8")
         env = executor_environment(
             ROOT,

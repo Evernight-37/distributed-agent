@@ -19,6 +19,14 @@ def identifier(value):
     return value
 
 
+def referenced_message_ids(contract):
+    ids = contract.get("reference_message_ids")
+    references = {value for value in ids if type(value) is int} if isinstance(ids, list) else set()
+    if type(source := contract.get("source_message_id")) is int:
+        references.add(source)
+    return references
+
+
 def read_json(path, default=None, *, tolerant=False):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8-sig"))

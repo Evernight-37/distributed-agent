@@ -8,6 +8,7 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from agent_harness.collaboration_store import uid
 from agent_harness.broker import PullBackend
+from agent_harness.common import referenced_message_ids
 from agent_harness.project_actions import FILE_DELIVERY_PENDING, resolve_tool_action, validate_action
 from agent_harness.project_memory import ProjectMemory
 from agent_harness.project_work import ATTACHMENT_DELIVERY_BLOCKED
@@ -229,7 +230,7 @@ class Coordinator:
                 },
                 ensure_ascii=False,
             )
-        visible = self.store.visible_messages(agent["id"], 0, task["cutoff"])[-150:]
+        visible = self.store.visible_messages(agent["id"], 0, task["cutoff"])
         partner = contract.get("reply_to") if contract.get("private_turn") else None
         visible = [
             m
@@ -239,6 +240,11 @@ class Coordinator:
             or m["causal_task"] == "execution-completed"
             and m["recipient_id"] == agent["id"]
         ]
+        # Retain older explicit references only from this already authorized conversation view.
+        references = referenced_message_ids(contract)
+        if trace:
+            references.add(trace["source_message_id"])
+        visible = [row for row in visible[:-150] if row["id"] in references] + visible[-150:]
         if trace and any(message["id"] == trace["source_message_id"] for message in visible):
             contract["source_message_id"] = trace["source_message_id"]
         drafts = []

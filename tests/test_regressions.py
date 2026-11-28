@@ -286,6 +286,27 @@ class Regressions(unittest.TestCase):
         self.assertNotIn("private marker", context)
         self.assertIn("public question", context)
 
+    def test_context_keeps_authorized_old_references_outside_chat_window(self):
+        a, _ = self.agents()
+        public = self.store.message(self.owner["id"], self.project, "old source")["id"]
+        reference = self.store.message(self.owner["id"], self.project, "old reference")["id"]
+        private = self.store.message(self.owner["id"], self.project, "private reference", a)["id"]
+        with self.store.connect() as db:
+            for i in range(155):
+                self.store._message(db, self.project, self.owner["id"], "human", f"recent {i}")
+        task = self.finished(a, "{}", source_message_id=public)
+        with self.store.connect() as db:
+            agent = dict(db.execute("SELECT * FROM agents WHERE id=?", (a,)).fetchone())
+            row = dict(db.execute("SELECT * FROM tasks WHERE id=?", (task,)).fetchone())
+        contract = json.loads(row["contract"])
+        row["contract"] = json.dumps(dict(contract, reference_message_ids=[reference, private]))
+        context = json.loads(Coordinator(self.store, self.backend).agent_context(agent, row))
+        ids = [message["id"] for message in context["visible_messages"]]
+        self.assertEqual(ids[:2], [public, reference])
+        self.assertNotIn(private, ids)
+        self.assertEqual(len(ids), 152)
+        self.assertEqual(context["task"]["source_message_id"], public)
+
     def test_private_and_public_messages_have_independent_cursors(self):
         a, _ = self.agents()
         self.store.message(self.owner["id"], self.project, "private first", a)
